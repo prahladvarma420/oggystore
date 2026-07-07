@@ -1,0 +1,29 @@
+# ===== SECRETS - never commit =====
+.env
+*.env
+.env.*
+
+# ===== Local database (users, orders, balances, encrypted secrets) =====
+shopbot.db
+shopbot.db-wal
+shopbot.db-shm
+*.sqlite
+*.sqlite3
+
+# ===== Backups =====
+backups/
+*.zip
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+env/
+
+# ===== OS / editor junk =====
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

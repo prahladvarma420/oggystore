@@ -1,0 +1,8 @@
+python-telegram-bot[job-queue]
+requests[socks]
+web3
+python-dotenv
+cryptography
+flask
+psycopg[binary]
+gunicorn

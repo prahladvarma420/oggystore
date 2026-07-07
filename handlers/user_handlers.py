@@ -1,0 +1,1281 @@
+from pathlib import Path
+import re
+import time
+from telegram.ext import ContextTypes
+from database.db import get_setting, set_user_coupon, render_message_template, cur, conn, ensure_user, get_balance, is_blocked, is_admin, create_ticket, get_user_tickets, add_referral, get_referral_stats, create_withdrawal_request, get_user_withdrawals, get_user_coupon, validate_coupon, clear_user_coupon, restore_backup_zip, add_restock_notification
+from utils.crypto import decrypt_text
+from keyboards.menus import main_menu, profile_menu, back_home, support_menu
+from utils.texts import welcome_text
+from utils.ui import edit_or_send
+from utils.states import user_state
+from products.product_handlers import show_shop, show_product, buy_product, show_order_preview, start_direct_checkout, show_quantity_menu, show_order_preview
+from payments.deposit_handlers import start_deposit, handle_deposit_amount
+from admin.admin_handlers import show_admin_panel, handle_admin_callback, handle_admin_message
+from config import ADMIN_USERNAME, ADMIN_ID
+
+
+# Security anti-spam settings.
+RATE_LIMIT_SECONDS = 1.5
+SPAM_WARN_LIMIT = 6
+SPAM_LOCK_SECONDS = 30
+
+user_last_action = {}
+user_warn_count = {}
+user_locked_until = {}
+
+
+def is_rate_limited(user_id: int) -> bool:
+    if is_admin(user_id):
+        return False
+
+    now = time.time()
+    locked_until = user_locked_until.get(user_id, 0)
+
+    if locked_until and now < locked_until:
+        return True
+
+    last = user_last_action.get(user_id, 0)
+
+    if now - last < RATE_LIMIT_SECONDS:
+        user_warn_count[user_id] = user_warn_count.get(user_id, 0) + 1
+
+        if user_warn_count[user_id] >= SPAM_WARN_LIMIT:
+            user_locked_until[user_id] = now + SPAM_LOCK_SECONDS
+            user_warn_count[user_id] = 0
+
+        return True
+
+    user_last_action[user_id] = now
+    user_warn_count[user_id] = 0
+    return False
+
+
+def get_lock_seconds(user_id: int) -> int:
+    now = time.time()
+    locked_until = user_locked_until.get(user_id, 0)
+    if locked_until and now < locked_until:
+        return int(locked_until - now)
+    return 0
+
+
+async def send_rate_limit_message(obj):
+    text = f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(user.id) or 2} seconds before using the bot again."
+    try:
+        await edit_or_send(obj, text)
+    except Exception:
+        await obj.message.reply_text(text, parse_mode="HTML")
+
+
+async def start(update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    ensure_user(user)
+
+    try:
+        welcome_coupon = get_setting("auto_welcome_coupon", "")
+        if welcome_coupon:
+            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (uid,))
+            order_count = cur.fetchone()[0]
+            if order_count == 0:
+                set_user_coupon(uid, welcome_coupon)
+    except Exception:
+        pass
+
+    try:
+        if context.args:
+            ref_arg = context.args[0]
+            if ref_arg.startswith("ref_"):
+                referrer_id = int(ref_arg.replace("ref_", ""))
+                if add_referral(referrer_id, user.id):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=referrer_id,
+                            text=(
+                                "🎁 <b>New Referral Joined</b>\n\n"
+                                f"👤 User: <code>{user.id}</code>\n"
+                                f"🧾 Name: {user.first_name or 'User'}"
+                            ),
+                            parse_mode="HTML"
+                        )
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    if is_blocked(user.id):
+        await update.message.reply_text(
+            "🚫 <b>Access Denied</b>\n\nYour account is blocked from using this bot.",
+            parse_mode="HTML"
+        )
+        return
+
+    if is_rate_limited(user.id):
+        await update.message.reply_text(
+            f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(user.id) or 2} seconds before using the bot again.",
+            parse_mode="HTML"
+        )
+        return
+
+    await update.message.reply_text(
+        welcome_text(user.first_name),
+        reply_markup=main_menu(user.id),
+        disable_web_page_preview=True,
+        parse_mode="HTML",
+    )
+
+
+async def admin(update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    ensure_user(user)
+
+    try:
+        welcome_coupon = get_setting("auto_welcome_coupon", "")
+        if welcome_coupon:
+            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (uid,))
+            order_count = cur.fetchone()[0]
+            if order_count == 0:
+                set_user_coupon(uid, welcome_coupon)
+    except Exception:
+        pass
+
+    if user.id is None:
+        return
+
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ <b>Admin only.</b>", parse_mode="HTML")
+        return
+
+    from keyboards.menus import admin_menu
+    await update.message.reply_text(
+        "👑 <b>Admin Panel</b>\n\n<i>Manage your shop from here.</i>",
+        reply_markup=admin_menu(),
+        parse_mode="HTML"
+    )
+
+
+async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+
+    try:
+        await q.answer()
+    except Exception:
+        pass
+
+    user = q.from_user
+    uid = user.id
+    ensure_user(user)
+    data = q.data or ""
+
+    # Basic callback safety: ignore malformed/oversized callback data.
+    if len(data) > 80:
+        await edit_or_send(q, "❌ <b>Invalid request.</b>", back_home())
+        return
+
+    if is_blocked(uid) and not data.startswith("admin_"):
+        await edit_or_send(
+            q,
+            "🚫 <b>Access Denied</b>\n\nYour account is blocked from using this bot.",
+            back_home()
+        )
+        return
+
+    if is_rate_limited(uid) and not data.startswith("admin_"):
+        await edit_or_send(
+            q,
+            f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(uid) or 2} seconds before clicking again.",
+            back_home()
+        )
+        return
+
+    if data == "home":
+        await edit_or_send(q, welcome_text(user.first_name), main_menu(uid))
+        return
+
+    if data == "shop":
+        await show_shop(q)
+        return
+
+    if data.startswith("product_"):
+        await show_product(q, int(data.split("_")[1]))
+        return
+
+    if data.startswith("qtymenu_"):
+        pid = int(data.split("_")[1])
+        await show_quantity_menu(q, uid, pid)
+        return
+
+    if data.startswith("previewbuy_"):
+        parts = data.split("_")
+        pid = int(parts[1])
+        qty = int(parts[2])
+        await show_order_preview(q, uid, pid, qty)
+        return
+
+    if data.startswith("customqty_"):
+        pid = int(data.split("_")[1])
+        user_state[uid] = f"custom_buy_qty:{pid}"
+        await edit_or_send(
+            q,
+            """✨ <b>Custom Quantity</b>
+
+Send the quantity you want to buy.
+
+Example:
+<code>13</code>""",
+            back_home()
+        )
+        return
+
+    if data.startswith("directpay_"):
+        parts = data.split("_")
+        pid = int(parts[1])
+        qty = int(parts[2]) if len(parts) > 2 else 1
+        await start_direct_checkout(q, uid, pid, qty)
+        return
+
+    if data.startswith("buy_"):
+        parts = data.split("_")
+        pid = int(parts[1])
+        qty = int(parts[2]) if len(parts) > 2 else 1
+        await buy_product(q, uid, pid, qty)
+        return
+
+    if data == "deposit":
+        await start_deposit(q, uid)
+        return
+
+    if data == "deposit_history":
+        from payments.deposit_handlers import show_deposit_history
+        await show_deposit_history(q, uid)
+        return
+
+    if data == "wallet":
+        cur.execute(
+            "SELECT first_name, username, balance, referral_earnings, referral_pending, loyalty_points, vip_rank FROM users WHERE user_id=?",
+            (uid,)
+        )
+        row = cur.fetchone()
+        if row:
+            first_name, username, balance, ref_earn, ref_pending, loyalty_points, vip_rank = row
+        else:
+            first_name, username, balance, ref_earn, ref_pending, loyalty_points, vip_rank = (user.first_name or "User", None, 0, 0, 0, 0, "Bronze")
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM deposits WHERE user_id=? AND status='paid'", (uid,))
+        dep_count, dep_total = cur.fetchone()
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (uid,))
+        order_count, total_spent = cur.fetchone()
+
+        uname = f"@{username}" if username else "No username"
+
+        await edit_or_send(
+            q,
+            f"""💼 <b>My Wallet</b>
+
+🆔 <b>User ID:</b> <code>{uid}</code>
+👤 <b>Name:</b> {first_name or 'User'}
+🔗 <b>Username:</b> {uname}
+
+💰 <b>Available Balance:</b> <code>{float(balance or 0):.2f} USDT</code>
+📥 <b>Total Deposited:</b> <code>{float(dep_total or 0):.2f} USDT</code>
+🧾 <b>Paid Deposits:</b> <code>{dep_count}</code>
+
+🛒 <b>Total Orders:</b> <code>{order_count}</code>
+💸 <b>Total Spent:</b> <code>{float(total_spent or 0):.2f} USDT</code>
+
+🎁 <b>Referral Earnings:</b> <code>{float(ref_earn or 0):.6f} USDT</code>
+⏳ <b>Pending Referral:</b> <code>{float(ref_pending or 0):.6f} USDT</code>
+⭐ <b>Loyalty Points:</b> <code>{int(loyalty_points or 0)}</code>
+🏆 <b>VIP Rank:</b> <code>{vip_rank or 'Bronze'}</code>
+
+Use Deposit to add balance, then pay directly from wallet during checkout.""",
+            profile_menu()
+        )
+        return
+
+    if data.startswith("checkout_coupon_remove_"):
+        parts = data.split("_")
+        pid = int(parts[3])
+        qty = int(parts[4])
+        clear_user_coupon(uid)
+        await show_order_preview(q, uid, pid, qty)
+        return
+
+    if data.startswith("checkout_coupon_"):
+        parts = data.split("_")
+        pid = int(parts[2])
+        qty = int(parts[3])
+        user_state[uid] = f"checkout_coupon_code:{pid}:{qty}"
+        await edit_or_send(
+            q,
+            """🎟 <b>Enter Coupon Code</b>
+
+Send your coupon code now.
+
+Example:
+<code>WELCOME10</code>""",
+            back_home()
+        )
+        return
+
+    if data == "apply_coupon":
+        user_state[uid] = "apply_coupon_code"
+        await edit_or_send(
+            q,
+            """🎟 <b>Apply Coupon</b>
+
+Send your coupon code.
+
+Example:
+<code>WELCOME10</code>""",
+            back_home()
+        )
+        return
+
+    if data == "remove_coupon":
+        clear_user_coupon(uid)
+        await edit_or_send(q, "🗑 <b>Coupon removed.</b>", main_menu(uid))
+        return
+
+    if data.startswith("notify_stock_"):
+        product_id = int(data.split("_")[-1])
+        add_restock_notification(uid, product_id)
+        await edit_or_send(
+            q,
+            "🔔 <b>Restock Alert Added</b>\n\nYou will be notified when this product is back in stock.",
+            back_home()
+        )
+        return
+
+    if data == "search":
+        user_state[uid] = "user_search_product"
+        await edit_or_send(
+            q,
+            "🔍 <b>Search Products</b>\n\nSend a product name or keyword to search.",
+            back_home()
+        )
+        return
+
+    if data == "support_ticket":
+        user_state[uid] = "support_ticket_message"
+        await edit_or_send(
+            q,
+            """🎫 <b>Create Support Ticket</b>
+
+Send your issue/message now.
+
+Example:
+Payment done but balance not added.""",
+            back_home()
+        )
+        return
+
+    if data == "profile":
+        cur.execute(
+            "SELECT first_name, username, balance, notifications, joined, referral_earnings, referral_pending, loyalty_points, vip_rank FROM users WHERE user_id=?",
+            (uid,)
+        )
+        row = cur.fetchone()
+        if row:
+            first_name, username, bal, notifications, joined, ref_earn, ref_pending, loyalty_points, vip_rank = row
+        else:
+            first_name, username, bal, notifications, joined, ref_earn, ref_pending, loyalty_points, vip_rank = ("User", "No username", 0, 1, "Unknown", 0, 0, 0, "Bronze")
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (uid,))
+        order_count, total_spent = cur.fetchone()
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM deposits WHERE user_id=? AND status='paid'", (uid,))
+        dep_count, dep_total = cur.fetchone()
+
+        uname = f"@{username}" if username and username != "No username" else "No username"
+
+        await edit_or_send(
+            q,
+            f"""👤 <b>My Profile</b>
+
+🆔 <b>User ID:</b> <code>{uid}</code>
+👤 <b>Name:</b> {first_name or 'User'}
+🔗 <b>Username:</b> {uname}
+
+💼 <b>Wallet Balance:</b> <code>{float(bal or 0):.2f} USDT</code>
+🛒 <b>Total Orders:</b> <code>{order_count}</code>
+💰 <b>Total Spent:</b> <code>${float(total_spent or 0):.2f}</code>
+
+💳 <b>Paid Deposits:</b> <code>{dep_count}</code>
+📥 <b>Total Deposited:</b> <code>{float(dep_total or 0):.2f} USDT</code>
+
+🎁 <b>Referral Earnings:</b> <code>{float(ref_earn or 0):.6f} USDT</code>
+⏳ <b>Pending Referral:</b> <code>{float(ref_pending or 0):.6f} USDT</code>
+
+🎟 <b>Coupon:</b> {get_user_coupon(uid) or 'None'}
+🔔 <b>Notifications:</b> {'ON ✅' if notifications else 'OFF ❌'}""",
+            profile_menu()
+        )
+        return
+
+    if data == "my_stats":
+        cur.execute(
+            "SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?",
+            (uid,)
+        )
+        total_orders, total_spent = cur.fetchone()
+
+        await edit_or_send(
+            q,
+            f"""📊 <b>My Stats</b>
+
+📦 <b>Total Orders:</b> {total_orders}
+💸 <b>Total Spent:</b> <code>{total_spent:.2f} USDT</code>
+💰 <b>Current Balance:</b> <code>{get_balance(uid):.2f} USDT</code>
+
+Thank you for using our store.""",
+            profile_menu()
+        )
+        return
+
+    if data == "toggle_notifications":
+        cur.execute(
+            "UPDATE users SET notifications = CASE notifications WHEN 1 THEN 0 ELSE 1 END WHERE user_id=?",
+            (uid,)
+        )
+        conn.commit()
+
+        await edit_or_send(
+            q,
+            "🔔 <b>Notification setting updated.</b>\n\nYour preference has been saved.",
+            profile_menu()
+        )
+        return
+
+    if data == "orders":
+        cur.execute(
+            "SELECT id, product_name, price, delivery, created FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 10",
+            (uid,)
+        )
+        rows = cur.fetchall()
+
+        text = "📦 <b>My Orders</b>\n\n"
+
+        if not rows:
+            text += "No orders found yet."
+        else:
+            for order_id, name, price, delivery, created in rows:
+                delivery = decrypt_text(delivery)
+                text += (
+                    f"🧾 <b>Order #{order_id}</b>\n"
+                    f"📦 {name}\n"
+                    f"💰 <code>{price:.2f} USDT</code>\n"
+
+                    f"🔑 <b>Delivery:</b>\n<code>{delivery}</code>\n\n"
+                )
+
+        if len(text) > 3900:
+            text = text[:3900] + "\n..."
+
+        await edit_or_send(q, text, profile_menu())
+        return
+
+    if data == "referrals":
+        ref_count, total_earned, pending = get_referral_stats(uid)
+        bot_username = (await context.bot.get_me()).username
+        ref_link = f"https://t.me/{bot_username}?start=ref_{uid}"
+        percent = float(get_setting("referral_percent", "5") or 5)
+
+        await edit_or_send(
+            q,
+            f"""🎁 <b>Referral Program</b>
+
+🔗 <b>Your Referral Link:</b>
+<code>{ref_link}</code>
+
+👥 <b>Total Referrals:</b> <code>{ref_count}</code>
+💰 <b>Total Earned:</b> <code>{total_earned:.6f} USDT</code>
+💸 <b>Available To Withdraw:</b> <code>{pending:.6f} USDT</code>
+📊 <b>Commission:</b> <code>{percent:.2f}%</code> of referred purchases
+
+Share your link and earn automatically when your referrals buy products.""",
+            profile_menu()
+        )
+        return
+
+    if data == "withdraw_referral":
+        ref_count, total_earned, pending = get_referral_stats(uid)
+        minimum = float(get_setting("min_withdrawal", "1") or 1)
+
+        if pending < minimum:
+            await edit_or_send(
+                q,
+                f"""💸 <b>Withdraw Referral Earnings</b>
+
+❌ Minimum withdrawal not reached.
+
+💰 <b>Available:</b> <code>{pending:.6f} USDT</code>
+📌 <b>Minimum:</b> <code>{minimum:.6f} USDT</code>""",
+                profile_menu()
+            )
+            return
+
+        user_state[uid] = "withdraw_referral"
+        await edit_or_send(
+            q,
+            f"""💸 <b>Withdraw Referral Earnings</b>
+
+💰 <b>Available:</b> <code>{pending:.6f} USDT</code>
+
+Send in this format:
+<code>AMOUNT | WALLET_ADDRESS</code>
+
+Example:
+<code>1.5 | 0xYourBEP20Wallet</code>""",
+            profile_menu()
+        )
+        return
+
+    if data == "withdraw_history":
+        rows = get_user_withdrawals(uid, 10)
+        text = "📂 <b>Withdrawal History</b>\\n\\n"
+        if not rows:
+            text += "No withdrawal requests yet."
+        else:
+            for wid, amount, wallet, status, note, created, updated in rows:
+                icon = "🟡" if status == "pending" else "🟢" if status == "approved" else "🔴"
+                text += (
+                    f"{icon} <b>Request #{wid}</b>\\n"
+                    f"💰 Amount: <code>{amount:.6f} USDT</code>\\n"
+                    f"📍 Status: <b>{status}</b>\\n"
+                    f"👛 Wallet: <code>{wallet}</code>\\n"
+                )
+                if note:
+                    text += f"📝 Note: {note}\\n"
+                text += f"🕒 <code>{created}</code>\\n\\n"
+
+        if len(text) > 3900:
+            text = text[:3900] + "\\n..."
+
+        await edit_or_send(q, text, profile_menu())
+        return
+
+    if data == "support":
+        await edit_or_send(
+            q,
+            f"""🎫 <b>Support Ticket</b>
+
+Need help with payment, order, or product?
+
+Create a ticket and admin will reply inside the bot.
+
+For faster help, include:
+• Order ID
+• Payment TXID if payment issue
+• Screenshot/video proof if needed
+
+👑 Admin: {ADMIN_USERNAME}""",
+            support_menu()
+        )
+        return
+
+    if data == "create_ticket":
+        user_state[uid] = "create_ticket"
+        await edit_or_send(
+            q,
+            """🎫 <b>Create Support Ticket</b>
+
+Send your issue in this format:
+
+<code>Subject | Your message</code>
+
+Example:
+<code>Payment issue | I paid but balance not added. TXID: ...</code>""",
+            support_menu()
+        )
+        return
+
+    if data == "my_tickets":
+        rows = get_user_tickets(uid, 10)
+        text = "📂 <b>My Tickets</b>\n\n"
+
+        if not rows:
+            text += "No tickets found."
+        else:
+            for ticket_id, subject, message, status, admin_reply, created, updated in rows:
+                status_icon = "🟢 Open" if status == "open" else "✅ Answered" if status == "answered" else "🔒 Closed"
+                short_msg = message[:120] + "..." if len(message) > 120 else message
+                text += (
+                    f"🎫 <b>Ticket #{ticket_id}</b>\n"
+                    f"📌 <b>Subject:</b> {subject}\n"
+                    f"📍 <b>Status:</b> {status_icon}\n"
+                    f"📝 <b>Message:</b> {short_msg}\n"
+                )
+
+                if admin_reply:
+                    text += f"👑 <b>Admin Reply:</b> {admin_reply}\n"
+
+                text += "\n"
+
+
+        if len(text) > 3900:
+            text = text[:3900] + "\n..."
+
+        await edit_or_send(q, text, support_menu())
+        return
+
+    if data == "clear_chat":
+        await edit_or_send(
+            q,
+            "🧹 <b>Done.</b>\n\nUse <code>/start</code> to open the menu again.",
+            back_home()
+        )
+        return
+
+    if data == "admin_panel":
+        await show_admin_panel(q, uid)
+        return
+
+    if data.startswith("admin_"):
+        handled = await handle_admin_callback(q, uid, data, context)
+        if handled:
+            return
+
+
+async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    uid = user.id
+    text = update.message.text.strip()
+
+    ensure_user(user)
+
+    try:
+        welcome_coupon = get_setting("auto_welcome_coupon", "")
+        if welcome_coupon:
+            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (uid,))
+            order_count = cur.fetchone()[0]
+            if order_count == 0:
+                set_user_coupon(uid, welcome_coupon)
+    except Exception:
+        pass
+
+    if is_blocked(uid):
+        await update.message.reply_text(
+            "🚫 <b>Access Denied</b>\n\nYour account is blocked from using this bot.",
+            parse_mode="HTML"
+        )
+        return
+
+    if is_rate_limited(uid):
+        await update.message.reply_text(
+            f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(uid) or 2} seconds before sending another message.",
+            parse_mode="HTML"
+        )
+        return
+
+    state = user_state.get(uid)
+
+    if state and state.startswith("checkout_coupon_code:"):
+        try:
+            state_parts = state.split(":")
+            pid = int(state_parts[1])
+            qty = int(state_parts[2])
+            code = text.strip().upper()
+
+            coupon, error = validate_coupon(code)
+            if not coupon:
+                await update.message.reply_text(
+                    f"❌ <b>Invalid Coupon</b>\n\n{error}",
+                    parse_mode="HTML"
+                )
+                return
+
+            set_user_coupon(uid, code)
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                f"""✅ <b>Coupon Applied</b>
+
+🎟 Code: <code>{code}</code>
+💝 Discount: <code>{coupon['value']}{'%' if coupon['discount_type'] == 'percent' else ' USDT'}</code>
+
+Now open checkout again to see the updated final price.""",
+                parse_mode="HTML"
+            )
+
+            class MessageQuery:
+                def __init__(self, message, from_user):
+                    self.message = message
+                    self.from_user = from_user
+                    self.data = ""
+
+                async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
+                    await self.message.reply_text(
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=disable_web_page_preview,
+                    )
+
+            fake_q = MessageQuery(update.message, user)
+            await show_order_preview(fake_q, uid, pid, qty)
+            return
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Could not apply coupon.</b>\n\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+            return
+
+            set_user_coupon(uid, code)
+            user_state.pop(uid, None)
+
+            class MessageQuery:
+                def __init__(self, message, from_user):
+                    self.message = message
+                    self.from_user = from_user
+                    self.data = ""
+
+                async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
+                    await self.message.reply_text(
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=disable_web_page_preview,
+                    )
+
+            fake_q = MessageQuery(update.message, user)
+            await show_order_preview(fake_q, uid, pid, qty)
+            return
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Could not apply coupon.</b>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "apply_coupon_code":
+        try:
+            code = text.strip().upper()
+            coupon, error = validate_coupon(code)
+
+            if not coupon:
+                await update.message.reply_text(
+                    f"❌ <b>Invalid Coupon</b>\n\n{error}",
+                    parse_mode="HTML"
+                )
+                return
+
+            set_user_coupon(uid, code)
+            user_state.pop(uid, None)
+
+            dtype = "%" if coupon["discount_type"] == "percent" else "USDT"
+            await update.message.reply_text(
+                f"""✅ <b>Coupon Applied</b>
+
+🎟 Code: <code>{code}</code>
+💰 Discount: <code>{coupon['value']}{dtype}</code>
+
+It will be used on your next checkout.""",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+            return
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Could not apply coupon.</b>\n\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+            return
+
+        set_user_coupon(uid, code)
+        user_state.pop(uid, None)
+
+        dtype = "%" if coupon["discount_type"] == "percent" else "USDT"
+        await update.message.reply_text(
+            f"""✅ <b>Coupon Applied</b>
+
+🎟 Code: <code>{code}</code>
+💰 Discount: <code>{coupon['value']}{dtype}</code>
+
+It will be used on your next wallet purchase.""",
+            reply_markup=main_menu(uid),
+            parse_mode="HTML"
+        )
+        return
+
+    if state and state.startswith("custom_buy_qty:"):
+        try:
+            pid = int(state.split(":")[1])
+            qty = int(text.strip())
+
+            if qty <= 0:
+                await update.message.reply_text("❌ Quantity must be more than 0.", parse_mode="HTML")
+                return
+
+            user_state.pop(uid, None)
+
+            class MessageQuery:
+                def __init__(self, message, from_user):
+                    self.message = message
+                    self.from_user = from_user
+                    self.data = ""
+
+                async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
+                    await self.message.reply_text(
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=disable_web_page_preview,
+                    )
+
+            fake_q = MessageQuery(update.message, user)
+            await show_order_preview(fake_q, uid, pid, qty)
+            return
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Invalid quantity.</b>\n\nSend only a number, example: <code>13</code>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "user_search_product":
+        try:
+            keyword = text.strip()
+            if not keyword:
+                await update.message.reply_text("❌ Please send a search keyword.", parse_mode="HTML")
+                return
+
+            cur.execute(
+                """
+                SELECT id, name, price, stock
+                FROM products
+                WHERE active=1 AND (name LIKE ? OR description LIKE ?)
+                ORDER BY featured DESC, id DESC
+                LIMIT 10
+                """,
+                (f"%{keyword}%", f"%{keyword}%")
+            )
+            rows = cur.fetchall()
+            user_state.pop(uid, None)
+
+            if not rows:
+                await update.message.reply_text(
+                    f"🔍 <b>No products found for:</b> <code>{keyword}</code>",
+                    reply_markup=main_menu(uid),
+                    parse_mode="HTML"
+                )
+                return
+
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            buttons = []
+            msg = f"🔍 <b>Search Results for:</b> <code>{keyword}</code>\n\n"
+            for pid, name, price, stock in rows:
+                msg += f"• <b>{name}</b> — <code>${float(price):.2f}</code> | Stock: <code>{stock}</code>\n"
+                buttons.append([InlineKeyboardButton(f"🛍 {name[:35]}", callback_data=f"product_{pid}")])
+            buttons.append([InlineKeyboardButton("◀️ Back", callback_data="home")])
+
+            await update.message.reply_text(
+                msg,
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode="HTML"
+            )
+            return
+
+        except Exception as exc:
+            user_state.pop(uid, None)
+            await update.message.reply_text(
+                f"❌ <b>Search failed.</b>\n\n<code>{exc}</code>",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "deposit_amount":
+        await handle_deposit_amount(update, uid, text)
+        return
+
+    if state == "withdraw_referral":
+        try:
+            amount_text, wallet = [x.strip() for x in text.split("|", 1)]
+            amount = float(amount_text)
+            minimum = float(get_setting("min_withdrawal", "1") or 1)
+
+            if amount < minimum:
+                await update.message.reply_text(
+                    f"❌ <b>Minimum withdrawal is {minimum:.6f} USDT.</b>",
+                    parse_mode="HTML"
+                )
+                return
+
+            request_id = create_withdrawal_request(uid, amount, wallet)
+            user_state.pop(uid, None)
+
+            if not request_id:
+                await update.message.reply_text(
+                    "❌ <b>Withdrawal failed.</b>\\n\\nCheck your available referral balance.",
+                    reply_markup=profile_menu(),
+                    parse_mode="HTML"
+                )
+                return
+
+            await update.message.reply_text(
+                f"""✅ <b>Withdrawal Request Created</b>
+
+🧾 <b>Request ID:</b> <code>#{request_id}</code>
+💰 <b>Amount:</b> <code>{amount:.6f} USDT</code>
+👛 <b>Wallet:</b> <code>{wallet}</code>
+
+Admin will review your request.""",
+                reply_markup=profile_menu(),
+                parse_mode="HTML"
+            )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "💸 <b>New Withdrawal Request</b>\\n\\n"
+                        f"🧾 Request: <code>#{request_id}</code>\\n"
+                        f"👤 User: <code>{uid}</code>\\n"
+                        f"💰 Amount: <code>{amount:.6f} USDT</code>\\n"
+                        f"👛 Wallet: <code>{wallet}</code>\\n\\n"
+                        "Admin Panel → Withdrawals"
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+            return
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Wrong Format</b>\\n\\nUse: <code>AMOUNT | WALLET_ADDRESS</code>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "support_ticket_message":
+        try:
+            subject = "Support Ticket"
+            message = text.strip()
+
+            if not message:
+                raise ValueError("empty")
+
+            ticket_id = create_ticket(uid, subject, message)
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                f"""✅ <b>Ticket Created</b>
+
+🎫 <b>Ticket ID:</b> <code>#{ticket_id}</code>
+
+Admin will reply soon.""",
+                reply_markup=support_menu(),
+                parse_mode="HTML"
+            )
+
+            try:
+                from config import ADMIN_ID
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "🎫 <b>New Support Ticket</b>\n\n"
+                        f"🧾 <b>Ticket:</b> <code>#{ticket_id}</code>\n"
+                        f"👤 <b>User:</b> <code>{uid}</code>\n"
+                        f"📌 <b>Subject:</b> {subject}\n"
+                        f"📝 <b>Message:</b> {message}\n\n"
+                        f"Reply: <code>/replyticket {ticket_id} your reply</code>"
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+            return
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Please send your issue/message.</b>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "create_ticket":
+        try:
+            subject, message = [x.strip() for x in text.split("|", 1)]
+
+            if not subject or not message:
+                raise ValueError("empty")
+
+            ticket_id = create_ticket(uid, subject, message)
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                f"""✅ <b>Ticket Created</b>
+
+🎫 <b>Ticket ID:</b> <code>#{ticket_id}</code>
+📌 <b>Subject:</b> {subject}
+
+Admin will reply soon.""",
+                reply_markup=support_menu(),
+                parse_mode="HTML"
+            )
+
+            try:
+                from config import ADMIN_ID
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "🎫 <b>New Support Ticket</b>\n\n"
+                        f"🧾 <b>Ticket:</b> <code>#{ticket_id}</code>\n"
+                        f"👤 <b>User:</b> <code>{uid}</code>\n"
+                        f"📌 <b>Subject:</b> {subject}\n"
+                        f"📝 <b>Message:</b> {message}\n\n"
+                        f"Reply: <code>/replyticket {ticket_id} your reply</code>"
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+            return
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Wrong Format</b>\n\nUse: <code>Subject | Your message</code>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state and state.startswith("admin_"):
+        handled = await handle_admin_message(update, context, uid, text, state)
+        if handled:
+            return
+
+    await update.message.reply_text(
+        "ℹ️ Use <code>/start</code> to open the menu.",
+        parse_mode="HTML"
+    )
+
+
+async def photo_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    uid = user.id
+    ensure_user(user)
+
+    try:
+        welcome_coupon = get_setting("auto_welcome_coupon", "")
+        if welcome_coupon:
+            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (uid,))
+            order_count = cur.fetchone()[0]
+            if order_count == 0:
+                set_user_coupon(uid, welcome_coupon)
+    except Exception:
+        pass
+
+    if not is_admin(uid):
+        return
+
+    state = user_state.get(uid)
+
+    if state and state.startswith("checkout_coupon_code:"):
+        try:
+            _, pid_text, qty_text = state.split(":")
+            pid = int(pid_text)
+            qty = int(qty_text)
+            code = text.strip().upper()
+
+            coupon, error = validate_coupon(code)
+            if not coupon:
+                await update.message.reply_text(
+                    f"❌ <b>Invalid Coupon</b>\n\n{error}",
+                    parse_mode="HTML"
+                )
+                return
+
+            set_user_coupon(uid, code)
+            user_state.pop(uid, None)
+
+            class MessageQuery:
+                def __init__(self, message, from_user):
+                    self.message = message
+                    self.from_user = from_user
+                    self.data = ""
+
+                async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
+                    await self.message.reply_text(
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=disable_web_page_preview,
+                    )
+
+            fake_q = MessageQuery(update.message, user)
+            await show_order_preview(fake_q, uid, pid, qty)
+            return
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Could not apply coupon.</b>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "apply_coupon_code":
+        code = text.strip().upper()
+        coupon, error = validate_coupon(code)
+
+        if not coupon:
+            await update.message.reply_text(
+                f"❌ <b>Invalid Coupon</b>\n\n{error}",
+                parse_mode="HTML"
+            )
+            return
+
+        set_user_coupon(uid, code)
+        user_state.pop(uid, None)
+
+        dtype = "%" if coupon["discount_type"] == "percent" else "USDT"
+        await update.message.reply_text(
+            f"""✅ <b>Coupon Applied</b>
+
+🎟 Code: <code>{code}</code>
+💰 Discount: <code>{coupon['value']}{dtype}</code>
+
+It will be used on your next wallet purchase.""",
+            reply_markup=main_menu(uid),
+            parse_mode="HTML"
+        )
+        return
+
+    if state and state.startswith("custom_buy_qty:"):
+        try:
+            pid = int(state.split(":")[1])
+            qty = int(text.strip())
+
+            if qty <= 0:
+                await update.message.reply_text("❌ Quantity must be more than 0.", parse_mode="HTML")
+                return
+
+            user_state.pop(uid, None)
+
+            class MessageQuery:
+                def __init__(self, message, from_user):
+                    self.message = message
+                    self.from_user = from_user
+                    self.data = ""
+
+                async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
+                    await self.message.reply_text(
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=disable_web_page_preview,
+                    )
+
+            fake_q = MessageQuery(update.message, user)
+            await show_order_preview(fake_q, uid, pid, qty)
+            return
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Invalid quantity.</b>\n\nSend only a number, example: <code>13</code>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "admin_add_product_photo":
+        try:
+            admin_temp_data = None
+            from admin.admin_handlers import admin_temp_data, add_product_preview_text, add_product_preview_keyboard
+            file_id = update.message.photo[-1].file_id
+            admin_temp_data.setdefault(uid, {})["image_file_id"] = file_id
+            user_state[uid] = "admin_add_product_stock"
+            await update.message.reply_text(
+                "✅ <b>Photo saved.</b>\n\n🔑 Now send stock codes/accounts, one per line.",
+                parse_mode="HTML"
+            )
+        except Exception as exc:
+            await update.message.reply_text(f"❌ <b>Photo save failed.</b>\n\n<code>{exc}</code>", parse_mode="HTML")
+        return
+
+    if state and state.startswith("admin_easy_edit:") and state.endswith(":photo"):
+        try:
+            from database.db import get_setting, set_user_coupon,  render_message_template,  set_product_image
+            product_id = int(state.split(":")[1])
+            file_id = update.message.photo[-1].file_id
+            set_product_image(product_id, file_id)
+            user_state.pop(uid, None)
+            await update.message.reply_text(
+                f"✅ <b>Product photo updated.</b>\n\n🆔 Product ID: <code>{product_id}</code>",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+        except Exception as exc:
+            await update.message.reply_text(f"❌ <b>Image save failed.</b>\n\n<code>{exc}</code>", parse_mode="HTML")
+        return
+
+    if state == "admin_wait_product_image":
+        try:
+            from database.db import get_setting, set_user_coupon,  render_message_template,  set_product_image
+            product_id = context.user_data.get("image_product_id")
+            if not product_id:
+                await update.message.reply_text("❌ Product ID missing. Start again from Admin Panel.", parse_mode="HTML")
+                user_state.pop(uid, None)
+                return
+
+            file_id = update.message.photo[-1].file_id
+            set_product_image(int(product_id), file_id)
+            user_state.pop(uid, None)
+            context.user_data.pop("image_product_id", None)
+
+            await update.message.reply_text(
+                f"✅ <b>Product image saved.</b>\\n\\n🆔 Product ID: <code>{product_id}</code>",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Image save failed.</b>\\n\\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+
+
+
+async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    uid = user.id
+    state = user_state.get(uid)
+
+    if state == "admin_restore_backup" and is_admin(uid):
+        try:
+            doc = update.message.document
+            if not doc.file_name.lower().endswith(".zip"):
+                await update.message.reply_text("❌ Please send a .zip backup file.", parse_mode="HTML")
+                return
+
+            file = await context.bot.get_file(doc.file_id)
+            restore_dir = Path("restore_uploads")
+            restore_dir.mkdir(exist_ok=True)
+            file_path = restore_dir / doc.file_name
+            await file.download_to_drive(str(file_path))
+
+            ok, msg = restore_backup_zip(str(file_path))
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                ("✅ " if ok else "❌ ") + f"<b>{msg}</b>",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+            return
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Restore failed.</b>\n\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+            return
+
+    await update.message.reply_text("ℹ️ Document received, but no document action is active.", parse_mode="HTML")

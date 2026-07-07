@@ -1,0 +1,4962 @@
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+import time
+import io
+import csv
+import os
+import shutil
+from datetime import datetime, timedelta
+
+from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, render_message_template, cur, conn, is_admin, is_owner, add_admin, remove_admin, get_admins, add_balance, add_stock_items, get_available_stock_count, get_sold_stock_count, get_total_stock_count, restock_product, block_user, unblock_user, log_admin_action, get_admin_logs, update_product_details, get_open_tickets, get_ticket, reply_ticket, close_ticket, get_pending_withdrawals, update_withdrawal_status, set_setting, get_setting, set_product_featured, remove_product_image, get_product_price_tiers, set_product_price_tier, delete_product_price_tier, clear_product_price_tiers, validate_coupon, list_message_templates, get_message_template, set_message_template, smart_dashboard_stats, clear_admin_logs, create_backup_zip, restore_backup_zip
+from utils.crypto import decrypt_text
+from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
+from config import DB_PATH, ADMIN_ID
+from utils.ui import edit_or_send
+from utils.states import user_state
+from utils.timezone import now, now_text, today_prefix, month_prefix
+
+admin_temp_data = {}
+
+def smart_dashboard_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📦 Products", callback_data="admin_section_products"), InlineKeyboardButton("🛒 Orders", callback_data="admin_orders")],
+        [InlineKeyboardButton("🎫 Tickets", callback_data="admin_ticket_manager"), InlineKeyboardButton("⚠️ Low Stock", callback_data="admin_low_stock")],
+        [InlineKeyboardButton("📈 Sales Analytics", callback_data="admin_sales_analytics"), InlineKeyboardButton("🤖 Auto Marketing", callback_data="admin_auto_marketing")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="admin_smart_dashboard")],
+    ])
+
+
+def ticket_manager_keyboard(ticket_id=None, user_id=None):
+    if ticket_id and user_id:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 Reply", callback_data=f"admin_ticket_reply_{ticket_id}")],
+            [InlineKeyboardButton("✅ Close", callback_data=f"admin_ticket_close_{ticket_id}")],
+            [InlineKeyboardButton("🚫 Ban User", callback_data=f"admin_ticket_ban_{user_id}")],
+            [InlineKeyboardButton("⬅️ Tickets", callback_data="admin_ticket_manager")],
+        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Refresh", callback_data="admin_ticket_manager")],
+        [InlineKeyboardButton("⬅️ Support Menu", callback_data="admin_section_support")],
+    ])
+
+
+def auto_marketing_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎁 Welcome Coupon", callback_data="admin_set_welcome_coupon")],
+        [InlineKeyboardButton("😴 Inactive Coupon", callback_data="admin_set_inactive_coupon")],
+        [InlineKeyboardButton("📅 Inactive Days", callback_data="admin_set_inactive_days")],
+        [InlineKeyboardButton("⬅️ Marketing", callback_data="admin_section_marketing")],
+    ])
+
+
+def auto_marketing_text():
+    welcome = get_setting("auto_welcome_coupon", "")
+    inactive = get_setting("inactive_coupon", "")
+    days = get_setting("inactive_days", "7")
+    return f"""🤖 <b>Auto Marketing System</b>
+
+🎁 <b>New User Welcome Coupon:</b> <code>{welcome or 'OFF'}</code>
+😴 <b>Inactive User Coupon:</b> <code>{inactive or 'OFF'}</code>
+📅 <b>Inactive After:</b> <code>{days} days</code>
+
+Notes:
+• Welcome coupon is sent when a new user starts the bot.
+• Inactive coupon is checked by marketing worker.
+• Set empty value to disable a coupon trigger."""
+
+
+def scheduled_broadcast_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Schedule Broadcast", callback_data="admin_schedule_broadcast")],
+        [InlineKeyboardButton("📋 View Scheduled", callback_data="admin_view_scheduled_broadcasts")],
+        [InlineKeyboardButton("⬅️ Marketing", callback_data="admin_section_marketing")],
+    ])
+
+
+def sales_analytics_text():
+    cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders")
+    total_revenue, total_orders = cur.fetchone()
+    cur.execute("SELECT COUNT(*) FROM users")
+    users_count = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(amount),0), COUNT(*) FROM deposits WHERE status='paid'")
+    dep_total, dep_count = cur.fetchone()
+    cur.execute("""
+        SELECT product_name, COUNT(*) c, COALESCE(SUM(price),0) r
+        FROM orders
+        GROUP BY product_name
+        ORDER BY r DESC
+        LIMIT 5
+    """)
+    products = cur.fetchall()
+
+    product_text = ""
+    for i, (name, count, revenue) in enumerate(products, 1):
+        product_text += f"\n{i}. {name[:35]} — <code>${float(revenue):.2f}</code> / <code>{count}</code> orders"
+
+    if not product_text:
+        product_text = "\nNo sales yet."
+
+    avg_order = float(total_revenue or 0) / int(total_orders or 1)
+
+    return f"""📈 <b>Sales Analytics Dashboard</b>
+
+💰 <b>Total Revenue:</b> <code>${float(total_revenue or 0):.2f}</code>
+🛒 <b>Total Orders:</b> <code>{total_orders}</code>
+👥 <b>Total Users:</b> <code>{users_count}</code>
+💳 <b>Paid Deposits:</b> <code>{dep_count}</code> | <code>${float(dep_total or 0):.2f}</code>
+📊 <b>Average Order:</b> <code>${avg_order:.2f}</code>
+
+🏆 <b>Top Revenue Products</b>{product_text}"""
+
+
+def message_templates_keyboard():
+    rows = []
+    for key, title, updated in list_message_templates():
+        rows.append([InlineKeyboardButton(f"✏️ {title}", callback_data=f"admin_edit_template_{key}")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def template_help_text(key: str):
+    placeholders = {
+        "welcome": "{store}",
+        "delivery_success": "{order_id}, {product}, {code}, {paid}, {balance}, {user}",
+        "coupon_broadcast": "{code}, {discount}, {validity}, {limit}",
+        "flash_sale_broadcast": "{product}, {old_price}, {new_price}, {discount}, {validity}",
+        "restock_alert": "{product}, {stock}",
+        "deposit_success": "{amount}",
+    }
+    return placeholders.get(key, "Type your message normally.")
+
+
+def template_example_text(key: str):
+    examples = {
+        "delivery_success": "✅ Payment Successful!\n\n📦 {product}\n\n🔑 Code:\n{code}\n\n💰 Paid: {paid}\n💼 Balance: {balance}\n\nThank you ❤️",
+        "welcome": "👋 Welcome to {store}\n\nChoose an option below 👇",
+        "coupon_broadcast": "🎟 New Coupon!\n\nCode: {code}\nDiscount: {discount}\nValid: {validity}",
+        "flash_sale_broadcast": "🔥 Flash Sale!\n\n📦 {product}\nWas: {old_price}\nNow: {new_price}\n⏳ {validity}",
+        "restock_alert": "🔔 Back in stock!\n\n📦 {product}\nAvailable: {stock}",
+        "deposit_success": "✅ Deposit Confirmed\n\nAmount: {amount} USDT",
+    }
+    return examples.get(key, "Type the exact message you want.")
+
+
+def admin_sales_settings_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎉 First Purchase Discount", callback_data="admin_set_first_discount")],
+        [InlineKeyboardButton("💎 Loyalty Percent", callback_data="admin_set_loyalty_percent")],
+        [InlineKeyboardButton("🎁 Buy X Get Y", callback_data="admin_set_buyxgety")],
+        [InlineKeyboardButton("⬅️ Marketing Menu", callback_data="admin_section_marketing")],
+    ])
+
+
+def sales_settings_text():
+    first = get_setting("first_purchase_discount_percent", "0")
+    loyalty = get_setting("loyalty_percent", "2")
+    buyx = get_setting("buy_x_qty", "0")
+    free = get_setting("buy_x_free", "0")
+    return f"""💎 <b>Sales Settings</b>
+
+🎉 First Purchase Discount: <code>{first}%</code>
+💎 Loyalty Cashback Points: <code>{loyalty}%</code>
+🎁 Buy X Get Y: <code>Buy {buyx}, Get {free} Free</code>
+
+Choose what to edit:"""
+
+
+def user_management_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚫 Ban User", callback_data="admin_ban_user")],
+        [InlineKeyboardButton("✅ Unban User", callback_data="admin_unban_user")],
+        [InlineKeyboardButton("⬅️ Orders & Users", callback_data="admin_section_orders_users")],
+    ])
+
+
+
+async def broadcast_coupon_created(context, code: str, dtype: str, value: float, max_uses: int, expires_at: str):
+    """Broadcast newly created coupon to all users."""
+    try:
+        cur.execute("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
+        users = cur.fetchall()
+
+        if dtype == "percent":
+            discount_text = f"{value:g}% OFF"
+        else:
+            discount_text = f"${value:.2f} OFF"
+
+        validity_text = "Limited time"
+        try:
+            end_dt = datetime.strptime(str(expires_at), "%Y-%m-%d %H:%M:%S")
+            remaining = end_dt - datetime.strptime(now().strftime("%Y-%m-%d %H:%M:%S"), "%Y-%m-%d %H:%M:%S")
+            hours = max(1, int(remaining.total_seconds() // 3600))
+            validity_text = f"Valid for {hours}h"
+        except Exception:
+            if expires_at:
+                validity_text = str(expires_at)
+
+        uses_text = "Unlimited uses" if not max_uses else f"Only {max_uses} uses"
+
+        msg = render_message_template(
+            "coupon_broadcast",
+            "🎟 <b>NEW COUPON AVAILABLE!</b>\n\n💝 <b>Discount:</b> <code>{discount}</code>\n🎫 <b>Coupon Code:</b> <code>{code}</code>\n⏳ <b>Validity:</b> <code>{validity}</code>\n🔥 <b>Limit:</b> <code>{limit}</code>\n\nApply this coupon before checkout and save on your next purchase 👇",
+            discount=discount_text,
+            code=code,
+            validity=validity_text,
+            limit=uses_text,
+        )
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛍 Shop Now", callback_data="shop")],
+            [InlineKeyboardButton("🎟 Apply Coupon", callback_data="apply_coupon")]
+        ])
+
+        sent = 0
+        failed = 0
+
+        for row in users:
+            try:
+                await context.bot.send_message(
+                    chat_id=row[0],
+                    text=msg,
+                    reply_markup=kb,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+
+        log_admin_action(0, "COUPON_BROADCAST", f"code={code} sent={sent} failed={failed}")
+        return sent, failed
+
+    except Exception:
+        return 0, 0
+
+
+
+def admin_coupons_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Create Coupon", callback_data="admin_coupon_create")],
+        [InlineKeyboardButton("📋 List Coupons", callback_data="admin_coupon_list")],
+        [InlineKeyboardButton("🗑 Delete Coupon", callback_data="admin_coupon_delete")],
+        [InlineKeyboardButton("⬅️ Marketing Menu", callback_data="admin_section_marketing")],
+    ])
+
+
+def product_analytics_text(product_id: int):
+    cur.execute("SELECT name, price, stock FROM products WHERE id=?", (product_id,))
+    p = cur.fetchone()
+    if not p:
+        return None
+    name, price, stock = p
+    live_stock = get_available_stock_count(product_id)
+    cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE product_name LIKE ?", (f"%{name}%",))
+    orders, revenue = cur.fetchone()
+    cur.execute("SELECT COUNT(*) FROM product_stock WHERE product_id=? AND sold=1", (product_id,))
+    sold_stock = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM product_stock WHERE product_id=? AND sold=0", (product_id,))
+    available = cur.fetchone()[0]
+
+    return f"""📈 <b>Product Analytics</b>
+
+📦 <b>{name}</b>
+🆔 Product ID: <code>{product_id}</code>
+💰 Price: <code>${float(price):.2f}</code>
+
+🛒 Orders: <code>{orders}</code>
+💵 Revenue: <code>${float(revenue or 0):.2f}</code>
+📤 Delivered/Sold Stock: <code>{sold_stock}</code>
+📊 Available Stock: <code>{available or live_stock or stock}</code>"""
+
+
+def top_sellers_text():
+    cur.execute("""
+        SELECT product_name, COUNT(*) c, COALESCE(SUM(price),0) r
+        FROM orders
+        GROUP BY product_name
+        ORDER BY c DESC, r DESC
+        LIMIT 10
+    """)
+    rows = cur.fetchall()
+
+    text = "🏆 <b>Top Selling Products</b>\n\n"
+    if not rows:
+        return text + "No sales yet."
+
+    for i, (name, count, revenue) in enumerate(rows, 1):
+        text += f"{i}. <b>{name[:45]}</b>\n🛒 <code>{count}</code> orders | 💰 <code>${float(revenue):.2f}</code>\n\n"
+    return text
+
+
+def cleanup_report_text():
+    cur.execute("DELETE FROM user_coupons WHERE code NOT IN (SELECT code FROM coupons)")
+    orphan_coupons = cur.rowcount
+    cur.execute("UPDATE products SET flash_price=NULL, flash_ends_at=NULL WHERE flash_ends_at IS NOT NULL AND flash_ends_at < datetime('now')")
+    expired_sales = cur.rowcount
+    conn.commit()
+
+    return f"""🧹 <b>Cleanup Complete</b>
+
+🎟 Removed orphan user coupons: <code>{orphan_coupons}</code>
+🔥 Cleared expired flash sales: <code>{expired_sales}</code>
+
+Database cleaned safely."""
+
+def _now_text():
+    return now_text()
+
+
+def _parse_hours(hours_text):
+    hours = float(hours_text)
+    if hours <= 0:
+        hours = 24
+    return hours
+
+
+def flash_sale_text(product_id: int):
+    cur.execute("SELECT id, name, price, flash_price, flash_ends_at FROM products WHERE id=?", (product_id,))
+    p = cur.fetchone()
+    if not p:
+        return None
+    pid, name, price, flash_price, flash_ends_at = p
+    status = "OFF"
+    if flash_price and flash_ends_at:
+        try:
+            if datetime.strptime(flash_ends_at, "%Y-%m-%d %H:%M:%S") > now():
+                status = "🔥 ACTIVE"
+        except Exception:
+            pass
+    return f"""🔥 <b>Flash Sale</b>
+
+📦 <b>Product:</b> {name}
+🆔 <b>ID:</b> <code>{pid}</code>
+💰 <b>Normal Price:</b> <code>${float(price):.2f}</code>
+🔥 <b>Flash Price:</b> <code>{('$' + format(float(flash_price), '.2f')) if flash_price else 'Not set'}</code>
+⏳ <b>Ends:</b> <code>{flash_ends_at or 'Not set'}</code>
+🚦 <b>Status:</b> {status}
+
+Choose an action:"""
+
+
+def flash_sale_keyboard(product_id: int):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔥 Set Flash Sale", callback_data=f"admin_flash_set_{product_id}")],
+        [InlineKeyboardButton("🛑 Stop Flash Sale", callback_data=f"admin_flash_stop_{product_id}")],
+        [InlineKeyboardButton("⬅️ Choose Product", callback_data="admin_flash_sales")],
+        [InlineKeyboardButton("🏠 Products Menu", callback_data="admin_section_products")],
+    ])
+
+
+async def broadcast_flash_sale(context, product_id: int, name: str, old_price: float, new_price: float, ends_at: str):
+    try:
+        cur.execute("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
+        users = cur.fetchall()
+
+        discount = 0
+        if old_price > 0:
+            discount = round((old_price - new_price) / old_price * 100)
+
+        try:
+            ends_dt = datetime.strptime(ends_at, "%Y-%m-%d %H:%M:%S")
+            remaining = ends_dt - now()
+            hours_left = max(1, int(remaining.total_seconds() // 3600))
+            ends_text = f"ends in {hours_left}h"
+        except Exception:
+            ends_text = "limited time"
+
+        msg = render_message_template(
+            "flash_sale_broadcast",
+            "🧨 <b>FLASH SALE — LIMITED TIME!</b>\n\n📦 <b>{product_name}</b>\n\n💵 <b>Was:</b> <s>${old_price}</s>\n⚡ <b>Now:</b> <code>${new_price} USDT</code> <b>({discount_percent}% OFF)</b>\n\n🏃 <b>Hurry — {validity}</b>\nGrab it before the timer runs out 👇",
+            product_name=name,
+            old_price=f"{old_price:.2f}",
+            new_price=f"{new_price:.2f}",
+            discount_percent=f"-{discount}" if discount else "SALE",
+            validity=ends_text,
+        )
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"🛒 Buy {name[:28]}", callback_data=f"product_{product_id}")]
+        ])
+
+        sent = 0
+        failed = 0
+
+        for row in users:
+            try:
+                await context.bot.send_message(
+                    chat_id=row[0],
+                    text=msg,
+                    reply_markup=kb,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+
+        log_admin_action(0, "FLASH_SALE_BROADCAST", f"product={product_id} sent={sent} failed={failed}")
+        return sent, failed
+
+    except Exception:
+        return 0, 0
+
+
+def admin_stats_text():
+    today = today_prefix()
+    month = month_prefix()
+    cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders")
+    total_revenue, total_orders = cur.fetchone()
+    cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE created LIKE ?", (today + "%",))
+    today_revenue, today_orders = cur.fetchone()
+    cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE created LIKE ?", (month + "%",))
+    month_revenue, month_orders = cur.fetchone()
+    cur.execute("SELECT COUNT(*) FROM users")
+    total_users = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM products WHERE active=1")
+    active_products = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(stock),0) FROM products WHERE active=1")
+    visible_stock = cur.fetchone()[0] or 0
+    cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM deposits WHERE status='paid'")
+    paid_deposits, deposit_value = cur.fetchone()
+    cur.execute("SELECT product_name, COUNT(*) c, COALESCE(SUM(price),0) r FROM orders GROUP BY product_name ORDER BY c DESC LIMIT 5")
+    top = cur.fetchall()
+
+    top_text = ""
+    if top:
+        for i, (product, count, revenue) in enumerate(top, 1):
+            top_text += f"\n{i}. {product[:35]} — <code>{count}</code> sales | <code>${float(revenue):.2f}</code>"
+    else:
+        top_text = "\nNo sales yet."
+
+    return f"""📊 <b>Statistics Dashboard</b>
+
+<b>Today</b>
+🛒 Orders: <code>{today_orders}</code>
+💰 Revenue: <code>${float(today_revenue):.2f}</code>
+
+<b>This Month</b>
+🛒 Orders: <code>{month_orders}</code>
+💰 Revenue: <code>${float(month_revenue):.2f}</code>
+
+<b>All Time</b>
+🛒 Orders: <code>{total_orders}</code>
+💰 Revenue: <code>${float(total_revenue):.2f}</code>
+👥 Users: <code>{total_users}</code>
+📦 Active Products: <code>{active_products}</code>
+📊 Visible Stock: <code>{visible_stock}</code>
+💳 Paid Deposits: <code>{paid_deposits}</code> | <code>${float(deposit_value):.2f}</code>
+
+🏆 <b>Top Products</b>{top_text}"""
+
+
+def admin_stats_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Refresh", callback_data="admin_stats_dashboard")],
+        [InlineKeyboardButton("⚠️ Low Stock", callback_data="admin_low_stock")],
+        [InlineKeyboardButton("⬅️ System Menu", callback_data="admin_section_system")],
+    ])
+
+
+def order_search_results_keyboard(rows):
+    kb = []
+    for oid, user_id, product_name, price, created in rows:
+        kb.append([InlineKeyboardButton(f"#{oid} • ${float(price):.2f} • {str(product_name)[:26]}", callback_data=f"admin_order_detail_{oid}")])
+    kb.append([InlineKeyboardButton("🔎 Search Again", callback_data="admin_search_order_menu")])
+    kb.append([InlineKeyboardButton("⬅️ Orders", callback_data="admin_orders")])
+    return InlineKeyboardMarkup(kb)
+
+
+def admin_orders_list_keyboard(limit: int = 20):
+    cur.execute("SELECT id, user_id, product_name, price, created FROM orders ORDER BY id DESC LIMIT ?", (limit,))
+    rows = cur.fetchall()
+    kb = []
+    for oid, user_id, product_name, price, created in rows:
+        kb.append([InlineKeyboardButton(f"#{oid} • ${price:.2f} • {str(product_name)[:28]}", callback_data=f"admin_order_detail_{oid}")])
+    kb.append([InlineKeyboardButton("🔎 Search Orders", callback_data="admin_search_orders")])
+    kb.append([InlineKeyboardButton("⬅️ Orders & Users", callback_data="admin_section_orders_users")])
+    return InlineKeyboardMarkup(kb)
+
+def admin_order_detail_keyboard(order_id: int, user_id: int):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Resend Delivery", callback_data=f"admin_order_resend_{order_id}")],
+        [InlineKeyboardButton("💸 Refund Order", callback_data=f"admin_order_refund_{order_id}")],
+        [InlineKeyboardButton("👤 View User", callback_data=f"admin_order_user_{user_id}")],
+        [InlineKeyboardButton("🗑 Delete Order Log", callback_data=f"admin_order_delete_{order_id}")],
+        [InlineKeyboardButton("⬅️ Back To Orders", callback_data="admin_orders")],
+    ])
+
+def get_order_detail_text(order_id: int):
+    cur.execute("SELECT id, user_id, product_name, price, delivery, created FROM orders WHERE id=?", (order_id,))
+    order = cur.fetchone()
+    if not order:
+        return None, None, None
+    oid, user_id, product_name, price, delivery, created = order
+    delivery = decrypt_text(delivery)
+    cur.execute("SELECT first_name, username, balance, blocked, joined FROM users WHERE user_id=?", (user_id,))
+    u = cur.fetchone()
+    if u:
+        first_name, username, balance, blocked, joined = u
+        uname = f"@{username}" if username and username != "No username" else "No username"
+        status = "🚫 Blocked" if blocked else "✅ Active"
+    else:
+        first_name, uname, balance, status, joined = "Unknown", "Unknown", 0, "Unknown", "Unknown"
+    qty = 1
+    if " x" in str(product_name):
+        try: qty = int(str(product_name).split(" x")[-1])
+        except Exception: qty = 1
+    text = f"""🧾 <b>Order Detail</b>
+
+🆔 <b>Order ID:</b> <code>#{oid}</code>
+📦 <b>Product:</b> {product_name}
+🔢 <b>Quantity:</b> <code>{qty}</code>
+💰 <b>Paid:</b> <code>${price:.2f}</code>
+🕒 <b>Date:</b> <code>{created}</code>
+
+━━━━━━━━━━━━━━
+👤 <b>User</b>
+
+🆔 <code>{user_id}</code>
+👤 <b>Name:</b> {first_name or 'User'}
+🔗 <b>Username:</b> {uname}
+💼 <b>Balance:</b> <code>${float(balance or 0):.2f}</code>
+🚦 <b>Status:</b> {status}
+
+━━━━━━━━━━━━━━
+🔑 <b>Delivered Code/Account</b>
+
+<code>{delivery}</code>"""
+    return text, user_id, delivery
+
+def price_offers_keyboard(product_id: int):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Add / Update Offer", callback_data=f"admin_offer_add_{product_id}")],
+        [InlineKeyboardButton("🗑 Delete Offer", callback_data=f"admin_offer_delete_{product_id}")],
+        [InlineKeyboardButton("🧹 Clear All Offers", callback_data=f"admin_offer_clear_{product_id}")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data=f"admin_offer_select_{product_id}")],
+        [InlineKeyboardButton("⬅️ Choose Product", callback_data="admin_price_offers")],
+        [InlineKeyboardButton("🏠 Products Menu", callback_data="admin_section_products")],
+    ])
+
+
+def get_price_offers_text(product_id: int):
+    cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
+    product = cur.fetchone()
+    if not product:
+        return None
+
+    name, base_price = product
+    tiers = get_product_price_tiers(product_id)
+
+    msg = f"""🏷 <b>Price Offers</b>
+
+📦 <b>Product:</b> {name}
+🆔 <b>Product ID:</b> <code>{product_id}</code>
+💰 <b>Base Price:</b> <code>${base_price:.2f}</code>
+
+━━━━━━━━━━━━━━
+"""
+
+    if not tiers:
+        msg += "\nNo custom offers set.\n\nDefault buttons will be shown:\n• 1 / 2 / 5 / 10 at normal price."
+    else:
+        for tid, qty, price in tiers:
+            msg += f"\n⚡ <b>{qty} for ${price:.2f}</b>"
+
+    msg += "\n\nChoose an option below:"
+    return msg
+
+
+def add_product_skip_keyboard(cancel_callback: str = "admin_section_products"):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ Skip", callback_data="admin_add_skip")],
+        [InlineKeyboardButton("❌ Cancel", callback_data=cancel_callback)],
+    ])
+
+
+
+def add_product_stock_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ Skip Stock", callback_data="admin_add_stock_skip")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="admin_add_cancel")],
+    ])
+
+
+def add_product_photo_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ Skip Photo", callback_data="admin_add_photo_skip")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="admin_section_products")],
+    ])
+
+
+def add_product_preview_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Publish Product", callback_data="admin_add_publish")],
+        [InlineKeyboardButton("✏️ Edit Name", callback_data="admin_add_edit_name"), InlineKeyboardButton("💰 Edit Price", callback_data="admin_add_edit_price")],
+        [InlineKeyboardButton("📝 Edit Description", callback_data="admin_add_edit_description")],
+        [InlineKeyboardButton("📌 Edit Validity", callback_data="admin_add_edit_validity"), InlineKeyboardButton("🛡 Edit Warranty", callback_data="admin_add_edit_warranty")],
+        [InlineKeyboardButton("📜 Edit Rules", callback_data="admin_add_edit_rules")],
+        [InlineKeyboardButton("🖼 Change Photo", callback_data="admin_add_edit_photo"), InlineKeyboardButton("🔑 Edit Stock", callback_data="admin_add_edit_stock")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="admin_add_cancel")],
+    ])
+
+
+def add_product_preview_text(uid: int):
+    data = admin_temp_data.get(uid, {})
+    name = data.get("name", "Not set")
+    price = float(data.get("price", 0) or 0)
+    description = data.get("description", "No description")
+    validity = data.get("validity", "Not mentioned")
+    warranty = data.get("warranty", "No warranty")
+    rules = data.get("rules", "No rules mentioned")
+    stock_items = data.get("stock_items", [])
+    photo = "✅ Added" if data.get("image_file_id") else "⏭ No photo"
+
+    return f"""👀 <b>Product Preview</b>
+
+📦 <b>Name:</b> {name}
+💰 <b>Price:</b> <code>${price:.2f}</code>
+📊 <b>Stock:</b> <code>{len(stock_items)}</code>
+🖼 <b>Photo:</b> {photo}
+
+📝 <b>Description:</b>
+{description}
+
+📌 <b>Validity:</b> {validity}
+🛡 <b>Warranty:</b> {warranty}
+
+📜 <b>Rules:</b>
+{rules}
+
+Choose what you want to do:"""
+
+
+def product_codes_keyboard(product_id: int):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Add Codes", callback_data=f"admin_codes_add_{product_id}")],
+        [InlineKeyboardButton("🗑 Delete Codes", callback_data=f"admin_codes_delete_{product_id}")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data=f"admin_codes_select_{product_id}")],
+        [InlineKeyboardButton("⬅️ Choose Product", callback_data="admin_manage_codes")],
+        [InlineKeyboardButton("🏠 Products Menu", callback_data="admin_section_products")],
+    ])
+
+
+def get_product_codes_text(product_id: int, limit: int = 80):
+    cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+    product = cur.fetchone()
+    if not product:
+        return None
+
+    product_name = product[0]
+
+    cur.execute("""
+        SELECT id, delivery, sold, sold_at
+        FROM product_stock
+        WHERE product_id=?
+        ORDER BY sold ASC, id DESC
+        LIMIT ?
+    """, (product_id, limit))
+    rows = cur.fetchall()
+
+    available = get_available_stock_count(product_id)
+    sold_count = get_sold_stock_count(product_id)
+    total = get_total_stock_count(product_id)
+
+    msg = f"""🧾 <b>Product Codes Manager</b>
+
+📦 <b>Product:</b> {product_name}
+🆔 <b>Product ID:</b> <code>{product_id}</code>
+
+✅ <b>Available:</b> <code>{available}</code>
+🔴 <b>Sold:</b> <code>{sold_count}</code>
+📊 <b>Total:</b> <code>{total}</code>
+
+━━━━━━━━━━━━━━
+"""
+
+    if not rows:
+        msg += "\nNo codes added for this product yet."
+        return msg
+
+    for sid, delivery, sold, sold_at in rows:
+        delivery = decrypt_text(delivery)
+        status = "🔴 SOLD" if sold else "✅ AVAILABLE"
+        msg += f"\n<b>Stock ID:</b> <code>{sid}</code> | {status}\n"
+        msg += f"<code>{delivery}</code>\n"
+        if sold_at:
+            msg += f"🕒 Sold: <code>{sold_at}</code>\n"
+
+        if len(msg) > 3700:
+            msg += "\n... Showing first codes only. Use delete by Stock ID."
+            break
+
+    msg += "\n\nTo delete codes, tap <b>Delete Codes</b> and send Stock IDs."
+    return msg
+
+
+def products_select_keyboard(prefix: str, back_callback: str = "admin_section_products", limit: int = 40):
+    cur.execute("SELECT id, name, price, stock, active FROM products ORDER BY id DESC LIMIT ?", (limit,))
+    rows = cur.fetchall()
+    kb = []
+    for pid, name, price, stock, active in rows:
+        status = "🟢" if active else "🔴"
+        kb.append([InlineKeyboardButton(f"{status} #{pid} • {name[:35]}", callback_data=f"{prefix}_{pid}")])
+    kb.append([InlineKeyboardButton("⬅️ Back", callback_data=back_callback)])
+    return InlineKeyboardMarkup(kb)
+
+def product_edit_options_keyboard(product_id: int):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Name", callback_data=f"admin_edit_field_{product_id}_name"), InlineKeyboardButton("💰 Price", callback_data=f"admin_edit_field_{product_id}_price")],
+        [InlineKeyboardButton("📝 Description", callback_data=f"admin_edit_field_{product_id}_description")],
+        [InlineKeyboardButton("📌 Validity", callback_data=f"admin_edit_field_{product_id}_validity"), InlineKeyboardButton("🛡 Warranty", callback_data=f"admin_edit_field_{product_id}_warranty")],
+        [InlineKeyboardButton("📜 Rules", callback_data=f"admin_edit_field_{product_id}_rules")],
+        [InlineKeyboardButton("🖼 Edit Photo", callback_data=f"admin_edit_field_{product_id}_photo"), InlineKeyboardButton("🗑 Remove Photo", callback_data=f"admin_edit_field_{product_id}_remove_photo")],
+        [InlineKeyboardButton("⬅️ Choose Another Product", callback_data="admin_edit_product")],
+        [InlineKeyboardButton("🏠 Products Menu", callback_data="admin_section_products")],
+    ])
+
+def get_product_preview(product_id: int):
+    cur.execute("""
+        SELECT id, name, price, stock, description, validity, warranty, rules, redeem_link, max_per_order, active
+        FROM products WHERE id=?
+    """, (product_id,))
+    p = cur.fetchone()
+    if not p:
+        return None
+    pid, name, price, stock, description, validity, warranty, rules, redeem_link, max_per_order, active = p
+    status = "🟢 Active" if active else "🔴 Hidden"
+    return f"""✏️ <b>Edit Product</b>
+
+🆔 <b>ID:</b> <code>{pid}</code>
+📦 <b>Name:</b> {name}
+💰 <b>Price:</b> <code>${price:.2f}</code>
+📊 <b>Stock:</b> <code>{stock}</code>
+🚦 <b>Status:</b> {status}
+
+📝 <b>Description:</b>
+{description or 'No description'}
+
+📌 <b>Validity:</b> {validity or 'Not set'}
+🛡 <b>Warranty:</b> {warranty or 'No warranty'}
+Choose what you want to edit:"""
+
+async def broadcast_product_update(context, product_id: int, product_name: str, price: float, added: int, available: int, mode: str = "stock"):
+    """Broadcast new product/new stock alert to all users."""
+    try:
+        cur.execute("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
+        users = cur.fetchall()
+
+        if mode == "product":
+            title = "🆕 <b>New Product Added!</b>"
+            intro = "⚡ New product is now available!"
+        else:
+            title = "🆕 <b>New Stock Added!</b>"
+            intro = "⚡ Grab yours before they’re gone!"
+
+        msg = f"""{title}
+
+📦 <b>{product_name}</b>
+➕ <b>Added:</b> <code>{added}</code>
+✅ <b>Available:</b> <code>{available}</code>
+💰 <b>Price:</b> <code>${price:.2f}</code>
+
+<i>{intro}</i>"""
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛒 Tap to Buy Now", callback_data=f"product_{product_id}")]
+        ])
+
+        sent = 0
+        failed = 0
+
+        for row in users:
+            target_id = row[0]
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text=msg,
+                    reply_markup=kb,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+
+        log_admin_action(0, "AUTO_PRODUCT_BROADCAST", f"product={product_id} sent={sent} failed={failed} mode={mode}")
+        return sent, failed
+
+    except Exception:
+        return 0, 0
+
+
+admin_action_cooldowns = {}
+DANGEROUS_ADMIN_COOLDOWN_SECONDS = 3
+
+
+def admin_action_allowed(uid, action):
+    now = time.time()
+    key = f"{uid}:{action}"
+    last = admin_action_cooldowns.get(key, 0)
+    if now - last < DANGEROUS_ADMIN_COOLDOWN_SECONDS:
+        return False, int(DANGEROUS_ADMIN_COOLDOWN_SECONDS - (now - last)) + 1
+    admin_action_cooldowns[key] = now
+    return True, 0
+
+
+def _parse_ids(raw_text: str):
+    clean = raw_text.replace(",", " ")
+    return [int(x) for x in clean.split() if x.strip().isdigit()]
+
+
+def _csv_bytes(headers, rows):
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow(row)
+    return io.BytesIO(output.getvalue().encode("utf-8"))
+
+
+async def _send_csv(update, filename, headers, rows):
+    bio = _csv_bytes(headers, rows)
+    bio.name = filename
+    await update.message.reply_document(document=bio, filename=filename)
+
+
+def _safe_money(value):
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
+
+async def show_admin_panel(q, uid):
+    if not is_admin(uid):
+        await edit_or_send(
+            q,
+            "❌ <b>Admin only.</b>\n\n<i>You do not have permission to access this panel.</i>",
+            back_home()
+        )
+        return
+
+    cur.execute("SELECT COUNT(*) FROM users")
+    users_count = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM products WHERE active=1")
+    products_count = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM orders")
+    orders_count = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(price),0) FROM orders")
+    sales = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM product_stock WHERE sold=0")
+    available_stock = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM tickets WHERE status='open'")
+    open_tickets = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT product_name, price, created
+        FROM orders
+        ORDER BY id DESC
+        LIMIT 3
+    """)
+    recent_orders = cur.fetchall()
+
+    recent_text = ""
+    if recent_orders:
+        for product_name, price, created in recent_orders:
+            recent_text += f"• {product_name} — <code>{price:.2f} USDT</code>\n"
+    else:
+        recent_text = "No recent orders yet.\n"
+
+    await edit_or_send(
+        q,
+        f"""👑 <b>Admin Dashboard</b>
+
+💵 <b>Revenue:</b> <code>{sales:.2f} USDT</code>
+🛒 <b>Orders:</b> <code>{orders_count}</code>
+👥 <b>Users:</b> <code>{users_count}</code>
+📦 <b>Active Products:</b> <code>{products_count}</code>
+🔑 <b>Available Stock:</b> <code>{available_stock}</code>
+🎫 <b>Open Tickets:</b> <code>{open_tickets}</code>
+
+<b>Recent Orders</b>
+{recent_text}
+Use the buttons below to manage your store.""",
+        admin_menu()
+    )
+
+
+async def handle_admin_callback(q, uid, data, context):
+    if not is_admin(uid):
+        await edit_or_send(
+            q,
+            "❌ <b>Admin only.</b>\n\n<i>You do not have permission to access this panel.</i>",
+            back_home()
+        )
+        return True
+
+    if data in ("admin_dashboard", "admin_menu", "admin_panel"):
+        await show_admin_panel(q, uid)
+        return True
+
+    if data == "admin_section_products":
+        await edit_or_send(
+            q,
+            """📦 <b>Products & Stock</b>
+
+Manage products, stock, images, featured products, and bulk product actions.
+
+Choose an option below:""",
+            admin_products_menu()
+        )
+        return True
+
+    if data == "admin_section_orders_users":
+        await edit_or_send(
+            q,
+            """🛒 <b>Orders & Users</b>
+
+Manage orders, refunds, delivery resend, users, balance, and exports.
+
+Choose an option below:""",
+            admin_orders_users_menu()
+        )
+        return True
+
+    if data == "admin_section_marketing":
+        await edit_or_send(
+            q,
+            """📢 <b>Marketing & Growth</b>
+
+Broadcast messages, referral settings, featured products, and sales stats.
+
+Choose an option below:""",
+            admin_marketing_menu()
+        )
+        return True
+
+    if data == "admin_section_system":
+        await edit_or_send(
+            q,
+            """🛡 <b>Security & System</b>
+
+Backups, logs, stock alerts, and system reports.
+
+Choose an option below:""",
+            admin_system_menu()
+        )
+        return True
+
+    if data == "admin_section_support":
+        await edit_or_send(
+            q,
+            """🎫 <b>Support & Admins</b>
+
+Manage support tickets, withdrawal approvals, and admin users.
+
+Choose an option below:""",
+            admin_support_menu()
+        )
+        return True
+
+    if data == "admin_quick_add_product":
+        user_state[uid] = "admin_quick_add_product"
+        await edit_or_send(
+            q,
+            """⚡ <b>Quick Add Product</b>
+
+Send all product details in one message:
+
+<code>name | price | stock_items | description | validity | warranty | rules | redeem_link</code>
+
+Use <code>;;</code> between stock items.
+
+Example:
+<code>Netflix Premium | 2.50 | email1:pass1;;email2:pass2 | 30 days account | 30 days | Replacement if invalid | No password change | Not required | 1</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_search_product":
+        user_state[uid] = "admin_search_product"
+        await edit_or_send(
+            q,
+            """🔎 <b>Search Product</b>
+
+Send product ID or keyword.
+
+Examples:
+<code>12</code>
+<code>Netflix</code>
+<code>Premium</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_bulk_add_stock":
+        user_state[uid] = "admin_bulk_add_stock"
+        await edit_or_send(
+            q,
+            """📦 <b>Bulk Add Stock</b>
+
+Send in this format:
+
+<code>PRODUCT_ID | item1;;item2;;item3</code>
+
+Example:
+<code>5 | email1:pass1;;email2:pass2;;email3:pass3</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_low_stock":
+        cur.execute("SELECT id, name, price, stock, active FROM products ORDER BY stock ASC, id DESC")
+        rows = cur.fetchall()
+        text = "⚠️ <b>Low / Out Of Stock Products</b>\n\n"
+        found = 0
+
+        for pid, name, price, old_stock, active in rows:
+            live_stock = get_available_stock_count(pid)
+            stock = live_stock if live_stock > 0 else old_stock
+            if stock <= 5:
+                found += 1
+                status = "🔴 OUT" if stock <= 0 else "🟡 LOW"
+                active_text = "ON" if active else "HIDDEN"
+                text += (
+                    f"{status} | <b>ID:</b> <code>{pid}</code>\n"
+                    f"📦 <b>{name}</b>\n"
+                    f"💰 <code>{price:.2f} USDT</code> | 📊 Stock: <code>{stock}</code> | {active_text}\n\n"
+                )
+
+        if found == 0:
+            text += "✅ No low-stock products found."
+
+        if len(text) > 3900:
+            text = text[:3900] + "\n..."
+
+        await edit_or_send(q, text, admin_menu())
+        return True
+
+    if data == "admin_duplicate_product":
+        user_state[uid] = "admin_duplicate_product"
+        await edit_or_send(
+            q,
+            """📋 <b>Duplicate Product</b>
+
+Send product ID to duplicate.
+
+Example:
+<code>12</code>
+
+This copies product details but creates it with <b>0 stock</b>.
+Then use Add Stock to add new delivery codes.""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_bulk_hide_products":
+        user_state[uid] = "admin_bulk_hide_products"
+        await edit_or_send(
+            q,
+            """🙈 <b>Bulk Hide Products</b>
+
+Send product IDs separated by comma or space.
+
+Example:
+<code>12,15,18</code>
+
+or:
+<code>12 15 18</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_bulk_unhide_products":
+        user_state[uid] = "admin_bulk_unhide_products"
+        await edit_or_send(
+            q,
+            """👁 <b>Bulk Unhide Products</b>
+
+Send product IDs separated by comma or space.
+
+Example:
+<code>12,15,18</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_bulk_delete_products":
+        user_state[uid] = "admin_bulk_delete_products"
+        await edit_or_send(
+            q,
+            """🗑 <b>Bulk Permanent Delete Products</b>
+
+⚠️ This permanently deletes products and all stock rows.
+
+Send IDs and confirmation word:
+
+<code>12,15,18 DELETE</code>
+
+or:
+<code>12 15 18 DELETE</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_search_orders":
+        user_state[uid] = "admin_search_orders"
+        await edit_or_send(
+            q,
+            """🔎 <b>Search Orders</b>
+
+Send order ID, user ID, or product keyword.
+
+Examples:
+<code>15</code>
+<code>7499348138</code>
+<code>Netflix</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_export_orders":
+        cur.execute("SELECT id, user_id, product_name, price, delivery, created FROM orders ORDER BY id DESC")
+        rows = [list(_r) for _r in cur.fetchall()]
+        for _r in rows:
+            _r[4] = decrypt_text(_r[4])
+        bio = _csv_bytes(["order_id", "user_id", "product_name", "price", "delivery", "created"], rows)
+        bio.name = "orders_export.csv"
+        await q.message.reply_document(document=bio, filename="orders_export.csv", caption="📤 Orders export")
+        log_admin_action(uid, "EXPORT_ORDERS", f"{len(rows)} rows")
+        return True
+
+    if data == "admin_export_users":
+        cur.execute("SELECT user_id, first_name, username, balance, blocked, joined FROM users ORDER BY joined DESC")
+        rows = cur.fetchall()
+        bio = _csv_bytes(["user_id", "first_name", "username", "balance", "blocked", "joined"], rows)
+        bio.name = "users_export.csv"
+        await q.message.reply_document(document=bio, filename="users_export.csv", caption="📤 Users export")
+        log_admin_action(uid, "EXPORT_USERS", f"{len(rows)} rows")
+        return True
+
+    if data == "admin_search_user":
+        user_state[uid] = "admin_search_user"
+        await edit_or_send(
+            q,
+            """🔎 <b>Search User</b>
+
+Send Telegram user ID, username, or name.
+
+Examples:
+<code>7499348138</code>
+<code>Oggy</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_user_orders":
+        user_state[uid] = "admin_user_orders"
+        await edit_or_send(
+            q,
+            """📜 <b>User Purchase History</b>
+
+Send Telegram user ID.
+
+Example:
+<code>7499348138</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_resend_order":
+        user_state[uid] = "admin_resend_order"
+        await edit_or_send(
+            q,
+            """🔄 <b>Resend Delivery</b>
+
+Send order ID to resend delivery to the original buyer.
+
+Example:
+<code>25</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_refund_order":
+        user_state[uid] = "admin_refund_order"
+        await edit_or_send(
+            q,
+            """💸 <b>Refund Order</b>
+
+Send order ID and confirmation:
+
+<code>ORDER_ID REFUND</code>
+
+Example:
+<code>25 REFUND</code>
+
+This adds the order price back to the user's balance.""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_remove_balance":
+        user_state[uid] = "admin_remove_balance"
+        await edit_or_send(
+            q,
+            """💸 <b>Remove Balance</b>
+
+Send in this format:
+
+<code>USER_ID AMOUNT</code>
+
+Example:
+<code>7499348138 5</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_sales_stats":
+        current_time = now()
+        today = current_time.strftime("%Y-%m-%d")
+        week_ago = (current_time - timedelta(days=7)).strftime("%Y-%m-%d")
+        month_ago = (current_time - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders")
+        total_orders, total_sales = cur.fetchone()
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE DATE(created)=DATE(?)", (today,))
+        today_orders, today_sales = cur.fetchone()
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE DATE(created)>=DATE(?)", (week_ago,))
+        week_orders, week_sales = cur.fetchone()
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE DATE(created)>=DATE(?)", (month_ago,))
+        month_orders, month_sales = cur.fetchone()
+
+        cur.execute("""
+            SELECT product_name, COUNT(*) c, COALESCE(SUM(price),0) s
+            FROM orders
+            GROUP BY product_name
+            ORDER BY c DESC, s DESC
+            LIMIT 5
+        """)
+        top_products = cur.fetchall()
+
+        cur.execute("""
+            SELECT u.user_id, u.first_name, u.username, COUNT(o.id) c, COALESCE(SUM(o.price),0) s
+            FROM orders o
+            LEFT JOIN users u ON o.user_id=u.user_id
+            GROUP BY o.user_id
+            ORDER BY s DESC
+            LIMIT 5
+        """)
+        top_buyers = cur.fetchall()
+
+        text = f"""📈 <b>Sales Statistics</b>
+
+💵 <b>Total Sales:</b> <code>{total_sales:.2f} USDT</code>
+🛒 <b>Total Orders:</b> <code>{total_orders}</code>
+
+📅 <b>Today:</b> <code>{today_sales:.2f} USDT</code> / <code>{today_orders}</code> orders
+📆 <b>7 Days:</b> <code>{week_sales:.2f} USDT</code> / <code>{week_orders}</code> orders
+🗓 <b>30 Days:</b> <code>{month_sales:.2f} USDT</code> / <code>{month_orders}</code> orders
+
+🏆 <b>Top Products</b>
+"""
+        if top_products:
+            for name, count, sales in top_products:
+                text += f"• {name} — <code>{count}</code> orders / <code>{sales:.2f}</code>\n"
+        else:
+            text += "No product sales yet.\n"
+
+        text += "\n👑 <b>Top Buyers</b>\n"
+        if top_buyers:
+            for user_id, first_name, username, count, sales in top_buyers:
+                uname = f"@{username}" if username and username != "No username" else (first_name or "User")
+                text += f"• {uname} (<code>{user_id}</code>) — <code>{sales:.2f}</code> / <code>{count}</code> orders\n"
+        else:
+            text += "No buyers yet."
+
+        if len(text) > 3900:
+            text = text[:3900] + "\n..."
+
+        await edit_or_send(q, text, admin_menu())
+        return True
+
+    if data == "admin_db_backup":
+        os.makedirs("backups", exist_ok=True)
+        stamp = now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join("backups", f"shopbot_backup_{stamp}.db")
+        shutil.copyfile(DB_PATH, backup_path)
+        await q.message.reply_document(
+            document=open(backup_path, "rb"),
+            filename=os.path.basename(backup_path),
+            caption="💾 Database backup created"
+        )
+        log_admin_action(uid, "DB_BACKUP", backup_path)
+        return True
+
+    if data == "admin_withdrawals":
+        rows = get_pending_withdrawals(20)
+        text = "💸 <b>Pending Withdrawal Requests</b>\n\n"
+
+        if not rows:
+            text += "✅ No pending withdrawal requests."
+        else:
+            for wid, user_id, first_name, username, amount, wallet, status, created in rows:
+                uname = f"@{username}" if username and username != "No username" else "No username"
+                text += (
+                    f"🧾 <b>Request #{wid}</b>\n"
+                    f"👤 {first_name or 'User'} / {uname}\n"
+                    f"🆔 <code>{user_id}</code>\n"
+                    f"💰 <b>Amount:</b> <code>{amount:.6f} USDT</code>\n"
+                    f"👛 <b>Wallet:</b> <code>{wallet}</code>\n"
+                    f"🕒 <code>{created}</code>\n\n"
+                    f"Approve: <code>{wid} APPROVE</code>\n"
+                    f"Reject: <code>{wid} REJECT reason</code>\n\n"
+                )
+
+            user_state[uid] = "admin_process_withdrawal"
+            text += "Send approval/rejection command now."
+
+        if len(text) > 3900:
+            text = text[:3900] + "\n..."
+
+        await edit_or_send(q, text, admin_menu())
+        return True
+
+    if data == "admin_referral_settings":
+        percent = get_setting("referral_percent", "5")
+        minimum = get_setting("min_withdrawal", "1")
+        user_state[uid] = "admin_referral_settings"
+        await edit_or_send(
+            q,
+            f"""🎁 <b>Referral Settings</b>
+
+Current settings:
+📊 <b>Referral Commission:</b> <code>{percent}%</code>
+💸 <b>Minimum Withdrawal:</b> <code>{minimum} USDT</code>
+
+Send new settings in this format:
+
+<code>REFERRAL_PERCENT | MIN_WITHDRAWAL</code>
+
+Example:
+<code>5 | 1</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_featured_products":
+        user_state[uid] = "admin_featured_products"
+        await edit_or_send(
+            q,
+            """⭐ <b>Featured Products</b>
+
+Send in this format:
+
+<code>PRODUCT_ID ON</code>
+or
+<code>PRODUCT_ID OFF</code>
+
+Example:
+<code>12 ON</code>
+
+Featured products show at the top of the shop.""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_set_product_image":
+        user_state[uid] = "admin_set_product_image"
+        await edit_or_send(
+            q,
+            """🖼 <b>Set Product Image</b>
+
+Send product ID first.
+
+Example:
+<code>12</code>
+
+After that, send the image/photo you want to attach to the product.""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_remove_product_image":
+        user_state[uid] = "admin_remove_product_image"
+        await edit_or_send(
+            q,
+            """🖼 <b>Remove Product Image</b>
+
+Send product ID.
+
+Example:
+<code>12</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data.startswith("admin_edit_select_"):
+        product_id = int(data.split("_")[-1])
+        preview = get_product_preview(product_id)
+        if not preview:
+            await edit_or_send(q, "❌ <b>Product not found.</b>", products_select_keyboard("admin_edit_select"))
+            return True
+        await edit_or_send(q, preview, product_edit_options_keyboard(product_id))
+        return True
+
+    if data.startswith("admin_edit_field_"):
+        parts = data.split("_")
+        product_id = int(parts[3])
+        field = "_".join(parts[4:])
+        cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+        product = cur.fetchone()
+        if not product:
+            await edit_or_send(q, "❌ <b>Product not found.</b>", products_select_keyboard("admin_edit_select"))
+            return True
+        if field == "remove_photo":
+            remove_product_image(product_id)
+            log_admin_action(uid, "REMOVE_PRODUCT_IMAGE", f"Product #{product_id}")
+            await edit_or_send(q, f"✅ <b>Product photo removed.</b>\n\n🆔 Product ID: <code>{product_id}</code>", product_edit_options_keyboard(product_id))
+            return True
+        if field == "photo":
+            user_state[uid] = f"admin_easy_edit:{product_id}:photo"
+            await edit_or_send(q, f"🖼 <b>Edit Product Photo</b>\n\n📦 Product: <b>{product[0]}</b>\n🆔 ID: <code>{product_id}</code>\n\nNow send the new photo/image.", product_edit_options_keyboard(product_id))
+            return True
+        titles = {"name":"product name","price":"price","description":"description","validity":"validity","warranty":"warranty","rules":"rules"}
+        user_state[uid] = f"admin_easy_edit:{product_id}:{field}"
+        await edit_or_send(q, f"✏️ <b>Edit {titles.get(field, field)}</b>\n\n📦 Product: <b>{product[0]}</b>\n🆔 ID: <code>{product_id}</code>\n\nSend the new value only.", product_edit_options_keyboard(product_id))
+        return True
+
+    if data.startswith("admin_stock_select_"):
+        product_id = int(data.split("_")[-1])
+        cur.execute("SELECT name, stock FROM products WHERE id=?", (product_id,))
+        product = cur.fetchone()
+        if not product:
+            await edit_or_send(q, "❌ <b>Product not found.</b>", products_select_keyboard("admin_stock_select"))
+            return True
+        user_state[uid] = f"admin_easy_add_stock:{product_id}"
+        await edit_or_send(q, f"""➕ <b>Add Stock</b>
+
+📦 Product: <b>{product[0]}</b>
+🆔 ID: <code>{product_id}</code>
+📊 Current Stock: <code>{product[1]}</code>
+
+Now send codes/accounts only.
+
+Send one item per line:
+
+<code>email1:pass1
+email2:pass2
+email3:pass3</code>
+
+Or separate using <code>;;</code>.""", products_select_keyboard("admin_stock_select"))
+        return True
+
+    if data == "admin_manage_codes":
+        await edit_or_send(
+            q,
+            """🧾 <b>Manage Product Codes</b>
+
+Choose a product to view, add, or permanently delete its codes:""",
+            products_select_keyboard("admin_codes_select")
+        )
+        return True
+
+    if data.startswith("admin_codes_select_"):
+        product_id = int(data.split("_")[-1])
+        msg = get_product_codes_text(product_id)
+        if not msg:
+            await edit_or_send(q, "❌ <b>Product not found.</b>", products_select_keyboard("admin_codes_select"))
+            return True
+
+        await edit_or_send(q, msg, product_codes_keyboard(product_id))
+        return True
+
+    if data.startswith("admin_codes_add_"):
+        product_id = int(data.split("_")[-1])
+        cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+        product = cur.fetchone()
+        if not product:
+            await edit_or_send(q, "❌ <b>Product not found.</b>", products_select_keyboard("admin_codes_select"))
+            return True
+
+        user_state[uid] = f"admin_codes_add:{product_id}"
+        await edit_or_send(
+            q,
+            f"""➕ <b>Add Codes</b>
+
+📦 Product: <b>{product[0]}</b>
+🆔 Product ID: <code>{product_id}</code>
+
+Send codes/accounts only.
+
+One item per line:
+<code>email1:pass1
+email2:pass2
+email3:pass3</code>
+
+Or separate using <code>;;</code>.""",
+            product_codes_keyboard(product_id)
+        )
+        return True
+
+    if data.startswith("admin_codes_delete_"):
+        product_id = int(data.split("_")[-1])
+        cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+        product = cur.fetchone()
+        if not product:
+            await edit_or_send(q, "❌ <b>Product not found.</b>", products_select_keyboard("admin_codes_select"))
+            return True
+
+        user_state[uid] = f"admin_codes_delete:{product_id}"
+        await edit_or_send(
+            q,
+            f"""🗑 <b>Permanently Delete Codes</b>
+
+📦 Product: <b>{product[0]}</b>
+🆔 Product ID: <code>{product_id}</code>
+
+Send Stock IDs to delete, separated by comma or space.
+
+Example:
+<code>12,15,18 DELETE</code>
+
+⚠️ Confirmation word <code>DELETE</code> is required.""",
+            product_codes_keyboard(product_id)
+        )
+        return True
+
+    if data == "admin_add_cancel":
+        user_state.pop(uid, None)
+        admin_temp_data.pop(uid, None)
+        await edit_or_send(q, "❌ <b>Add Product cancelled.</b>", admin_products_menu())
+        return True
+
+    if data == "admin_add_skip":
+        state = user_state.get(uid)
+        if state == "admin_add_product_description":
+            admin_temp_data.setdefault(uid, {})["description"] = "No description"
+            user_state[uid] = "admin_add_product_validity"
+            await edit_or_send(q, "📌 <b>Step 4/7</b>\n\nSend validity or skip.", add_product_skip_keyboard())
+            return True
+        if state == "admin_add_product_validity":
+            admin_temp_data.setdefault(uid, {})["validity"] = "Not mentioned"
+            user_state[uid] = "admin_add_product_warranty"
+            await edit_or_send(q, "🛡 <b>Step 5/7</b>\n\nSend warranty or skip.", add_product_skip_keyboard())
+            return True
+        if state == "admin_add_product_warranty":
+            admin_temp_data.setdefault(uid, {})["warranty"] = "No warranty"
+            user_state[uid] = "admin_add_product_rules"
+            await edit_or_send(q, "📜 <b>Step 6/7</b>\n\nSend rules/terms or skip.", add_product_skip_keyboard())
+            return True
+        if state == "admin_add_product_rules":
+            admin_temp_data.setdefault(uid, {})["rules"] = "No rules mentioned"
+            user_state[uid] = "admin_add_product_photo"
+            await edit_or_send(q, "🖼 <b>Step 7/7</b>\n\nSend product photo or skip.", add_product_photo_keyboard())
+            return True
+
+    if data == "admin_add_photo_skip":
+        admin_temp_data.setdefault(uid, {})["image_file_id"] = None
+        user_state[uid] = "admin_add_product_stock"
+        await edit_or_send(
+            q,
+            """🔑 <b>Final Step</b>
+
+Send stock codes/accounts, or tap <b>Skip Stock</b>.
+
+One item per line:
+<code>email1:pass1
+email2:pass2
+email3:pass3</code>
+
+Or separate using <code>;;</code>.""",
+            add_product_stock_keyboard()
+        )
+        return True
+
+    if data == "admin_add_stock_skip":
+        admin_temp_data.setdefault(uid, {})["stock_items"] = []
+        user_state[uid] = "admin_add_product_preview"
+        await edit_or_send(
+            q,
+            add_product_preview_text(uid),
+            add_product_preview_keyboard()
+        )
+        return True
+
+    if data.startswith("admin_add_edit_"):
+        field = data.replace("admin_add_edit_", "")
+        field_map = {
+            "name": ("admin_add_product_name", "✏️ Send new product name."),
+            "price": ("admin_add_product_price", "💰 Send new price."),
+            "description": ("admin_add_product_description", "📝 Send new description or skip."),
+            "validity": ("admin_add_product_validity", "📌 Send new validity or skip."),
+            "warranty": ("admin_add_product_warranty", "🛡 Send new warranty or skip."),
+            "rules": ("admin_add_product_rules", "📜 Send new rules or skip."),
+            "photo": ("admin_add_product_photo", "🖼 Send new photo or skip."),
+            "stock": ("admin_add_product_stock", "🔑 Send new stock codes/accounts."),
+        }
+        if field in field_map:
+            user_state[uid] = field_map[field][0]
+            kb = add_product_photo_keyboard() if field == "photo" else add_product_stock_keyboard() if field == "stock" else add_product_skip_keyboard() if field in ("description","validity","warranty","rules") else InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="admin_add_cancel")]])
+            await edit_or_send(q, field_map[field][1], kb)
+            return True
+
+    if data == "admin_add_publish":
+        try:
+            datax = admin_temp_data.get(uid, {})
+            name = datax["name"]
+            price = float(datax["price"])
+            stock_items = datax.get("stock_items", [])
+            delivery = ";;".join(stock_items)
+            stock = len(stock_items)
+            description = datax.get("description", "No description")
+            validity = datax.get("validity", "Not mentioned")
+            warranty = datax.get("warranty", "No warranty")
+            rules = datax.get("rules", "No rules mentioned")
+            redeem_link = "Not required"
+            max_per_order = 999
+
+            cur.execute(
+                """
+                INSERT INTO products(name, price, stock, delivery, description, validity, warranty, rules, redeem_link, max_per_order, active)
+                VALUES(?,?,?,?,?,?,?,?,?,?,1)
+                """,
+                (name, price, stock, delivery, description, validity, warranty, rules, redeem_link, max_per_order)
+            )
+            conn.commit()
+
+            product_id = cur.lastrowid
+            added_items = add_stock_items(product_id, delivery) if delivery else 0
+            cur.execute("UPDATE products SET stock=? WHERE id=?", (added_items, product_id))
+            if datax.get("image_file_id"):
+                cur.execute("UPDATE products SET image_file_id=? WHERE id=?", (datax.get("image_file_id"), product_id))
+            conn.commit()
+
+            log_admin_action(uid, "ADD_PRODUCT_WIZARD", f"Product #{product_id} | {name} | stock {added_items}")
+
+            try:
+                sent, failed = await broadcast_product_update(context, product_id, name, price, added_items, added_items, mode="product")
+            except Exception:
+                sent, failed = 0, 0
+
+            user_state.pop(uid, None)
+            admin_temp_data.pop(uid, None)
+
+            await edit_or_send(
+                q,
+                f"""✅ <b>Product Published</b>
+
+🆔 <b>ID:</b> <code>{product_id}</code>
+📦 <b>Name:</b> {name}
+💰 <b>Price:</b> <code>${price:.2f}</code>
+📊 <b>Stock:</b> <code>{added_items}</code>
+📢 <b>Broadcast:</b> sent to <code>{sent}</code> users""",
+                admin_products_menu()
+            )
+            return True
+
+        except Exception as exc:
+            await edit_or_send(q, f"❌ <b>Publish failed.</b>\n\n<code>{exc}</code>", add_product_preview_keyboard())
+            return True
+
+    if data == "admin_price_offers":
+        await edit_or_send(
+            q,
+            """🏷 <b>Price Offers</b>
+
+Choose a product to set quantity-based offer prices.
+
+Example:
+<code>5 | 4</code> means customer gets 5 items for $4.""",
+            products_select_keyboard("admin_offer_select")
+        )
+        return True
+
+    if data.startswith("admin_offer_select_"):
+        product_id = int(data.split("_")[-1])
+        msg = get_price_offers_text(product_id)
+        if not msg:
+            await edit_or_send(q, "❌ <b>Product not found.</b>", products_select_keyboard("admin_offer_select"))
+            return True
+        await edit_or_send(q, msg, price_offers_keyboard(product_id))
+        return True
+
+    if data.startswith("admin_offer_add_"):
+        product_id = int(data.split("_")[-1])
+        cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+        product = cur.fetchone()
+        if not product:
+            await edit_or_send(q, "❌ <b>Product not found.</b>", products_select_keyboard("admin_offer_select"))
+            return True
+
+        user_state[uid] = f"admin_offer_add:{product_id}"
+        await edit_or_send(
+            q,
+            f"""➕ <b>Add / Update Price Offer</b>
+
+📦 Product: <b>{product[0]}</b>
+
+Send one or multiple offers:
+
+Single:
+<code>5 | 4</code>
+
+Multiple:
+<code>1 | 1
+5 | 4
+10 | 7</code>
+
+Format:
+<code>QUANTITY | TOTAL_PRICE</code>""",
+            price_offers_keyboard(product_id)
+        )
+        return True
+
+    if data.startswith("admin_offer_delete_"):
+        product_id = int(data.split("_")[-1])
+        user_state[uid] = f"admin_offer_delete:{product_id}"
+        await edit_or_send(
+            q,
+            """🗑 <b>Delete Price Offer</b>
+
+Send quantity to delete.
+
+Example:
+<code>5</code>
+
+This deletes the offer button for 5 items.""",
+            price_offers_keyboard(product_id)
+        )
+        return True
+
+    if data.startswith("admin_offer_clear_"):
+        product_id = int(data.split("_")[-1])
+        user_state[uid] = f"admin_offer_clear:{product_id}"
+        await edit_or_send(
+            q,
+            """🧹 <b>Clear All Price Offers</b>
+
+This removes all custom offers for this product.
+
+Send:
+<code>CLEAR</code>""",
+            price_offers_keyboard(product_id)
+        )
+        return True
+
+    if data.startswith("admin_order_detail_"):
+        order_id = int(data.split("_")[-1])
+        text, user_id, delivery = get_order_detail_text(order_id)
+        if not text:
+            await edit_or_send(q, "❌ <b>Order not found.</b>", admin_orders_list_keyboard())
+            return True
+        await edit_or_send(q, text, admin_order_detail_keyboard(order_id, user_id))
+        return True
+
+    if data.startswith("admin_order_resend_"):
+        order_id = int(data.split("_")[-1])
+        text, target_id, delivery = get_order_detail_text(order_id)
+        if not text:
+            await edit_or_send(q, "❌ <b>Order not found.</b>", admin_orders_list_keyboard())
+            return True
+        cur.execute("SELECT product_name, price FROM orders WHERE id=?", (order_id,))
+        product_name, price = cur.fetchone()
+        try:
+            await q.message.get_bot().send_message(
+                chat_id=target_id,
+                text=("🔄 <b>Delivery Resent By Admin</b>\n\n"
+                      f"🧾 <b>Order:</b> <code>#{order_id}</code>\n"
+                      f"📦 <b>Product:</b> {product_name}\n"
+                      f"💰 <b>Paid:</b> <code>${price:.2f}</code>\n\n"
+                      f"🔑 <b>Your Delivery</b>\n<code>{delivery}</code>"),
+                parse_mode="HTML"
+            )
+            log_admin_action(uid, "ORDER_DETAIL_RESEND", f"Order #{order_id} to user {target_id}")
+            await edit_or_send(q, f"✅ <b>Delivery resent.</b>\n\n🧾 Order: <code>#{order_id}</code>", admin_order_detail_keyboard(order_id, target_id))
+        except Exception as exc:
+            await edit_or_send(q, f"❌ <b>Resend failed.</b>\n\n<code>{exc}</code>", admin_order_detail_keyboard(order_id, target_id))
+        return True
+
+    if data.startswith("admin_order_refund_"):
+        order_id = int(data.split("_")[-1])
+        text, target_id, delivery = get_order_detail_text(order_id)
+        if not text:
+            await edit_or_send(q, "❌ <b>Order not found.</b>", admin_orders_list_keyboard())
+            return True
+        user_state[uid] = f"admin_order_refund_confirm:{order_id}"
+        await edit_or_send(q, f"💸 <b>Refund Order Confirmation</b>\n\n🧾 Order: <code>#{order_id}</code>\n\nSend:\n<code>REFUND</code>", admin_order_detail_keyboard(order_id, target_id))
+        return True
+
+    if data.startswith("admin_order_user_"):
+        target_id = int(data.split("_")[-1])
+        cur.execute("SELECT user_id, first_name, username, balance, blocked, joined FROM users WHERE user_id=?", (target_id,))
+        u = cur.fetchone()
+        if not u:
+            await edit_or_send(q, "❌ <b>User not found.</b>", admin_orders_list_keyboard())
+            return True
+        user_id, first_name, username, balance, blocked, joined = u
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (user_id,))
+        order_count, spent = cur.fetchone()
+        uname = f"@{username}" if username and username != "No username" else "No username"
+        status = "🚫 Blocked" if blocked else "✅ Active"
+        await edit_or_send(q, f"""👤 <b>User Detail</b>
+
+🆔 <b>ID:</b> <code>{user_id}</code>
+👤 <b>Name:</b> {first_name or 'User'}
+🔗 <b>Username:</b> {uname}
+💼 <b>Balance:</b> <code>${float(balance or 0):.2f}</code>
+🛒 <b>Orders:</b> <code>{order_count}</code>
+💰 <b>Total Spent:</b> <code>${float(spent or 0):.2f}</code>
+🚦 <b>Status:</b> {status}
+🕒 <b>Joined:</b> <code>{joined}</code>""", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back To Orders", callback_data="admin_orders")]]))
+        return True
+
+    if data.startswith("admin_order_delete_"):
+        order_id = int(data.split("_")[-1])
+        text, target_id, delivery = get_order_detail_text(order_id)
+        if not text:
+            await edit_or_send(q, "❌ <b>Order not found.</b>", admin_orders_list_keyboard())
+            return True
+        user_state[uid] = f"admin_order_delete_confirm:{order_id}"
+        await edit_or_send(q, f"🗑 <b>Delete Order Log</b>\n\n🧾 Order: <code>#{order_id}</code>\n\nSend:\n<code>DELETE</code>\n\n⚠️ This only deletes order history.", admin_order_detail_keyboard(order_id, target_id))
+        return True
+
+    if data == "admin_flash_sales":
+        await edit_or_send(
+            q,
+            """🔥 <b>Flash Sale Manager</b>
+
+Choose a product to set or stop flash sale pricing:""",
+            products_select_keyboard("admin_flash_select")
+        )
+        return True
+
+    if data.startswith("admin_flash_select_"):
+        product_id = int(data.split("_")[-1])
+        msg = flash_sale_text(product_id)
+        if not msg:
+            await edit_or_send(q, "❌ <b>Product not found.</b>", products_select_keyboard("admin_flash_select"))
+            return True
+        await edit_or_send(q, msg, flash_sale_keyboard(product_id))
+        return True
+
+    if data.startswith("admin_flash_set_"):
+        product_id = int(data.split("_")[-1])
+        cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
+        p = cur.fetchone()
+        if not p:
+            await edit_or_send(q, "❌ <b>Product not found.</b>", products_select_keyboard("admin_flash_select"))
+            return True
+        user_state[uid] = f"admin_flash_set:{product_id}"
+        await edit_or_send(
+            q,
+            f"""🔥 <b>Set Flash Sale</b>
+
+📦 Product: <b>{p[0]}</b>
+💰 Current Price: <code>${float(p[1]):.2f}</code>
+
+Send:
+<code>FLASH_PRICE | HOURS</code>
+
+Example:
+<code>0.70 | 24</code>""",
+            flash_sale_keyboard(product_id)
+        )
+        return True
+
+    if data.startswith("admin_flash_stop_"):
+        product_id = int(data.split("_")[-1])
+        cur.execute("UPDATE products SET flash_price=NULL, flash_ends_at=NULL WHERE id=?", (product_id,))
+        conn.commit()
+        log_admin_action(uid, "FLASH_SALE_STOP", f"Product #{product_id}")
+        await edit_or_send(q, "✅ <b>Flash sale stopped.</b>", flash_sale_keyboard(product_id))
+        return True
+
+    if data == "admin_stats_dashboard":
+        await edit_or_send(q, admin_stats_text(), admin_stats_keyboard())
+        return True
+
+    if data == "admin_search_order_menu":
+        user_state[uid] = "admin_search_order_query"
+        await edit_or_send(
+            q,
+            """🔎 <b>Search Orders</b>
+
+Send any one:
+• Order ID: <code>25</code>
+• User ID: <code>7499348138</code>
+• Product keyword: <code>LinkedIn</code>""",
+            admin_orders_users_menu()
+        )
+        return True
+
+    if data == "admin_coupons":
+        await edit_or_send(q, "🎟 <b>Coupon Manager</b>\n\nCreate and manage discount coupons.", admin_coupons_keyboard())
+        return True
+
+    if data == "admin_coupon_create":
+        user_state[uid] = "admin_coupon_create"
+        await edit_or_send(
+            q,
+            """➕ <b>Create Coupon</b>
+
+Send:
+<code>CODE | percent/fixed | value | max_uses | hours</code>
+
+Examples:
+<code>WELCOME10 | percent | 10 | 100 | 24</code>
+<code>SAVE1 | fixed | 1 | 50 | 12</code>
+
+Use max_uses <code>0</code> for unlimited.
+Hours means coupon validity time before auto-expiry.""",
+            admin_coupons_keyboard()
+        )
+        return True
+
+    if data == "admin_coupon_list":
+        cur.execute("SELECT code, discount_type, value, active, max_uses, used_count, expires_at FROM coupons ORDER BY created DESC LIMIT 25")
+        rows = cur.fetchall()
+        text = "📋 <b>Coupons</b>\n\n"
+        if not rows:
+            text += "No coupons created yet."
+        else:
+            for code, dtype, value, active, max_uses, used, expires_at in rows:
+                status = "✅" if active else "❌"
+                limit = "∞" if not max_uses else str(max_uses)
+                suffix = "%" if dtype == "percent" else " USDT"
+                text += f"{status} <code>{code}</code> — {value}{suffix} | Used <code>{used}/{limit}</code> | Expires <code>{expires_at or 'No expiry'}</code>\n"
+        await edit_or_send(q, text, admin_coupons_keyboard())
+        return True
+
+    if data == "admin_coupon_delete":
+        user_state[uid] = "admin_coupon_delete"
+        await edit_or_send(q, "🗑 <b>Delete Coupon</b>\n\nSend coupon code to delete.", admin_coupons_keyboard())
+        return True
+
+    if data == "admin_product_analytics":
+        await edit_or_send(q, "📈 <b>Product Analytics</b>\n\nChoose a product:", products_select_keyboard("admin_product_analytics_select"))
+        return True
+
+    if data.startswith("admin_product_analytics_select_"):
+        product_id = int(data.split("_")[-1])
+        msg = product_analytics_text(product_id)
+        await edit_or_send(q, msg or "❌ Product not found.", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Choose Product", callback_data="admin_product_analytics")]]))
+        return True
+
+    if data == "admin_top_sellers":
+        await edit_or_send(q, top_sellers_text(), InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="admin_top_sellers")], [InlineKeyboardButton("⬅️ System", callback_data="admin_section_system")]]))
+        return True
+
+    if data == "admin_cleanup":
+        await edit_or_send(q, cleanup_report_text(), admin_system_menu())
+        return True
+
+    if data == "admin_sales_settings":
+        await edit_or_send(q, sales_settings_text(), admin_sales_settings_keyboard())
+        return True
+
+    if data == "admin_set_first_discount":
+        user_state[uid] = "admin_set_first_discount"
+        await edit_or_send(q, "🎉 Send first purchase discount percent.\n\nExample: <code>10</code>", admin_sales_settings_keyboard())
+        return True
+
+    if data == "admin_set_loyalty_percent":
+        user_state[uid] = "admin_set_loyalty_percent"
+        await edit_or_send(q, "💎 Send loyalty points percent.\n\nExample: <code>2</code>", admin_sales_settings_keyboard())
+        return True
+
+    if data == "admin_set_buyxgety":
+        user_state[uid] = "admin_set_buyxgety"
+        await edit_or_send(q, "🎁 Send Buy X Get Y format:\n\n<code>5 | 1</code>\n\nUse <code>0 | 0</code> to disable.", admin_sales_settings_keyboard())
+        return True
+
+    if data == "admin_ban_unban_menu":
+        await edit_or_send(q, "🚫 <b>User Ban / Unban</b>\n\nChoose action:", user_management_keyboard())
+        return True
+
+    if data == "admin_ban_user":
+        user_state[uid] = "admin_ban_user"
+        await edit_or_send(q, "🚫 Send User ID to ban.", user_management_keyboard())
+        return True
+
+    if data == "admin_unban_user":
+        user_state[uid] = "admin_unban_user"
+        await edit_or_send(q, "✅ Send User ID to unban.", user_management_keyboard())
+        return True
+
+    if data == "admin_export_products":
+        import csv, io
+        cur.execute("SELECT id, name, price, stock, active, featured FROM products ORDER BY id DESC")
+        rows = cur.fetchall()
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["id", "name", "price", "stock", "active", "featured"])
+        writer.writerows(rows)
+        data_file = io.BytesIO(output.getvalue().encode("utf-8"))
+        data_file.name = "products_export.csv"
+        await q.message.reply_document(document=data_file, caption="📤 Products export")
+        return True
+
+    if data == "admin_message_templates":
+        await edit_or_send(
+            q,
+            """✏️ <b>Message Templates</b>
+
+Choose any message to customize.
+
+You can use HTML tags like:
+<code>&lt;b&gt;bold&lt;/b&gt;</code>
+<code>&lt;i&gt;italic&lt;/i&gt;</code>
+<code>&lt;code&gt;copyable&lt;/code&gt;</code>""",
+            message_templates_keyboard()
+        )
+        return True
+
+    if data.startswith("admin_edit_template_"):
+        key = data.replace("admin_edit_template_", "")
+        cur.execute("SELECT title, body FROM message_templates WHERE key=?", (key,))
+        row = cur.fetchone()
+        if not row:
+            await edit_or_send(q, "❌ Template not found.", message_templates_keyboard())
+            return True
+
+        title, body = row
+        user_state[uid] = f"admin_edit_template:{key}"
+        await edit_or_send(
+            q,
+            f"""✏️ <b>Edit {title}</b>
+
+Send the exact message you want.
+
+<b>Variables:</b>
+<code>{template_help_text(key)}</code>
+
+<b>Example:</b>
+<code>{template_example_text(key)}</code>
+
+<b>Current:</b>
+<code>{body}</code>""",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("📚 Variables", callback_data=f"admin_template_vars_{key}")],
+                [InlineKeyboardButton("⬅️ Back", callback_data="admin_message_templates")]
+            ])
+        )
+        return True
+
+    if data == "admin_scheduled_broadcasts":
+        await edit_or_send(q, "⏰ <b>Scheduled Broadcasts</b>\n\nCreate or view scheduled broadcasts.", scheduled_broadcast_keyboard())
+        return True
+
+    if data == "admin_schedule_broadcast":
+        user_state[uid] = "admin_schedule_broadcast"
+        await edit_or_send(
+            q,
+            """➕ <b>Schedule Broadcast</b>
+
+Send:
+<code>YYYY-MM-DD HH:MM | Message</code>
+
+Example:
+<code>2026-06-01 20:00 | 🔥 Flash sale starts now!</code>""",
+            scheduled_broadcast_keyboard()
+        )
+        return True
+
+    if data == "admin_view_scheduled_broadcasts":
+        rows = get_scheduled_broadcasts(15)
+        text = "📋 <b>Scheduled Broadcasts</b>\n\n"
+        if not rows:
+            text += "No scheduled broadcasts."
+        else:
+            for bid, msg, run_at, status, sent, failed in rows:
+                text += f"#{bid} | <code>{run_at}</code> | <b>{status}</b> | sent {sent}/{failed}\n{msg[:80]}\n\n"
+        await edit_or_send(q, text, scheduled_broadcast_keyboard())
+        return True
+
+    if data == "admin_sales_analytics":
+        await edit_or_send(q, sales_analytics_text(), InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="admin_sales_analytics")], [InlineKeyboardButton("⬅️ System", callback_data="admin_section_system")]]))
+        return True
+
+    if data == "admin_smart_dashboard":
+        s = smart_dashboard_stats()
+        await edit_or_send(
+            q,
+            f"""📊 <b>Smart Admin Dashboard</b>
+
+<b>Today</b>
+💰 Revenue: <code>${s['today_revenue']:.2f}</code>
+🛒 Orders: <code>{s['today_orders']}</code>
+👥 New Users: <code>{s['new_users']}</code>
+
+<b>Needs Attention</b>
+🎫 Open Tickets: <code>{s['open_tickets']}</code>
+⚠️ Low Stock Products: <code>{s['low_stock']}</code>
+
+<b>All Time</b>
+💵 Revenue: <code>${s['total_revenue']:.2f}</code>
+🛒 Orders: <code>{s['total_orders']}</code>""",
+            smart_dashboard_keyboard()
+        )
+        return True
+
+    if data == "admin_ticket_manager":
+        rows = get_open_tickets(20)
+        text = "🎫 <b>Ticket Manager</b>\n\n"
+        kb_rows = []
+        if not rows:
+            text += "No open tickets."
+        else:
+            for tid, user_id, first_name, username, subject, msg, status, created, updated in rows:
+                title = subject or str(msg)[:30]
+                kb_rows.append([InlineKeyboardButton(f"#{tid} • {status} • {str(title)[:30]}", callback_data=f"admin_ticket_view_{tid}")])
+        kb_rows.append([InlineKeyboardButton("🔄 Refresh", callback_data="admin_ticket_manager")])
+        kb_rows.append([InlineKeyboardButton("⬅️ Support", callback_data="admin_section_support")])
+        await edit_or_send(q, text, InlineKeyboardMarkup(kb_rows))
+        return True
+
+    if data.startswith("admin_ticket_view_"):
+        ticket_id = int(data.split("_")[-1])
+        t = get_ticket(ticket_id)
+        if not t:
+            await edit_or_send(q, "❌ Ticket not found.", ticket_manager_keyboard())
+            return True
+        tid, user_id, first_name, username, subject, msg, status, reply, created, updated = t
+        username_text = f"@{username}" if username and username != "No username" else "No username"
+        await edit_or_send(
+            q,
+            f"""🎫 <b>Ticket #{tid}</b>
+
+👤 User: <code>{user_id}</code>
+👤 Name: <b>{first_name or 'User'}</b> / <code>{username_text}</code>
+📌 Subject: <b>{subject or 'Support Ticket'}</b>
+📌 Status: <b>{status}</b>
+
+<b>User Message:</b>
+{msg}
+
+<b>Admin Reply:</b>
+{reply or 'No reply yet'}""",
+            ticket_manager_keyboard(tid, user_id)
+        )
+        return True
+
+    if data.startswith("admin_ticket_reply_"):
+        ticket_id = int(data.split("_")[-1])
+        user_state[uid] = f"admin_ticket_reply:{ticket_id}"
+        await edit_or_send(q, f"💬 Send reply for ticket <code>#{ticket_id}</code>.", ticket_manager_keyboard())
+        return True
+
+    if data.startswith("admin_ticket_close_"):
+        ticket_id = int(data.split("_")[-1])
+        close_ticket(ticket_id)
+        await edit_or_send(q, f"✅ Ticket <code>#{ticket_id}</code> closed.", ticket_manager_keyboard())
+        return True
+
+    if data.startswith("admin_ticket_ban_"):
+        target_id = int(data.split("_")[-1])
+        block_user(target_id)
+        await edit_or_send(q, f"🚫 User banned: <code>{target_id}</code>", ticket_manager_keyboard())
+        return True
+
+    if data == "admin_auto_marketing":
+        await edit_or_send(q, auto_marketing_text(), auto_marketing_keyboard())
+        return True
+
+    if data == "admin_set_welcome_coupon":
+        user_state[uid] = "admin_set_welcome_coupon"
+        await edit_or_send(q, "🎁 Send welcome coupon code, or send <code>OFF</code> to disable.", auto_marketing_keyboard())
+        return True
+
+    if data == "admin_set_inactive_coupon":
+        user_state[uid] = "admin_set_inactive_coupon"
+        await edit_or_send(q, "😴 Send inactive-user coupon code, or send <code>OFF</code> to disable.", auto_marketing_keyboard())
+        return True
+
+    if data == "admin_set_inactive_days":
+        user_state[uid] = "admin_set_inactive_days"
+        await edit_or_send(q, "📅 Send number of inactive days.\n\nExample: <code>7</code>", auto_marketing_keyboard())
+        return True
+
+    if data == "admin_restore_backup":
+        user_state[uid] = "admin_restore_backup"
+        await edit_or_send(
+            q,
+            "📥 <b>Restore Backup</b>\n\nSend the backup ZIP file as a document.\n\n⚠️ This will replace the current database.",
+            admin_system_menu()
+        )
+        return True
+
+    if data == "admin_add_product":
+        user_state[uid] = "admin_add_product_name"
+        admin_temp_data[uid] = {}
+        await edit_or_send(
+            q,
+            """➕ <b>Add Product</b>
+
+Step 1/7
+
+Send product name.
+
+Example:
+<code>LinkedIn Business Premium – 2 Months</code>""",
+            InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="admin_section_products")]])
+        )
+        return True
+
+
+    if data == "admin_quick_add_product":
+        user_state[uid] = "admin_quick_add_product"
+        await edit_or_send(
+            q,
+            """⚡ <b>Quick Add Product</b>
+
+Send all product details in one message:
+
+<code>name | price | stock_items | description | validity | warranty | rules | redeem_link</code>
+
+<b>Stock items:</b> use <code>;;</code> between each code/account.
+
+Example:
+<code>LinkedIn Premium 2 Months | 0.70 | code1;;code2;;code3 | 2 Months Premium Access | 2 Months | No warranty | Redeem ASAP | Not required | 1</code>
+
+You can also use <code>-</code> for optional fields.""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_permanent_delete_product":
+        user_state[uid] = "admin_permanent_delete_product"
+        await edit_or_send(
+            q,
+            """🗑 <b>Permanently Delete Product</b>
+
+⚠️ This will delete:
+• product
+• all unsold/sold stock rows for that product
+
+Send in this format:
+
+<code>PRODUCT_ID DELETE</code>
+
+Example:
+<code>12 DELETE</code>""",
+            admin_menu()
+        )
+        return True
+
+
+
+    if data == "admin_edit_product":
+        await edit_or_send(
+            q,
+            """✏️ <b>Edit Product</b>
+
+Choose the product you want to edit:""",
+            products_select_keyboard("admin_edit_select")
+        )
+        return True
+
+
+    if data == "admin_delete_product":
+        user_state[uid] = "admin_delete_product"
+        await edit_or_send(
+            q,
+            """🗑 <b>Hide Product</b>
+
+Send the product ID you want to hide.
+
+Example:
+<code>12</code>""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_products":
+        cur.execute("SELECT id, name, price, stock, active, validity, warranty, max_per_order FROM products ORDER BY id DESC")
+        rows = cur.fetchall()
+
+        text = "📦 <b>Product Management</b>\n\n🔎 Use Search Product for quick lookup.\n⚠️ LOW means stock ≤ 5.\n\n"
+
+        if not rows:
+            text += "😕 <i>No products added yet.</i>"
+        else:
+            for pid, name, price, old_stock, active, validity, warranty, max_per_order in rows:
+                live_stock = get_available_stock_count(pid)
+                stock = live_stock if live_stock > 0 else old_stock
+                status = "🟢 ON" if active else "🔴 OFF"
+                stock_status = "🔴 OUT" if stock <= 0 else ("🟡 LOW" if stock <= 5 else "🟢 OK")
+                text += (
+                    f"🆔 <b>ID:</b> <code>{pid}</code>\n"
+                    f"📦 <b>Name:</b> <code>{name}</code>\n"
+                    f"💰 <b>Price:</b> <code>{price:.2f} USDT</code>\n"
+                    f"📊 <b>Available Stock:</b> <code>{stock}</code> {stock_status}\n"
+                    f"📌 <b>Validity:</b> <code>{validity}</code>\n"
+                    f"🛡 <b>Warranty:</b> <code>{warranty}</code>\n"
+                    f"🔢 <b>Max:</b> <code>{max_per_order}</code>\n"
+                    f"🚦 <b>Status:</b> {status}\n"
+                    f"\n"
+                )
+
+        if len(text) > 3900:
+            text = text[:3900] + "\n..."
+
+        await edit_or_send(q, text, admin_menu())
+        return True
+
+
+    if data == "admin_add_stock":
+        await edit_or_send(
+            q,
+            """➕ <b>Add Stock</b>
+
+Choose the product where you want to add stock:""",
+            products_select_keyboard("admin_stock_select")
+        )
+        return True
+
+
+    if data == "admin_inventory":
+        cur.execute("SELECT id, name, price, active FROM products ORDER BY id DESC")
+        rows = cur.fetchall()
+
+        text = "📊 <b>Inventory / Stock</b>\n\n"
+
+        if not rows:
+            text += "😕 <i>No products found.</i>"
+        else:
+            for pid, name, price, active in rows:
+                available = get_available_stock_count(pid)
+                sold = get_sold_stock_count(pid)
+                total = get_total_stock_count(pid)
+                status = "🟢 ON" if active else "🔴 OFF"
+
+                text += (
+                    f"🆔 <b>ID:</b> <code>{pid}</code>\n"
+                    f"📦 <b>Name:</b> <code>{name}</code>\n"
+                    f"💰 <b>Price:</b> <code>{price:.2f} USDT</code>\n"
+                    f"✅ <b>Available:</b> <code>{available}</code>\n"
+                    f"🛒 <b>Sold:</b> <code>{sold}</code>\n"
+                    f"📊 <b>Total Added:</b> <code>{total}</code>\n"
+                    f"🚦 <b>Status:</b> {status}\n"
+                    f"\n"
+                )
+
+        if len(text) > 3900:
+            text = text[:3900] + "\n..."
+
+        await edit_or_send(q, text, admin_menu())
+        return True
+
+
+    if data == "admin_add_balance":
+        user_state[uid] = "admin_add_balance"
+        await edit_or_send(
+            q,
+            """💰 <b>Add Balance</b>
+
+Send in this format:
+
+<code>USER_ID AMOUNT</code>
+
+Example:
+<code>7499348138 10</code>
+
+This instantly adds wallet balance to the user.""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_stats":
+        cur.execute("SELECT COUNT(*) FROM users")
+        users_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM products WHERE active=1")
+        products_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM orders")
+        orders_count = cur.fetchone()[0]
+        cur.execute("SELECT COALESCE(SUM(price),0) FROM orders")
+        sales = cur.fetchone()[0]
+        cur.execute("SELECT COALESCE(SUM(balance),0) FROM users")
+        total_balances = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM product_stock WHERE sold=0")
+        available_stock = cur.fetchone()[0]
+
+        await edit_or_send(
+            q,
+            f"""📈 <b>Store Stats</b>
+
+👥 Users: <code>{users_count}</code>
+📦 Active Products: <code>{products_count}</code>
+📊 Available Stock: <code>{available_stock}</code>
+🛒 Orders: <code>{orders_count}</code>
+💵 Sales: <code>{sales:.2f} USDT</code>
+👛 User Balances: <code>{total_balances:.2f} USDT</code>
+
+Updated from local database.""",
+            admin_menu()
+        )
+        return True
+
+    if data == "admin_users":
+        cur.execute("""
+            SELECT user_id, first_name, username, balance, joined, blocked
+            FROM users
+            ORDER BY joined DESC
+        """)
+        rows = cur.fetchall()
+
+        text = "👥 <b>Users</b>\n\n"
+
+        if not rows:
+            text += "😕 <i>No users found.</i>"
+        else:
+            for i, (user_id, first_name, username, balance, joined, blocked) in enumerate(rows, 1):
+                username_text = f"@{username}" if username and username != "No username" else "No username"
+                block_status = "🚫 BLOCKED" if blocked else "✅ ACTIVE"
+                text += (
+                    f"<b>{i}. {first_name or 'User'}</b>\n"
+                    f"👤 <b>Username:</b> <code>{username_text}</code>\n"
+                    f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+                    f"💰 <b>Balance:</b> <code>{balance:.2f} USDT</code>\n"
+                    f"📅 <b>Joined:</b> <code>{joined}</code>\n"
+                    f"🚦 <b>Status:</b> <code>{block_status}</code>\n"
+                    f"\n"
+                )
+
+        if len(text) > 3900:
+            text = text[:3900] + "\n..."
+
+        await edit_or_send(q, text, admin_menu())
+        return True
+
+
+    if data == "admin_orders":
+        cur.execute("SELECT COUNT(*) FROM orders")
+        total_orders = cur.fetchone()[0]
+        await edit_or_send(
+            q,
+            f"""🛒 <b>Orders</b>
+
+Total Orders: <code>{total_orders}</code>
+
+Choose an order to view details:""",
+            admin_orders_list_keyboard()
+        )
+        return True
+
+
+    if data == "admin_logs":
+        rows = get_admin_logs(25)
+
+        text = "🧾 <b>Admin Logs</b>\n\n"
+
+        if not rows:
+            text += "😕 <i>No admin logs found yet.</i>"
+        else:
+            for log_id, admin_id, action, details, created in rows:
+                safe_details = details if details else "No details"
+                if len(safe_details) > 120:
+                    safe_details = safe_details[:120] + "..."
+
+                text += (
+                    f"🆔 <b>Log:</b> <code>#{log_id}</code>\n"
+                    f"👑 <b>Admin:</b> <code>{admin_id}</code>\n"
+                    f"⚙️ <b>Action:</b> <code>{action}</code>\n"
+                    f"📝 <b>Details:</b> <code>{safe_details}</code>\n"
+                    f"🕒 <b>Date:</b> <code>{created}</code>\n"
+                    f"\n"
+                )
+
+        if len(text) > 3900:
+            text = text[:3900] + "\n..."
+
+        await edit_or_send(q, text, admin_menu())
+        return True
+
+
+    if data == "admin_tickets":
+        rows = get_open_tickets(20)
+        text = "🎫 <b>Open Tickets</b>\n\n"
+
+        if not rows:
+            text += "No open tickets."
+        else:
+            for ticket_id, user_id, first_name, username, subject, message, status, created, updated in rows:
+                username_text = f"@{username}" if username and username != "No username" else "No username"
+                short_msg = message[:120] + "..." if len(message) > 120 else message
+                text += (
+                    f"🎫 <b>Ticket #{ticket_id}</b>\n"
+                    f"👤 {first_name or 'User'} / {username_text}\n"
+                    f"🆔 <code>{user_id}</code>\n"
+                    f"📌 <b>{subject}</b>\n"
+                    f"📝 {short_msg}\n"
+                    f"🕒 <code>{created}</code>\n"
+                    f"Reply: <code>/replyticket {ticket_id} message</code>\n"
+                    f"Close: <code>/closeticket {ticket_id}</code>\n\n"
+                )
+
+        if len(text) > 3900:
+            text = text[:3900] + "\n..."
+
+        await edit_or_send(q, text, admin_menu())
+        return True
+
+    if data == "admin_manage_admins":
+        if not is_owner(uid):
+            await edit_or_send(
+                q,
+                "❌ <b>Owner only.</b>\n\nOnly the main owner can manage admins.",
+                admin_menu()
+            )
+            return True
+
+        rows = get_admins()
+        text = "🌍 <b>Admin Management</b>\n\n"
+        text += "Commands:\n<code>/addadmin USER_ID</code>\n<code>/removeadmin USER_ID</code>\n\n"
+
+        if not rows:
+            text += "No admins found."
+        else:
+            for admin_id, first_name, username, added_by, added_at in rows:
+                username_text = f"@{username}" if username and username != "No username" else "No username"
+                role = "👑 Owner" if is_owner(admin_id) else "🛡 Admin"
+                text += (
+                    f"{role}\n"
+                    f"🆔 <code>{admin_id}</code>\n"
+                    f"👤 {first_name or 'User'} / {username_text}\n"
+                    f"➕ Added by: <code>{added_by}</code>\n"
+                    f"🕒 <code>{added_at}</code>\n\n"
+                )
+
+        await edit_or_send(q, text, admin_menu())
+        return True
+
+    if data == "admin_broadcast":
+        user_state[uid] = "admin_broadcast"
+        await edit_or_send(
+            q,
+            """📢 <b>Broadcast</b>
+
+Send the message you want to send to all users.
+
+Use carefully. This will be sent to every saved user.""",
+            admin_menu()
+        )
+        return True
+
+    return False
+
+
+async def handle_admin_message(update, context, uid, text, state):
+    if state == "admin_set_welcome_coupon" and is_admin(uid):
+        value = "" if text.strip().upper() == "OFF" else text.strip().upper()
+        set_setting("auto_welcome_coupon", value)
+        user_state.pop(uid, None)
+
+        await update.message.reply_text(
+            f"✅ <b>Welcome Coupon Updated</b>\n\n🎁 Coupon: <code>{value or 'OFF'}</code>",
+            reply_markup=auto_marketing_keyboard(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_set_inactive_coupon" and is_admin(uid):
+        value = "" if text.strip().upper() == "OFF" else text.strip().upper()
+        set_setting("inactive_coupon", value)
+        user_state.pop(uid, None)
+
+        await update.message.reply_text(
+            f"✅ <b>Inactive Coupon Updated</b>\n\n😴 Coupon: <code>{value or 'OFF'}</code>",
+            reply_markup=auto_marketing_keyboard(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_set_inactive_days" and is_admin(uid):
+        try:
+            days = int(text.strip())
+            set_setting("inactive_days", str(days))
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                f"✅ <b>Inactive Days Updated</b>\n\n📅 Days: <code>{days}</code>",
+                reply_markup=auto_marketing_keyboard(),
+                parse_mode="HTML"
+            )
+        except Exception:
+            await update.message.reply_text(
+                "❌ Send a number only.\n\nExample: <code>7</code>",
+                parse_mode="HTML"
+            )
+        return True
+
+    if state == "admin_schedule_broadcast" and is_admin(uid):
+        try:
+            run_at, message = [x.strip() for x in text.split("|", 1)]
+            # Validate rough format
+            datetime.strptime(run_at, "%Y-%m-%d %H:%M")
+            bid = create_scheduled_broadcast(message, run_at + ":00")
+            user_state.pop(uid, None)
+            await update.message.reply_text(
+                f"✅ <b>Broadcast Scheduled</b>\n\n🧾 ID: <code>#{bid}</code>\n⏰ Time: <code>{run_at}</code>\n\n{message}",
+                reply_markup=scheduled_broadcast_keyboard(),
+                parse_mode="HTML"
+            )
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Wrong format.</b>\n\nUse:\n<code>2026-06-01 20:00 | Your message</code>",
+                parse_mode="HTML"
+            )
+            return True
+        return True
+
+    if state == "admin_set_first_discount" and is_admin(uid):
+        try:
+            value = float(text.strip())
+            set_setting("first_purchase_discount_percent", str(value))
+            user_state.pop(uid, None)
+            await update.message.reply_text("✅ First purchase discount updated.", reply_markup=admin_sales_settings_keyboard(), parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text("❌ Send a number like <code>10</code>.", parse_mode="HTML")
+        return True
+
+    if state == "admin_set_loyalty_percent" and is_admin(uid):
+        try:
+            value = float(text.strip())
+            set_setting("loyalty_percent", str(value))
+            user_state.pop(uid, None)
+            await update.message.reply_text("✅ Loyalty percent updated.", reply_markup=admin_sales_settings_keyboard(), parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text("❌ Send a number like <code>2</code>.", parse_mode="HTML")
+        return True
+
+    if state == "admin_set_buyxgety" and is_admin(uid):
+        try:
+            x, y = [int(v.strip()) for v in text.split("|", 1)]
+            set_setting("buy_x_qty", str(x))
+            set_setting("buy_x_free", str(y))
+            user_state.pop(uid, None)
+            await update.message.reply_text("✅ Buy X Get Y updated.", reply_markup=admin_sales_settings_keyboard(), parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text("❌ Use format: <code>5 | 1</code>", parse_mode="HTML")
+        return True
+
+    if state == "admin_ban_user" and is_admin(uid):
+        try:
+            target = int(text.strip())
+            block_user(target)
+            user_state.pop(uid, None)
+            await update.message.reply_text(f"🚫 User banned: <code>{target}</code>", reply_markup=user_management_keyboard(), parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text("❌ Send valid user ID.", parse_mode="HTML")
+        return True
+
+    if state == "admin_unban_user" and is_admin(uid):
+        try:
+            target = int(text.strip())
+            unblock_user(target)
+            user_state.pop(uid, None)
+            await update.message.reply_text(f"✅ User unbanned: <code>{target}</code>", reply_markup=user_management_keyboard(), parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text("❌ Send valid user ID.", parse_mode="HTML")
+        return True
+
+    if state == "admin_coupon_create" and is_admin(uid):
+        try:
+            parts = [x.strip() for x in text.split("|")]
+            if len(parts) < 5:
+                raise ValueError("Missing fields")
+
+            code = parts[0].upper()
+            dtype = parts[1].lower()
+            value = float(parts[2])
+            max_uses = int(parts[3]) if parts[3] else 0
+            hours = float(parts[4]) if parts[4] else 24
+
+            if dtype not in ("percent", "fixed"):
+                raise ValueError("discount type must be percent or fixed")
+
+            if hours <= 0:
+                hours = 24
+
+            ends = (now() + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO coupons(code, discount_type, value, active, max_uses, used_count, expires_at)
+                VALUES(?,?,?,?,?,COALESCE((SELECT used_count FROM coupons WHERE code=?),0),?)
+                """,
+                (code, dtype, value, 1, max_uses, code, ends)
+            )
+            conn.commit()
+            user_state.pop(uid, None)
+
+            sent, failed = await broadcast_coupon_created(context, code, dtype, value, max_uses, ends)
+
+            discount_text = f"{value:g}%" if dtype == "percent" else f"${value:.2f}"
+
+            await update.message.reply_text(
+                f"""✅ <b>Coupon Saved</b>
+
+🎟 Code: <code>{code}</code>
+💝 Discount: <code>{discount_text}</code>
+⏳ Validity: <code>{hours:g} hours</code>
+📌 Expires: <code>{ends}</code>
+📢 Broadcast sent to <code>{sent}</code> users""",
+                reply_markup=admin_coupons_keyboard(),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Wrong Format</b>\n\nUse:\n<code>WELCOME10 | percent | 10 | 100 | 24</code>",
+                parse_mode="HTML"
+            )
+            return True
+        return True
+
+    if state == "admin_coupon_delete" and is_admin(uid):
+        code = text.strip().upper()
+        cur.execute("DELETE FROM coupons WHERE code=?", (code,))
+        cur.execute("DELETE FROM user_coupons WHERE code=?", (code,))
+        conn.commit()
+        user_state.pop(uid, None)
+        await update.message.reply_text(
+            f"🗑 <b>Coupon deleted:</b> <code>{code}</code>",
+            reply_markup=admin_coupons_keyboard(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state and state.startswith("admin_flash_set:") and is_admin(uid):
+        try:
+            product_id = int(state.split(":")[1])
+            price_text, hours_text = [x.strip() for x in text.split("|", 1)]
+            flash_price = float(price_text)
+            hours = _parse_hours(hours_text)
+            ends = (now() + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+            if flash_price <= 0:
+                raise ValueError("Flash price must be more than 0")
+
+            cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
+            product_row = cur.fetchone()
+            product_name = product_row[0] if product_row else f"Product #{product_id}"
+            old_price = float(product_row[1]) if product_row else flash_price
+
+            cur.execute("UPDATE products SET flash_price=?, flash_ends_at=? WHERE id=?", (flash_price, ends, product_id))
+            conn.commit()
+            user_state.pop(uid, None)
+            log_admin_action(uid, "FLASH_SALE_SET", f"Product #{product_id} | {flash_price} | ends {ends}")
+
+            sent, failed = await broadcast_flash_sale(
+                context,
+                product_id,
+                product_name,
+                old_price,
+                flash_price,
+                ends,
+            )
+
+            await update.message.reply_text(
+                f"""✅ <b>Flash Sale Set</b>
+
+🆔 Product: <code>{product_id}</code>
+📦 Name: <b>{product_name}</b>
+💵 Old Price: <code>${old_price:.2f}</code>
+🔥 Sale Price: <code>${flash_price:.2f}</code>
+⏳ Ends: <code>{ends}</code>
+
+📢 Broadcast sent to <code>{sent}</code> users""",
+                reply_markup=flash_sale_keyboard(product_id),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Wrong Format</b>\n\nUse:\n<code>0.70 | 24</code>",
+                parse_mode="HTML"
+            )
+            return True
+        return True
+
+    if state == "admin_search_order_query" and is_admin(uid):
+        query = text.strip()
+        try:
+            if query.isdigit():
+                qid = int(query)
+                cur.execute("""
+                    SELECT id, user_id, product_name, price, created
+                    FROM orders
+                    WHERE id=? OR user_id=?
+                    ORDER BY id DESC
+                    LIMIT 20
+                """, (qid, qid))
+            else:
+                cur.execute("""
+                    SELECT id, user_id, product_name, price, created
+                    FROM orders
+                    WHERE product_name LIKE ?
+                    ORDER BY id DESC
+                    LIMIT 20
+                """, (f"%{query}%",))
+
+            rows = cur.fetchall()
+            user_state.pop(uid, None)
+
+            if not rows:
+                await update.message.reply_text(
+                    "❌ <b>No orders found.</b>",
+                    reply_markup=admin_orders_users_menu(),
+                    parse_mode="HTML"
+                )
+                return True
+
+            msg = f"🔎 <b>Order Search Results</b>\n\nFound: <code>{len(rows)}</code>\n\nChoose an order:"
+            await update.message.reply_text(
+                msg,
+                reply_markup=order_search_results_keyboard(rows),
+                parse_mode="HTML"
+            )
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Search failed.</b>\n\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+            return True
+        return True
+
+    if state and state.startswith("admin_order_refund_confirm:") and is_admin(uid):
+        try:
+            order_id = int(state.split(":")[1])
+            if text.strip().upper() != "REFUND":
+                raise ValueError("Missing REFUND")
+            cur.execute("SELECT user_id, product_name, price FROM orders WHERE id=?", (order_id,))
+            order = cur.fetchone()
+            if not order:
+                await update.message.reply_text("❌ <b>Order not found.</b>", parse_mode="HTML")
+                user_state.pop(uid, None)
+                return True
+            target_id, product_name, price = order
+            cur.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (price, target_id))
+            conn.commit()
+            log_admin_action(uid, "ORDER_DETAIL_REFUND", f"Order #{order_id} | user {target_id} | amount {price:.2f}")
+            user_state.pop(uid, None)
+            await update.message.reply_text(f"""✅ <b>Order Refunded</b>
+
+🧾 <b>Order:</b> <code>#{order_id}</code>
+👤 <b>User:</b> <code>{target_id}</code>
+📦 <b>Product:</b> {product_name}
+💰 <b>Refunded:</b> <code>${price:.2f}</code>""", reply_markup=admin_order_detail_keyboard(order_id, target_id), parse_mode="HTML")
+            try:
+                await context.bot.send_message(chat_id=target_id, text=f"💸 <b>Your order was refunded</b>\n\n🧾 <b>Order:</b> <code>#{order_id}</code>\n📦 <b>Product:</b> {product_name}\n💰 <b>Refund:</b> <code>${price:.2f}</code>", parse_mode="HTML")
+            except Exception:
+                pass
+        except Exception:
+            await update.message.reply_text("❌ Send <code>REFUND</code> to confirm.", parse_mode="HTML")
+            return True
+        return True
+
+    if state and state.startswith("admin_order_delete_confirm:") and is_admin(uid):
+        try:
+            order_id = int(state.split(":")[1])
+            if text.strip().upper() != "DELETE":
+                raise ValueError("Missing DELETE")
+            cur.execute("DELETE FROM orders WHERE id=?", (order_id,))
+            conn.commit()
+            log_admin_action(uid, "ORDER_LOG_DELETE", f"Order #{order_id}")
+            user_state.pop(uid, None)
+            await update.message.reply_text(f"✅ <b>Order log deleted.</b>\n\n🧾 Order: <code>#{order_id}</code>", reply_markup=admin_orders_list_keyboard(), parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text("❌ Send <code>DELETE</code> to confirm.", parse_mode="HTML")
+            return True
+        return True
+
+    if state and state.startswith("admin_offer_add:") and is_admin(uid):
+        try:
+            product_id = int(state.split(":")[1])
+            lines = [x.strip() for x in text.splitlines() if x.strip()]
+            if not lines:
+                raise ValueError("No offers found")
+
+            saved = []
+            for line in lines:
+                if "|" not in line:
+                    raise ValueError("Use QUANTITY | PRICE format")
+                qty_text, price_text = [x.strip() for x in line.split("|", 1)]
+                qty = int(qty_text)
+                offer_price = float(price_text)
+                if qty <= 0 or offer_price <= 0:
+                    raise ValueError("Quantity and price must be greater than 0")
+                set_product_price_tier(product_id, qty, offer_price)
+                saved.append((qty, offer_price))
+
+            log_admin_action(uid, "PRICE_OFFER_SET", f"Product {product_id} | {saved}")
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                "✅ <b>Price offers saved.</b>",
+                reply_markup=price_offers_keyboard(product_id),
+                parse_mode="HTML"
+            )
+            await update.message.reply_text(
+                get_price_offers_text(product_id),
+                reply_markup=price_offers_keyboard(product_id),
+                parse_mode="HTML"
+            )
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Offer save failed.</b>\\n\\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+            return True
+        return True
+
+    if state and state.startswith("admin_offer_delete:") and is_admin(uid):
+        try:
+            product_id = int(state.split(":")[1])
+            qty = int(text.strip())
+            deleted = delete_product_price_tier(product_id, qty)
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                f"{'✅' if deleted else '⚠️'} <b>Offer delete completed.</b>\\n\\nQuantity: <code>{qty}</code>",
+                reply_markup=price_offers_keyboard(product_id),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text("❌ Send only quantity. Example: <code>5</code>", parse_mode="HTML")
+            return True
+        return True
+
+    if state and state.startswith("admin_offer_clear:") and is_admin(uid):
+        try:
+            product_id = int(state.split(":")[1])
+            if text.strip().upper() != "CLEAR":
+                raise ValueError("Missing CLEAR")
+            clear_product_price_tiers(product_id)
+            user_state.pop(uid, None)
+            log_admin_action(uid, "PRICE_OFFERS_CLEAR", f"Product {product_id}")
+
+            await update.message.reply_text(
+                "✅ <b>All price offers cleared.</b>",
+                reply_markup=price_offers_keyboard(product_id),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text("❌ Send <code>CLEAR</code> to confirm.", parse_mode="HTML")
+            return True
+        return True
+
+    if state == "admin_add_product_name" and is_admin(uid):
+        admin_temp_data.setdefault(uid, {})["name"] = text
+        user_state[uid] = "admin_add_product_price"
+        await update.message.reply_text(
+            "💰 <b>Step 2/7</b>\n\nSend product price.\n\nExample:\n<code>0.70</code>",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="admin_add_cancel")]]),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_price" and is_admin(uid):
+        try:
+            admin_temp_data.setdefault(uid, {})["price"] = float(text)
+            user_state[uid] = "admin_add_product_description"
+            await update.message.reply_text(
+                "📝 <b>Step 3/7</b>\n\nSend product description or skip.",
+                reply_markup=add_product_skip_keyboard(),
+                parse_mode="HTML"
+            )
+        except Exception:
+            await update.message.reply_text("❌ Send only price, example: <code>0.70</code>", parse_mode="HTML")
+        return True
+
+    if state == "admin_add_product_description" and is_admin(uid):
+        admin_temp_data.setdefault(uid, {})["description"] = text
+        user_state[uid] = "admin_add_product_validity"
+        await update.message.reply_text(
+            "📌 <b>Step 4/7</b>\n\nSend validity or skip.\n\nExample:\n<code>30 Days</code>",
+            reply_markup=add_product_skip_keyboard(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_validity" and is_admin(uid):
+        admin_temp_data.setdefault(uid, {})["validity"] = text
+        user_state[uid] = "admin_add_product_warranty"
+        await update.message.reply_text(
+            "🛡 <b>Step 5/7</b>\n\nSend warranty or skip.\n\nExample:\n<code>Replacement if invalid</code>",
+            reply_markup=add_product_skip_keyboard(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_warranty" and is_admin(uid):
+        admin_temp_data.setdefault(uid, {})["warranty"] = text
+        user_state[uid] = "admin_add_product_rules"
+        await update.message.reply_text(
+            "📜 <b>Step 6/7</b>\n\nSend rules/terms or skip.",
+            reply_markup=add_product_skip_keyboard(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_rules" and is_admin(uid):
+        admin_temp_data.setdefault(uid, {})["rules"] = text
+        user_state[uid] = "admin_add_product_photo"
+        await update.message.reply_text(
+            "🖼 <b>Step 7/7</b>\n\nSend product photo or skip.",
+            reply_markup=add_product_photo_keyboard(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_photo" and is_admin(uid):
+        await update.message.reply_text(
+            "🖼 Please send a photo/image, or tap Skip Photo.",
+            reply_markup=add_product_photo_keyboard(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_stock" and is_admin(uid):
+        if text.strip().lower() in ("skip", "/skip", "-"):
+            items = []
+        else:
+            items = [x.strip() for x in text.replace(";;", "\n").splitlines() if x.strip()]
+        admin_temp_data.setdefault(uid, {})["stock_items"] = items
+        user_state[uid] = "admin_add_product_preview"
+        await update.message.reply_text(
+            add_product_preview_text(uid),
+            reply_markup=add_product_preview_keyboard(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state and state.startswith("admin_codes_add:") and is_admin(uid):
+        try:
+            product_id = int(state.split(":")[1])
+
+            cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
+            product = cur.fetchone()
+            if not product:
+                await update.message.reply_text("❌ <b>Product not found.</b>", parse_mode="HTML")
+                user_state.pop(uid, None)
+                return True
+
+            delivery = text.replace("\n", ";;")
+            added = restock_product(product_id, delivery)
+            available = get_available_stock_count(product_id)
+
+            cur.execute("UPDATE products SET stock=? WHERE id=?", (available, product_id))
+            conn.commit()
+
+            product_name, product_price = product
+            log_admin_action(uid, "CODE_MANAGER_ADD", f"Product ID {product_id} | added {added} | available {available}")
+
+            try:
+                sent, failed = await broadcast_product_update(
+                    context,
+                    product_id,
+                    product_name,
+                    float(product_price),
+                    added,
+                    available,
+                    mode="stock",
+                )
+            except Exception:
+                sent, failed = 0, 0
+
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                f"""✅ <b>Codes Added</b>
+
+📦 Product: <b>{product_name}</b>
+➕ Added: <code>{added}</code>
+📊 Available Now: <code>{available}</code>
+📢 Broadcast: sent to <code>{sent}</code> users""",
+                reply_markup=product_codes_keyboard(product_id),
+                parse_mode="HTML"
+            )
+
+            msg = get_product_codes_text(product_id) or "✅ Codes added."
+            await update.message.reply_text(
+                msg,
+                reply_markup=product_codes_keyboard(product_id),
+                parse_mode="HTML"
+            )
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Add codes failed.</b>\n\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+            return True
+
+        return True
+
+    if state and state.startswith("admin_codes_delete:") and is_admin(uid):
+        try:
+            product_id = int(state.split(":")[1])
+            raw = text.strip()
+
+            if "DELETE" not in raw.upper().split():
+                raise ValueError("Confirmation word DELETE missing")
+
+            clean = raw.replace(",", " ").replace("DELETE", "").replace("delete", "")
+            stock_ids = [int(x) for x in clean.split() if x.strip().isdigit()]
+
+            if not stock_ids:
+                raise ValueError("No Stock IDs found")
+
+            deleted = []
+            skipped = []
+
+            for sid in stock_ids:
+                cur.execute("SELECT id FROM product_stock WHERE id=? AND product_id=?", (sid, product_id))
+                row = cur.fetchone()
+
+                if not row:
+                    skipped.append(sid)
+                    continue
+
+                cur.execute("DELETE FROM product_stock WHERE id=? AND product_id=?", (sid, product_id))
+                deleted.append(sid)
+
+            available = get_available_stock_count(product_id)
+            cur.execute("UPDATE products SET stock=? WHERE id=?", (available, product_id))
+            conn.commit()
+
+            log_admin_action(uid, "CODE_MANAGER_DELETE", f"Product ID {product_id} | deleted {deleted} | skipped {skipped}")
+
+            user_state.pop(uid, None)
+
+            msg = f"""🗑 <b>Codes Permanently Deleted</b>
+
+🆔 <b>Product ID:</b> <code>{product_id}</code>
+✅ <b>Deleted Stock IDs:</b> <code>{', '.join(map(str, deleted)) if deleted else 'None'}</code>
+⚠️ <b>Skipped:</b> <code>{', '.join(map(str, skipped)) if skipped else 'None'}</code>
+📊 <b>Available Now:</b> <code>{available}</code>"""
+
+            await update.message.reply_text(
+                msg,
+                reply_markup=product_codes_keyboard(product_id),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                """❌ <b>Wrong Format</b>
+
+Use:
+<code>12,15,18 DELETE</code>
+
+You must include the confirmation word <code>DELETE</code>.""",
+                parse_mode="HTML"
+            )
+            return True
+
+        return True
+
+    if state and state.startswith("admin_easy_edit:") and is_admin(uid):
+        try:
+            _, product_id_text, field = state.split(":", 2)
+            product_id = int(product_id_text)
+            value = text.strip()
+            cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+            product = cur.fetchone()
+            if not product:
+                await update.message.reply_text("❌ <b>Product not found.</b>", parse_mode="HTML")
+                user_state.pop(uid, None)
+                return True
+            if field == "price":
+                value = float(value)
+            allowed = {"name","price","description","validity","warranty","rules"}
+            if field not in allowed:
+                await update.message.reply_text("❌ <b>Invalid field.</b>", parse_mode="HTML")
+                user_state.pop(uid, None)
+                return True
+            cur.execute(f"UPDATE products SET {field}=? WHERE id=?", (value, product_id))
+            conn.commit()
+            log_admin_action(uid, "EASY_EDIT_PRODUCT", f"Product #{product_id} field={field}")
+            user_state.pop(uid, None)
+            await update.message.reply_text(f"✅ <b>Product Updated</b>\n\n🆔 Product ID: <code>{product_id}</code>\n✏️ Field: <code>{field}</code>", reply_markup=product_edit_options_keyboard(product_id), parse_mode="HTML")
+        except Exception as exc:
+            await update.message.reply_text(f"❌ <b>Update failed.</b>\n\n<code>{exc}</code>", parse_mode="HTML")
+            return True
+        return True
+
+    if state and state.startswith("admin_easy_add_stock:") and is_admin(uid):
+        try:
+            product_id = int(state.split(":")[1])
+            cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
+            product = cur.fetchone()
+            if not product:
+                await update.message.reply_text("❌ <b>Product not found.</b>", parse_mode="HTML")
+                user_state.pop(uid, None)
+                return True
+            delivery = text.replace("\n", ";;")
+            added = restock_product(product_id, delivery)
+            available = get_available_stock_count(product_id)
+            cur.execute("UPDATE products SET stock=? WHERE id=?", (available, product_id))
+            conn.commit()
+            product_name, product_price = product
+            log_admin_action(uid, "EASY_ADD_STOCK", f"Product ID {product_id} | added {added} | available {available}")
+            try:
+                sent, failed = await broadcast_product_update(context, product_id, product_name, float(product_price), added, available, mode="stock")
+            except Exception:
+                sent, failed = 0, 0
+            user_state.pop(uid, None)
+            await update.message.reply_text(f"""✅ <b>Stock Added</b>
+
+📦 Product: <b>{product_name}</b>
+🆔 ID: <code>{product_id}</code>
+➕ Added: <code>{added}</code>
+📊 Available Now: <code>{available}</code>
+📢 Broadcast: sent to <code>{sent}</code> users""", reply_markup=products_select_keyboard("admin_stock_select"), parse_mode="HTML")
+        except Exception as exc:
+            await update.message.reply_text(f"❌ <b>Stock add failed.</b>\n\n<code>{exc}</code>", parse_mode="HTML")
+            return True
+        return True
+
+    if state == "admin_process_withdrawal" and is_admin(uid):
+        allowed, wait = admin_action_allowed(uid, "withdrawal_action")
+        if not allowed:
+            await update.message.reply_text(
+                f"⏳ <b>Security Cooldown</b>\n\nPlease wait {wait} seconds before repeating this admin action.",
+                parse_mode="HTML"
+            )
+            return True
+
+        try:
+            parts = text.strip().split(maxsplit=2)
+            if len(parts) < 2:
+                raise ValueError("Missing action")
+
+            withdrawal_id = int(parts[0])
+            action = parts[1].upper()
+            note = parts[2] if len(parts) > 2 else ""
+
+            if action not in ("APPROVE", "REJECT"):
+                raise ValueError("Invalid action")
+
+            status = "approved" if action == "APPROVE" else "rejected"
+            result = update_withdrawal_status(withdrawal_id, status, note)
+
+            if not result:
+                await update.message.reply_text("❌ <b>Withdrawal request not found.</b>", parse_mode="HTML")
+                return True
+
+            target_id, amount, old_status = result
+
+            if old_status != "pending":
+                await update.message.reply_text(
+                    f"⚠️ <b>Request already processed.</b>\n\nCurrent status: <code>{old_status}</code>",
+                    parse_mode="HTML"
+                )
+                return True
+
+            log_admin_action(uid, f"WITHDRAWAL_{status.upper()}", f"Request #{withdrawal_id} | user {target_id} | {amount:.6f}")
+
+            await update.message.reply_text(
+                f"""✅ <b>Withdrawal {status.title()}</b>
+
+🧾 <b>Request:</b> <code>#{withdrawal_id}</code>
+👤 <b>User:</b> <code>{target_id}</code>
+💰 <b>Amount:</b> <code>{amount:.6f} USDT</code>""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text=(
+                        f"💸 <b>Withdrawal {status.title()}</b>\n\n"
+                        f"🧾 Request: <code>#{withdrawal_id}</code>\n"
+                        f"💰 Amount: <code>{amount:.6f} USDT</code>\n"
+                        + (f"📝 Note: {note}" if note else "")
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+        except Exception:
+            await update.message.reply_text(
+                """❌ <b>Wrong Format</b>
+
+Use:
+<code>REQUEST_ID APPROVE</code>
+or
+<code>REQUEST_ID REJECT reason</code>""",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_referral_settings" and is_admin(uid):
+        try:
+            percent_text, min_text = [x.strip() for x in text.split("|", 1)]
+            percent = float(percent_text)
+            minimum = float(min_text)
+
+            if percent < 0 or percent > 100:
+                raise ValueError("Referral percent must be 0-100")
+            if minimum < 0:
+                raise ValueError("Minimum cannot be negative")
+
+            set_setting("referral_percent", percent)
+            set_setting("min_withdrawal", minimum)
+            log_admin_action(uid, "REFERRAL_SETTINGS", f"{percent}% | min {minimum}")
+
+            await update.message.reply_text(
+                f"""✅ <b>Referral Settings Updated</b>
+
+📊 Commission: <code>{percent}%</code>
+💸 Minimum Withdrawal: <code>{minimum} USDT</code>""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"""❌ <b>Wrong Format</b>
+
+Use:
+<code>5 | 1</code>
+
+Error:
+<code>{exc}</code>""",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_featured_products" and is_admin(uid):
+        try:
+            product_id_text, action = text.strip().split(maxsplit=1)
+            product_id = int(product_id_text)
+            action = action.upper()
+
+            if action not in ("ON", "OFF"):
+                raise ValueError("Use ON or OFF")
+
+            cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+            product = cur.fetchone()
+            if not product:
+                await update.message.reply_text("❌ <b>Product not found.</b>", parse_mode="HTML")
+                return True
+
+            featured = 1 if action == "ON" else 0
+            set_product_featured(product_id, featured)
+            log_admin_action(uid, "FEATURED_PRODUCT", f"Product #{product_id} {action}")
+
+            await update.message.reply_text(
+                f"""⭐ <b>Featured Product Updated</b>
+
+🆔 Product ID: <code>{product_id}</code>
+📦 Product: <b>{product[0]}</b>
+⭐ Featured: <b>{action}</b>""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Wrong Format</b>\n\nUse: <code>PRODUCT_ID ON</code> or <code>PRODUCT_ID OFF</code>",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_set_product_image" and is_admin(uid):
+        try:
+            product_id = int(text.strip())
+            cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+            product = cur.fetchone()
+            if not product:
+                await update.message.reply_text("❌ <b>Product not found.</b>", parse_mode="HTML")
+                return True
+
+            context.user_data["image_product_id"] = product_id
+            user_state[uid] = "admin_wait_product_image"
+
+            await update.message.reply_text(
+                f"""🖼 <b>Send Product Image</b>
+
+📦 Product: <b>{product[0]}</b>
+🆔 ID: <code>{product_id}</code>
+
+Now send the image/photo.""",
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Invalid Product ID.</b>\n\nSend only product ID. Example: <code>12</code>",
+                parse_mode="HTML"
+            )
+            return True
+
+        return True
+
+    if state == "admin_remove_product_image" and is_admin(uid):
+        try:
+            product_id = int(text.strip())
+            remove_product_image(product_id)
+            log_admin_action(uid, "REMOVE_PRODUCT_IMAGE", f"Product #{product_id}")
+
+            await update.message.reply_text(
+                f"✅ <b>Product image removed.</b>\n\n🆔 Product ID: <code>{product_id}</code>",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Invalid Product ID.</b>\n\nSend only product ID. Example: <code>12</code>",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_search_orders" and is_admin(uid):
+        try:
+            query = text.strip()
+            if query.isdigit():
+                cur.execute("""
+                    SELECT id, user_id, product_name, price, delivery, created
+                    FROM orders
+                    WHERE id=? OR user_id=?
+                    ORDER BY id DESC
+                    LIMIT 30
+                """, (int(query), int(query)))
+            else:
+                cur.execute("""
+                    SELECT id, user_id, product_name, price, delivery, created
+                    FROM orders
+                    WHERE product_name LIKE ?
+                    ORDER BY id DESC
+                    LIMIT 30
+                """, (f"%{query}%",))
+
+            rows = cur.fetchall()
+            msg = f"🔎 <b>Order Search</b> — <code>{query}</code>\n\n"
+
+            if not rows:
+                msg += "No orders found."
+            else:
+                for order_id, user_id, product_name, price, delivery, created in rows:
+                    delivery = decrypt_text(delivery)
+                    msg += (
+                        f"🧾 <b>Order:</b> <code>#{order_id}</code>\n"
+                        f"👤 <b>User:</b> <code>{user_id}</code>\n"
+                        f"📦 <b>Product:</b> {product_name}\n"
+                        f"💰 <b>Price:</b> <code>{price:.2f} USDT</code>\n"
+                        f"🕒 <code>{created}</code>\n"
+                        f"🔄 Resend: <code>{order_id}</code>\n"
+                        f"💸 Refund: <code>{order_id} REFUND</code>\n\n"
+                    )
+
+            if len(msg) > 3900:
+                msg = msg[:3900] + "\n..."
+
+            await update.message.reply_text(msg, reply_markup=admin_menu(), parse_mode="HTML")
+
+        finally:
+            user_state.pop(uid, None)
+        return True
+
+    if state == "admin_search_user" and is_admin(uid):
+        try:
+            query = text.strip().replace("@", "")
+            if query.isdigit():
+                cur.execute("""
+                    SELECT user_id, first_name, username, balance, blocked, joined
+                    FROM users
+                    WHERE user_id=?
+                    LIMIT 20
+                """, (int(query),))
+            else:
+                cur.execute("""
+                    SELECT user_id, first_name, username, balance, blocked, joined
+                    FROM users
+                    WHERE username LIKE ? OR first_name LIKE ?
+                    ORDER BY joined DESC
+                    LIMIT 20
+                """, (f"%{query}%", f"%{query}%"))
+
+            rows = cur.fetchall()
+            msg = f"🔎 <b>User Search</b> — <code>{query}</code>\n\n"
+
+            if not rows:
+                msg += "No users found."
+            else:
+                for user_id, first_name, username, balance, blocked, joined in rows:
+                    cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (user_id,))
+                    order_count, spent = cur.fetchone()
+                    uname = f"@{username}" if username and username != "No username" else "No username"
+                    status = "🚫 Blocked" if blocked else "✅ Active"
+                    msg += (
+                        f"👤 <b>{first_name or 'User'}</b> / {uname}\n"
+                        f"🆔 <code>{user_id}</code>\n"
+                        f"💰 Balance: <code>{balance:.2f} USDT</code>\n"
+                        f"🛒 Orders: <code>{order_count}</code> | Spent: <code>{spent:.2f}</code>\n"
+                        f"🚦 {status}\n"
+                        f"🕒 <code>{joined}</code>\n\n"
+                    )
+
+            if len(msg) > 3900:
+                msg = msg[:3900] + "\n..."
+
+            await update.message.reply_text(msg, reply_markup=admin_menu(), parse_mode="HTML")
+
+        finally:
+            user_state.pop(uid, None)
+        return True
+
+    if state == "admin_user_orders" and is_admin(uid):
+        try:
+            target_id = int(text.strip())
+            cur.execute("SELECT first_name, username, balance FROM users WHERE user_id=?", (target_id,))
+            user = cur.fetchone()
+
+            cur.execute("""
+                SELECT id, product_name, price, created
+                FROM orders
+                WHERE user_id=?
+                ORDER BY id DESC
+                LIMIT 30
+            """, (target_id,))
+            orders = cur.fetchall()
+
+            msg = f"📜 <b>User Orders</b>\n\n🆔 User: <code>{target_id}</code>\n"
+            if user:
+                first_name, username, balance = user
+                uname = f"@{username}" if username and username != "No username" else "No username"
+                msg += f"👤 {first_name or 'User'} / {uname}\n💰 Balance: <code>{balance:.2f} USDT</code>\n\n"
+
+            if not orders:
+                msg += "No orders found for this user."
+            else:
+                for order_id, product_name, price, created in orders:
+                    msg += f"🧾 <code>#{order_id}</code> — {product_name} — <code>{price:.2f}</code>\n🕒 <code>{created}</code>\n\n"
+
+            if len(msg) > 3900:
+                msg = msg[:3900] + "\n..."
+
+            await update.message.reply_text(msg, reply_markup=admin_menu(), parse_mode="HTML")
+
+        except Exception:
+            await update.message.reply_text("❌ Send only user ID. Example: <code>7499348138</code>", parse_mode="HTML")
+            return True
+        finally:
+            user_state.pop(uid, None)
+        return True
+
+    if state == "admin_resend_order" and is_admin(uid):
+        try:
+            order_id = int(text.strip())
+            cur.execute("SELECT user_id, product_name, price, delivery, created FROM orders WHERE id=?", (order_id,))
+            order = cur.fetchone()
+
+            if not order:
+                await update.message.reply_text("❌ <b>Order not found.</b>", parse_mode="HTML")
+                return True
+
+            target_id, product_name, price, delivery, created = order
+            delivery = decrypt_text(delivery)
+
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=(
+                    "🔄 <b>Delivery Resent By Admin</b>\n\n"
+                    f"🧾 <b>Order:</b> <code>#{order_id}</code>\n"
+                    f"📦 <b>Product:</b> {product_name}\n"
+                    f"💰 <b>Paid:</b> <code>{price:.2f} USDT</code>\n\n"
+                    f"🔑 <b>Your Delivery</b>\n<code>{delivery}</code>"
+                ),
+                parse_mode="HTML"
+            )
+
+            log_admin_action(uid, "RESEND_ORDER", f"Order #{order_id} to user {target_id}")
+
+            await update.message.reply_text(
+                f"✅ <b>Delivery resent.</b>\n\n🧾 Order: <code>#{order_id}</code>\n👤 User: <code>{target_id}</code>",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Resend failed.</b>\n\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+            return True
+        finally:
+            user_state.pop(uid, None)
+        return True
+
+    if state == "admin_refund_order" and is_admin(uid):
+        allowed, wait = admin_action_allowed(uid, "refund_order")
+        if not allowed:
+            await update.message.reply_text(
+                f"⏳ <b>Security Cooldown</b>\n\nPlease wait {wait} seconds before repeating this admin action.",
+                parse_mode="HTML"
+            )
+            return True
+
+        try:
+            parts = text.strip().split()
+            if len(parts) != 2 or parts[1].upper() != "REFUND":
+                raise ValueError("Confirmation word missing")
+
+            order_id = int(parts[0])
+            cur.execute("SELECT user_id, product_name, price FROM orders WHERE id=?", (order_id,))
+            order = cur.fetchone()
+
+            if not order:
+                await update.message.reply_text("❌ <b>Order not found.</b>", parse_mode="HTML")
+                return True
+
+            target_id, product_name, price = order
+            cur.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (price, target_id))
+            conn.commit()
+
+            log_admin_action(uid, "REFUND_ORDER", f"Order #{order_id} | user {target_id} | amount {price:.2f}")
+
+            await update.message.reply_text(
+                f"""✅ <b>Order Refunded</b>
+
+🧾 <b>Order:</b> <code>#{order_id}</code>
+👤 <b>User:</b> <code>{target_id}</code>
+📦 <b>Product:</b> {product_name}
+💰 <b>Refunded:</b> <code>{price:.2f} USDT</code>""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text=(
+                        "💸 <b>Your order was refunded</b>\n\n"
+                        f"🧾 <b>Order:</b> <code>#{order_id}</code>\n"
+                        f"📦 <b>Product:</b> {product_name}\n"
+                        f"💰 <b>Refund:</b> <code>{price:.2f} USDT</code>\n\n"
+                        "Amount was added back to your wallet balance."
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Wrong Format</b>\n\nUse: <code>ORDER_ID REFUND</code>",
+                parse_mode="HTML"
+            )
+            return True
+        finally:
+            user_state.pop(uid, None)
+        return True
+
+    if state == "admin_remove_balance" and is_admin(uid):
+        allowed, wait = admin_action_allowed(uid, "remove_balance")
+        if not allowed:
+            await update.message.reply_text(
+                f"⏳ <b>Security Cooldown</b>\n\nPlease wait {wait} seconds before repeating this admin action.",
+                parse_mode="HTML"
+            )
+            return True
+
+        try:
+            target_id, amount = text.split()
+            target_id = int(target_id)
+            amount = float(amount)
+
+            cur.execute("SELECT balance FROM users WHERE user_id=?", (target_id,))
+            user = cur.fetchone()
+
+            if not user:
+                await update.message.reply_text("❌ <b>User not found.</b>", parse_mode="HTML")
+                return True
+
+            new_balance = max(0, float(user[0]) - amount)
+            cur.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, target_id))
+            conn.commit()
+
+            log_admin_action(uid, "REMOVE_BALANCE", f"User {target_id} | removed {amount:.2f} | new {new_balance:.2f}")
+
+            await update.message.reply_text(
+                f"""✅ <b>Balance Removed</b>
+
+🆔 <b>User:</b> <code>{target_id}</code>
+➖ <b>Removed:</b> <code>{amount:.2f} USDT</code>
+💰 <b>New Balance:</b> <code>{new_balance:.2f} USDT</code>""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Wrong Format</b>\n\nUse: <code>USER_ID AMOUNT</code>",
+                parse_mode="HTML"
+            )
+            return True
+        finally:
+            user_state.pop(uid, None)
+        return True
+
+    if state == "admin_add_product_name" and is_admin(uid):
+        admin_temp_data.setdefault(uid, {})["name"] = text
+        user_state[uid] = "admin_add_product_price"
+
+        await update.message.reply_text(
+            """💰 <b>Step 2/8</b>
+
+Send product price in USDT.
+
+Example:
+<code>0.70</code>""",
+            reply_markup=admin_menu(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_price" and is_admin(uid):
+        try:
+            admin_temp_data.setdefault(uid, {})["price"] = float(text)
+            user_state[uid] = "admin_add_product_stock"
+
+            await update.message.reply_text(
+                """📦 <b>Step 3/8</b>
+
+Send stock items.
+
+Use <code>;;</code> between each account/key/code.
+
+Example:
+<code>code1;;code2;;code3</code>""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+        except Exception:
+            await update.message.reply_text("❌ Send only price, example: <code>0.70</code>", parse_mode="HTML")
+            return True
+        return True
+
+    if state == "admin_add_product_stock" and is_admin(uid):
+        items = [x.strip() for x in text.replace(";;", "\n").splitlines() if x.strip()]
+        if not items:
+            await update.message.reply_text("❌ Send at least one stock item.", parse_mode="HTML")
+            return True
+
+        admin_temp_data.setdefault(uid, {})["delivery"] = ";;".join(items)
+        admin_temp_data.setdefault(uid, {})["stock"] = len(items)
+        user_state[uid] = "admin_add_product_description"
+
+        await update.message.reply_text(
+            f"""📝 <b>Step 4/8</b>
+
+Stock detected: <code>{len(items)}</code>
+
+Send product description.
+
+Example:
+<code>2 Months Premium Access. Activation link provided.</code>""",
+            reply_markup=admin_menu(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_description" and is_admin(uid):
+        admin_temp_data.setdefault(uid, {})["description"] = text
+        user_state[uid] = "admin_add_product_validity"
+
+        await update.message.reply_text(
+            """📌 <b>Step 5/8</b>
+
+Send validity.
+
+Example:
+<code>2 Months</code>""",
+            reply_markup=admin_menu(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_validity" and is_admin(uid):
+        admin_temp_data.setdefault(uid, {})["validity"] = text
+        user_state[uid] = "admin_add_product_warranty"
+
+        await update.message.reply_text(
+            """🛡 <b>Step 6/8</b>
+
+Send warranty.
+
+Example:
+<code>Replacement if not working</code>
+
+If no warranty, send:
+<code>No warranty</code>""",
+            reply_markup=admin_menu(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_warranty" and is_admin(uid):
+        admin_temp_data.setdefault(uid, {})["warranty"] = text
+        user_state[uid] = "admin_add_product_rules"
+
+        await update.message.reply_text(
+            """📜 <b>Step 7/8</b>
+
+Send rules / terms.
+
+Example:
+<code>Only for new users. Do not change account details.</code>""",
+            reply_markup=admin_menu(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_rules" and is_admin(uid):
+        admin_temp_data.setdefault(uid, {})["rules"] = text
+        user_state[uid] = "admin_add_product_redeem"
+
+        await update.message.reply_text(
+            """🔗 <b>Step 8/8</b>
+
+Send redeem/activation link or instruction.
+
+Example:
+<code>https://example.com/redeem</code>
+
+If not required, send:
+<code>Not required</code>""",
+            reply_markup=admin_menu(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_redeem" and is_admin(uid):
+        admin_temp_data.setdefault(uid, {})["redeem_link"] = text
+        user_state[uid] = "admin_add_product_max_order"
+
+        stock = int(admin_temp_data.get(uid, {}).get("stock", 1))
+        suggested = stock if stock <= 10 else 10
+
+        await update.message.reply_text(
+            f"""🔢 <b>Step 9/9</b>
+
+Send max quantity per order.
+
+Example:
+<code>1</code>
+
+Suggested:
+<code>{suggested}</code>""",
+            reply_markup=admin_menu(),
+            parse_mode="HTML"
+        )
+        return True
+
+    if state == "admin_add_product_max_order" and is_admin(uid):
+        try:
+            data = admin_temp_data.get(uid, {})
+
+            name = data["name"]
+            price = float(data["price"])
+            stock = int(data["stock"])
+            delivery = data["delivery"]
+            description = data.get("description", "No description added.")
+            validity = data.get("validity", "Not mentioned")
+            warranty = data.get("warranty", "No warranty")
+            rules = data.get("rules", "No rules mentioned")
+            redeem_link = data.get( "Not required")
+            max_per_order = int(text)
+
+            if max_per_order < 1:
+                max_per_order = 1
+
+            cur.execute(
+                """
+                INSERT INTO products(name, price, stock, delivery, description, validity, warranty, rules, redeem_link, max_per_order, active)
+                VALUES(?,?,?,?,?,?,?,?,?,?,1)
+                """,
+                (name, price, stock, delivery, description, validity, warranty, rules, redeem_link, max_per_order)
+            )
+            conn.commit()
+
+            product_id = cur.lastrowid
+            added_items = add_stock_items(product_id, delivery) if delivery else 0
+            cur.execute("UPDATE products SET stock=? WHERE id=?", (added_items, product_id))
+            conn.commit()
+
+            log_admin_action(uid, "ADD_PRODUCT", f"Product #{product_id} | {name} | {price:.2f} USDT | stock {added_items}")
+
+            sent, failed = await broadcast_product_update(
+                context,
+                product_id,
+                name,
+                price,
+                added_items,
+                added_items,
+                mode="product",
+            )
+
+            await update.message.reply_text(
+                f"""✅ <b>Product Added Successfully</b>
+
+🆔 <b>ID:</b> <code>{product_id}</code>
+📦 <b>Name:</b> {name}
+💰 <b>Price:</b> <code>{price:.2f} USDT</code>
+📊 <b>Stock:</b> <code>{added_items}</code>
+📌 <b>Validity:</b> {validity}
+🛡 <b>Warranty:</b> {warranty}
+
+Product is now live in the shop.
+
+📢 <b>Broadcast:</b> sent to <code>{sent}</code> users.""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Product add failed.</b>\n\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+            admin_temp_data.pop(uid, None)
+
+        return True
+
+
+    if state == "admin_quick_add_product" and is_admin(uid):
+        try:
+            parts = [x.strip() for x in text.split("|")]
+
+            if len(parts) < 3:
+                raise ValueError("Missing required fields")
+
+            name = parts[0]
+            price = float(parts[1])
+            delivery = parts[2]
+            description = parts[3] if len(parts) > 3 and parts[3] and parts[3] != "-" else "No description added."
+            validity = parts[4] if len(parts) > 4 and parts[4] and parts[4] != "-" else "Not mentioned"
+            warranty = parts[5] if len(parts) > 5 and parts[5] and parts[5] != "-" else "No warranty"
+            rules = parts[6] if len(parts) > 6 and parts[6] and parts[6] != "-" else "No rules mentioned"
+            redeem_link = parts[7] if len(parts) > 7 and parts[7] and parts[7] != "-" else "Not required"
+            max_per_order = 999
+
+            items = [x.strip() for x in delivery.replace(";;", "\n").splitlines() if x.strip()]
+            if not items:
+                raise ValueError("No stock items found")
+
+            delivery_joined = ";;".join(items)
+            stock = len(items)
+
+            cur.execute(
+                """
+                INSERT INTO products(name, price, stock, delivery, description, validity, warranty, rules, redeem_link, max_per_order, active)
+                VALUES(?,?,?,?,?,?,?,?,?,?,1)
+                """,
+                (name, price, stock, delivery_joined, description, validity, warranty, rules, redeem_link, max_per_order)
+            )
+            conn.commit()
+
+            product_id = cur.lastrowid
+            added_items = add_stock_items(product_id, delivery_joined)
+            cur.execute("UPDATE products SET stock=? WHERE id=?", (added_items, product_id))
+            conn.commit()
+
+            log_admin_action(uid, "QUICK_ADD_PRODUCT", f"Product #{product_id} | {name} | stock {added_items}")
+
+            sent, failed = await broadcast_product_update(
+                context,
+                product_id,
+                name,
+                price,
+                added_items,
+                added_items,
+                mode="product",
+            )
+
+            await update.message.reply_text(
+                f"""✅ <b>Product Added Successfully</b>
+
+🆔 <b>ID:</b> <code>{product_id}</code>
+📦 <b>Name:</b> {name}
+💰 <b>Price:</b> <code>{price:.2f} USDT</code>
+📊 <b>Stock:</b> <code>{added_items}</code>
+📌 <b>Validity:</b> {validity}
+🛡 <b>Warranty:</b> {warranty}
+🔢 <b>Max Per Order:</b> <code>{max_per_order}</code>""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"""❌ <b>Quick Add Failed</b>
+
+<code>{exc}</code>
+
+Use format:
+<code>name | price | stock_items | description | validity | warranty | rules | redeem_link</code>""",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_permanent_delete_product" and is_admin(uid):
+        try:
+            parts = text.strip().split()
+            if len(parts) != 2 or parts[1].upper() != "DELETE":
+                raise ValueError("Confirmation word missing")
+
+            pid = int(parts[0])
+
+            cur.execute("SELECT name FROM products WHERE id=?", (pid,))
+            product = cur.fetchone()
+
+            if not product:
+                await update.message.reply_text(
+                    "❌ <b>Product not found.</b>\n\nCheck product ID from Products panel.",
+                    parse_mode="HTML"
+                )
+                return True
+
+            product_name = product[0]
+
+            cur.execute("DELETE FROM product_stock WHERE product_id=?", (pid,))
+            cur.execute("DELETE FROM products WHERE id=?", (pid,))
+            conn.commit()
+
+            log_admin_action(uid, "PERMANENT_DELETE_PRODUCT", f"Product ID {pid} | {product_name}")
+
+            await update.message.reply_text(
+                f"""🗑 <b>Product Permanently Deleted</b>
+
+🆔 <b>Product ID:</b> <code>{pid}</code>
+📦 <b>Name:</b> <code>{product_name}</code>
+
+All stock rows for this product were also deleted.""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                """❌ <b>Wrong Format</b>
+
+Use:
+<code>PRODUCT_ID DELETE</code>
+
+Example:
+<code>12 DELETE</code>""",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_quick_add_product" and is_admin(uid):
+        try:
+            parts = [x.strip() for x in text.split("|")]
+            if len(parts) < 3:
+                raise ValueError("Missing required fields")
+
+            name = parts[0]
+            price = float(parts[1])
+            delivery = parts[2]
+            description = parts[3] if len(parts) > 3 and parts[3] and parts[3] != "-" else "No description added."
+            validity = parts[4] if len(parts) > 4 and parts[4] and parts[4] != "-" else "Not mentioned"
+            warranty = parts[5] if len(parts) > 5 and parts[5] and parts[5] != "-" else "No warranty"
+            rules = parts[6] if len(parts) > 6 and parts[6] and parts[6] != "-" else "No rules mentioned"
+            redeem_link = parts[7] if len(parts) > 7 and parts[7] and parts[7] != "-" else "Not required"
+            max_per_order = 999
+
+            items = [x.strip() for x in delivery.replace(";;", "\n").splitlines() if x.strip()]
+            if not items:
+                raise ValueError("No stock items found")
+
+            delivery_joined = ";;".join(items)
+            stock = len(items)
+
+            cur.execute(
+                """
+                INSERT INTO products(name, price, stock, delivery, description, validity, warranty, rules, redeem_link, max_per_order, active)
+                VALUES(?,?,?,?,?,?,?,?,?,?,1)
+                """,
+                (name, price, stock, delivery_joined, description, validity, warranty, rules, redeem_link, max_per_order)
+            )
+            conn.commit()
+
+            product_id = cur.lastrowid
+            added_items = add_stock_items(product_id, delivery_joined)
+            cur.execute("UPDATE products SET stock=? WHERE id=?", (added_items, product_id))
+            conn.commit()
+
+            log_admin_action(uid, "QUICK_ADD_PRODUCT", f"Product #{product_id} | {name} | stock {added_items}")
+
+            sent, failed = await broadcast_product_update(
+                context,
+                product_id,
+                name,
+                price,
+                added_items,
+                added_items,
+                mode="product",
+            )
+
+            await update.message.reply_text(
+                f"""✅ <b>Product Added Successfully</b>
+
+🆔 <b>ID:</b> <code>{product_id}</code>
+📦 <b>Name:</b> {name}
+💰 <b>Price:</b> <code>{price:.2f} USDT</code>
+📊 <b>Stock:</b> <code>{added_items}</code>
+📌 <b>Validity:</b> {validity}
+🛡 <b>Warranty:</b> {warranty}
+🔢 <b>Max Per Order:</b> <code>{max_per_order}</code>""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"""❌ <b>Quick Add Failed</b>
+
+<code>{exc}</code>
+
+Use:
+<code>name | price | stock_items | description | validity | warranty | rules | redeem_link</code>""",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_search_product" and is_admin(uid):
+        try:
+            query = text.strip()
+            if query.isdigit():
+                cur.execute(
+                    "SELECT id, name, price, stock, active, description, validity, warranty, max_per_order FROM products WHERE id=?",
+                    (int(query),)
+                )
+            else:
+                cur.execute(
+                    "SELECT id, name, price, stock, active, description, validity, warranty, max_per_order FROM products WHERE name LIKE ? OR description LIKE ? ORDER BY id DESC LIMIT 20",
+                    (f"%{query}%", f"%{query}%")
+                )
+
+            rows = cur.fetchall()
+            msg = f"🔎 <b>Product Search</b> — <code>{query}</code>\n\n"
+
+            if not rows:
+                msg += "No products found."
+            else:
+                for pid, name, price, old_stock, active, description, validity, warranty, max_per_order in rows:
+                    live_stock = get_available_stock_count(pid)
+                    stock = live_stock if live_stock > 0 else old_stock
+                    status = "🟢 ON" if active else "🔴 HIDDEN"
+                    stock_status = "🔴 OUT" if stock <= 0 else ("🟡 LOW" if stock <= 5 else "🟢 OK")
+                    msg += (
+                        f"🆔 <code>{pid}</code> | {status} | {stock_status}\n"
+                        f"📦 <b>{name}</b>\n"
+                        f"💰 <code>{price:.2f} USDT</code> | 📊 <code>{stock}</code> | Max <code>{max_per_order}</code>\n"
+                        f"📌 {validity}\n"
+                        f"🛡 {warranty}\n\n"
+                    )
+
+            if len(msg) > 3900:
+                msg = msg[:3900] + "\n..."
+
+            await update.message.reply_text(msg, reply_markup=admin_menu(), parse_mode="HTML")
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_bulk_add_stock" and is_admin(uid):
+        try:
+            product_id_text, delivery = [x.strip() for x in text.split("|", 1)]
+            product_id = int(product_id_text)
+
+            cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+            product = cur.fetchone()
+            if not product:
+                await update.message.reply_text("❌ <b>Product not found.</b>", parse_mode="HTML")
+                return True
+
+            added = restock_product(product_id, delivery)
+            available = get_available_stock_count(product_id)
+            cur.execute("UPDATE products SET stock=? WHERE id=?", (available, product_id))
+            conn.commit()
+
+            cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
+            product_info = cur.fetchone()
+            product_name = product_info[0] if product_info else f"Product #{product_id}"
+            product_price = float(product_info[1]) if product_info else 0.0
+
+            log_admin_action(uid, "BULK_ADD_STOCK", f"Product ID {product_id} | added {added} | available {available}")
+
+            sent, failed = await broadcast_product_update(
+                context,
+                product_id,
+                product_name,
+                product_price,
+                added,
+                available,
+                mode="stock",
+            )
+
+            await update.message.reply_text(
+                f"""✅ <b>Bulk Stock Added</b>
+
+🆔 <b>Product ID:</b> <code>{product_id}</code>
+📦 <b>Product:</b> <code>{product[0]}</code>
+➕ <b>Added:</b> <code>{added}</code>
+📊 <b>Available Now:</b> <code>{available}</code>
+📢 <b>Broadcast:</b> sent to <code>{sent}</code> users""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                """❌ <b>Wrong Format</b>
+
+Use:
+<code>PRODUCT_ID | item1;;item2;;item3</code>""",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_duplicate_product" and is_admin(uid):
+        try:
+            source_id = int(text.strip())
+            cur.execute(
+                "SELECT name, price, description, validity, warranty, rules, redeem_link, max_per_order FROM products WHERE id=?",
+                (source_id,)
+            )
+            product = cur.fetchone()
+
+            if not product:
+                await update.message.reply_text("❌ <b>Product not found.</b>", parse_mode="HTML")
+                return True
+
+            name, price, description, validity, warranty, rules, redeem_link, max_per_order = product
+            new_name = f"{name} Copy"
+
+            cur.execute(
+                """
+                INSERT INTO products(name, price, stock, delivery, description, validity, warranty, rules, redeem_link, max_per_order, active)
+                VALUES(?,?,?,?,?,?,?,?,?,?,0)
+                """,
+                (new_name, price, 0, "No stock added yet", description, validity, warranty, rules, redeem_link, max_per_order)
+            )
+            conn.commit()
+            new_id = cur.lastrowid
+
+            log_admin_action(uid, "DUPLICATE_PRODUCT", f"Source {source_id} -> New {new_id}")
+
+            await update.message.reply_text(
+                f"""📋 <b>Product Duplicated</b>
+
+✅ <b>New Product ID:</b> <code>{new_id}</code>
+📦 <b>Name:</b> <code>{new_name}</code>
+💰 <b>Price:</b> <code>{price:.2f} USDT</code>
+
+⚠️ New product is hidden and has 0 stock.
+Use Edit Product and Add Stock before making it live.""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Invalid Product ID</b>\n\nSend only product ID. Example: <code>12</code>",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state in ("admin_bulk_hide_products", "admin_bulk_unhide_products") and is_admin(uid):
+        allowed, wait = admin_action_allowed(uid, "bulk_hide_unhide")
+        if not allowed:
+            await update.message.reply_text(
+                f"⏳ <b>Security Cooldown</b>\n\nPlease wait {wait} seconds before repeating this admin action.",
+                parse_mode="HTML"
+            )
+            return True
+
+        try:
+            ids_text = text.replace(",", " ")
+            ids = [int(x) for x in ids_text.split() if x.strip().isdigit()]
+            if not ids:
+                raise ValueError("No IDs")
+
+            active_value = 0 if state == "admin_bulk_hide_products" else 1
+            action_name = "BULK_HIDE_PRODUCTS" if active_value == 0 else "BULK_UNHIDE_PRODUCTS"
+
+            changed = []
+            missing = []
+
+            for pid in ids:
+                cur.execute("SELECT name FROM products WHERE id=?", (pid,))
+                product = cur.fetchone()
+                if not product:
+                    missing.append(pid)
+                    continue
+                cur.execute("UPDATE products SET active=? WHERE id=?", (active_value, pid))
+                changed.append((pid, product[0]))
+
+            conn.commit()
+            log_admin_action(uid, action_name, f"IDs {ids}")
+
+            status_text = "hidden" if active_value == 0 else "visible"
+            msg = f"✅ <b>Bulk Update Completed</b>\n\nProducts set to <b>{status_text}</b>:\n"
+            for pid, name in changed:
+                msg += f"• <code>{pid}</code> — {name}\n"
+
+            if missing:
+                msg += "\n⚠️ Missing IDs:\n" + ", ".join([str(x) for x in missing])
+
+            await update.message.reply_text(msg, reply_markup=admin_menu(), parse_mode="HTML")
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Wrong Format</b>\n\nSend IDs like: <code>12,15,18</code>",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_bulk_delete_products" and is_admin(uid):
+        allowed, wait = admin_action_allowed(uid, "bulk_delete_products")
+        if not allowed:
+            await update.message.reply_text(
+                f"⏳ <b>Security Cooldown</b>\n\nPlease wait {wait} seconds before repeating this admin action.",
+                parse_mode="HTML"
+            )
+            return True
+
+        try:
+            raw = text.strip()
+            if "DELETE" not in raw.upper().split():
+                raise ValueError("Missing DELETE confirmation")
+
+            clean = raw.replace(",", " ").replace("DELETE", "").replace("delete", "")
+            ids = [int(x) for x in clean.split() if x.strip().isdigit()]
+            if not ids:
+                raise ValueError("No IDs")
+
+            deleted = []
+            missing = []
+
+            for pid in ids:
+                cur.execute("SELECT name FROM products WHERE id=?", (pid,))
+                product = cur.fetchone()
+                if not product:
+                    missing.append(pid)
+                    continue
+
+                product_name = product[0]
+                cur.execute("DELETE FROM product_stock WHERE product_id=?", (pid,))
+                cur.execute("DELETE FROM products WHERE id=?", (pid,))
+                deleted.append((pid, product_name))
+
+            conn.commit()
+            log_admin_action(uid, "BULK_PERMANENT_DELETE_PRODUCTS", f"IDs {ids}")
+
+            msg = "🗑 <b>Bulk Delete Completed</b>\n\nDeleted products:\n"
+            for pid, name in deleted:
+                msg += f"• <code>{pid}</code> — {name}\n"
+
+            if missing:
+                msg += "\n⚠️ Missing IDs:\n" + ", ".join([str(x) for x in missing])
+
+            msg += f"\n\n<b>Total Deleted:</b> <code>{len(deleted)}</code>"
+
+            await update.message.reply_text(msg, reply_markup=admin_menu(), parse_mode="HTML")
+
+        except Exception:
+            await update.message.reply_text(
+                """❌ <b>Wrong Format</b>
+
+Use:
+<code>12,15,18 DELETE</code>
+
+Confirmation word <code>DELETE</code> is required.""",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_edit_product" and is_admin(uid):
+        try:
+            parts = [x.strip() for x in text.split("|")]
+
+            if len(parts) < 3:
+                raise ValueError("Missing fields")
+
+            product_id = int(parts[0])
+            new_name = parts[1]
+            new_price = float(parts[2])
+
+            cur.execute("SELECT name, price, description, validity, warranty, rules, redeem_link, max_per_order FROM products WHERE id=?", (product_id,))
+            old = cur.fetchone()
+
+            if not old:
+                await update.message.reply_text(
+                    "❌ <b>Product not found.</b>\n\nCheck product ID from Products panel.",
+                    parse_mode="HTML"
+                )
+                return True
+
+            old_name, old_price, old_description, old_validity, old_warranty, old_rules, old_redeem_link, old_max_per_order = old
+
+            description = parts[3] if len(parts) > 3 and parts[3] else old_description
+            validity = parts[4] if len(parts) > 4 and parts[4] else old_validity
+            warranty = parts[5] if len(parts) > 5 and parts[5] else old_warranty
+            rules = parts[6] if len(parts) > 6 and parts[6] else old_rules
+            redeem_link = parts[7] if len(parts) > 7 and parts[7] else old_redeem_link
+            max_per_order = int(parts[8]) if len(parts) > 8 and parts[8] else old_max_per_order
+
+            cur.execute(
+                """
+                UPDATE products
+                SET name=?, price=?, description=?, validity=?, warranty=?, rules=?, redeem_link=?, max_per_order=?
+                WHERE id=?
+                """,
+                (new_name, new_price, description, validity, warranty, rules, redeem_link, max_per_order, product_id)
+            )
+            conn.commit()
+
+            log_admin_action(
+                uid,
+                "EDIT_PRODUCT",
+                f"Product #{product_id} | {old_name} ({old_price:.2f}) -> {new_name} ({new_price:.2f})"
+            )
+
+            await update.message.reply_text(
+                f"""✅ <b>Product Updated</b>
+
+
+
+🆔 <b>Product ID:</b>
+<code>{product_id}</code>
+
+📦 <b>Name:</b>
+<code>{new_name}</code>
+
+💰 <b>Price:</b>
+<code>{new_price:.2f} USDT</code>
+
+📌 <b>Validity:</b>
+<code>{validity}</code>
+
+🛡 <b>Warranty:</b>
+<code>{warranty}</code>
+
+🔢 <b>Max Per Order:</b>
+<code>{max_per_order}</code>
+
+
+
+<i>Product details have been updated successfully.</i>""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                """❌ <b>Wrong Format</b>
+
+Use this format:
+
+<code>PRODUCT_ID | name | price | description | validity | warranty | rules | redeem link</code>
+
+You can also update only name and price:
+
+<code>5 | Netflix Premium 4K | 6.50</code>""",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_delete_product" and is_admin(uid):
+        try:
+            pid = int(text)
+            cur.execute("UPDATE products SET active=0 WHERE id=?", (pid,))
+            conn.commit()
+            log_admin_action(uid, "HIDE_PRODUCT", f"Product ID {pid}")
+
+            await update.message.reply_text(
+                f"""✅ <b>Product Hidden</b>
+
+
+
+🆔 <b>Product ID:</b> <code>{pid}</code>
+
+This product is now hidden from the shop.""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Invalid Product ID</b>\n\nSend only product ID. Example: <code>12</code>",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+
+    if state == "admin_add_stock" and is_admin(uid):
+        try:
+            product_id_text, delivery = [x.strip() for x in text.split("|", 1)]
+            product_id = int(product_id_text)
+
+            cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+            product = cur.fetchone()
+
+            if not product:
+                await update.message.reply_text(
+                    "❌ <b>Product not found.</b>\n\nCheck product ID from Products/Inventory panel.",
+                    parse_mode="HTML"
+                )
+                return True
+
+            added = restock_product(product_id, delivery)
+            available = get_available_stock_count(product_id)
+            cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
+            product_info = cur.fetchone()
+            product_name = product_info[0] if product_info else f"Product #{product_id}"
+            product_price = float(product_info[1]) if product_info else 0.0
+
+            log_admin_action(uid, "ADD_STOCK", f"Product ID {product_id} | added {added} | available {available}")
+
+            sent, failed = await broadcast_product_update(
+                context,
+                product_id,
+                product_name,
+                product_price,
+                added,
+                available,
+                mode="stock",
+            )
+
+            await update.message.reply_text(
+                f"""✅ <b>Stock Added</b>
+
+
+
+🆔 <b>Product ID:</b>
+<code>{product_id}</code>
+
+📦 <b>Product:</b>
+<code>{product[0]}</code>
+
+➕ <b>New Items Added:</b>
+<code>{added}</code>
+
+✅ <b>Available Stock Now:</b>
+<code>{available}</code>
+
+
+
+<i>These items are now ready for auto-delivery.</i>""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                """❌ <b>Wrong Format</b>
+
+Use this format:
+
+<code>PRODUCT_ID | item1;;item2;;item3</code>
+
+Example:
+<code>5 | email1:pass1;;email2:pass2</code>""",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+
+    if state == "admin_add_balance" and is_admin(uid):
+        try:
+            target_id, amount = text.split()
+            target_id = int(target_id)
+            amount = float(amount)
+
+            add_balance(target_id, amount)
+            log_admin_action(uid, "ADD_BALANCE", f"User {target_id} | amount {amount:.2f} USDT")
+
+            await update.message.reply_text(
+                f"""✅ <b>Balance Added</b>
+
+
+
+🆔 <b>User ID:</b>
+<code>{target_id}</code>
+
+💰 <b>Amount Added:</b>
+<code>{amount:.2f} USDT</code>
+
+
+
+<i>User wallet balance has been updated.</i>""",
+                reply_markup=admin_menu(),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                """❌ <b>Wrong Format</b>
+
+Use this format:
+
+<code>USER_ID AMOUNT</code>
+
+Example:
+<code>7499348138 10</code>""",
+                parse_mode="HTML"
+            )
+            return True
+
+        finally:
+            user_state.pop(uid, None)
+
+        return True
+
+    if state == "admin_broadcast" and is_admin(uid):
+        cur.execute("SELECT user_id FROM users")
+        users = cur.fetchall()
+
+        sent = 0
+        failed = 0
+
+        for (target_id,) in users:
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text=f"📢 <b>Announcement</b>\n\n{text}",
+                    parse_mode="HTML"
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+
+        user_state.pop(uid, None)
+        log_admin_action(uid, "BROADCAST", f"Sent {sent} | Failed {failed}")
+
+        await update.message.reply_text(
+            f"""✅ <b>Broadcast Completed</b>
+
+
+
+📨 <b>Sent:</b> <code>{sent}</code>
+⚠️ <b>Failed:</b> <code>{failed}</code>
+
+
+
+<i>Broadcast process finished.</i>""",
+            reply_markup=admin_menu(),
+            parse_mode="HTML"
+        )
+        return True
+
+    return False
+
+
+
+async def block_command(update, context):
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("❌ <b>Admin only.</b>", parse_mode="HTML")
+        return
+
+    try:
+        target_id = int(context.args[0])
+        block_user(target_id)
+        log_admin_action(update.message.from_user.id, "BLOCK_USER", f"User {target_id}")
+        await update.message.reply_text(
+            f"🚫 <b>User Blocked</b>\n\n🆔 <b>User ID:</b> <code>{target_id}</code>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        await update.message.reply_text(
+            "❌ <b>Wrong Format</b>\n\nUse: <code>/block USER_ID</code>",
+            parse_mode="HTML"
+        )
+
+
+async def unblock_command(update, context):
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("❌ <b>Admin only.</b>", parse_mode="HTML")
+        return
+
+    try:
+        target_id = int(context.args[0])
+        unblock_user(target_id)
+        log_admin_action(update.message.from_user.id, "UNBLOCK_USER", f"User {target_id}")
+        await update.message.reply_text(
+            f"✅ <b>User Unblocked</b>\n\n🆔 <b>User ID:</b> <code>{target_id}</code>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        await update.message.reply_text(
+            "❌ <b>Wrong Format</b>\n\nUse: <code>/unblock USER_ID</code>",
+            parse_mode="HTML"
+        )
+
+
+
+async def add_admin_command(update, context):
+    uid = update.message.from_user.id
+
+    if not is_owner(uid):
+        await update.message.reply_text("❌ <b>Owner only.</b>", parse_mode="HTML")
+        return
+
+    try:
+        target_id = int(context.args[0])
+        add_admin(target_id, uid)
+        log_admin_action(uid, "ADD_ADMIN", f"Admin {target_id}")
+
+        await update.message.reply_text(
+            f"✅ <b>Admin Added</b>\n\n🆔 User ID: <code>{target_id}</code>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        await update.message.reply_text(
+            "❌ <b>Wrong Format</b>\n\nUse: <code>/addadmin USER_ID</code>",
+            parse_mode="HTML"
+        )
+
+
+async def remove_admin_command(update, context):
+    uid = update.message.from_user.id
+
+    if not is_owner(uid):
+        await update.message.reply_text("❌ <b>Owner only.</b>", parse_mode="HTML")
+        return
+
+    try:
+        target_id = int(context.args[0])
+
+        if target_id == uid:
+            await update.message.reply_text("❌ <b>You cannot remove the owner.</b>", parse_mode="HTML")
+            return
+
+        removed = remove_admin(target_id)
+
+        if removed:
+            log_admin_action(uid, "REMOVE_ADMIN", f"Admin {target_id}")
+            await update.message.reply_text(
+                f"✅ <b>Admin Removed</b>\n\n🆔 User ID: <code>{target_id}</code>",
+                parse_mode="HTML"
+            )
+        else:
+            await update.message.reply_text("❌ <b>Owner cannot be removed.</b>", parse_mode="HTML")
+    except Exception:
+        await update.message.reply_text(
+            "❌ <b>Wrong Format</b>\n\nUse: <code>/removeadmin USER_ID</code>",
+            parse_mode="HTML"
+        )
+
+
+async def admins_command(update, context):
+    uid = update.message.from_user.id
+
+    if not is_admin(uid):
+        await update.message.reply_text("❌ <b>Admin only.</b>", parse_mode="HTML")
+        return
+
+    rows = get_admins()
+    text = "🌍 <b>Admins List</b>\n\n"
+
+    for admin_id, first_name, username, added_by, added_at in rows:
+        username_text = f"@{username}" if username and username != "No username" else "No username"
+        role = "👑 Owner" if is_owner(admin_id) else "🛡 Admin"
+        text += (
+            f"{role}\n"
+            f"🆔 <code>{admin_id}</code>\n"
+            f"👤 {first_name or 'User'} / {username_text}\n"
+            f"➕ Added by: <code>{added_by}</code>\n"
+            f"🕒 <code>{added_at}</code>\n\n"
+        )
+
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
+
+async def reply_ticket_command(update, context):
+    uid = update.message.from_user.id
+
+    if not is_admin(uid):
+        await update.message.reply_text("❌ <b>Admin only.</b>", parse_mode="HTML")
+        return
+
+    try:
+        ticket_id = int(context.args[0])
+        reply = " ".join(context.args[1:]).strip()
+
+        if not reply:
+            raise ValueError("empty reply")
+
+        ticket = get_ticket(ticket_id)
+
+        if not ticket:
+            await update.message.reply_text("❌ <b>Ticket not found.</b>", parse_mode="HTML")
+            return
+
+        _, user_id, first_name, username, subject, message, status, old_reply, created, updated = ticket
+
+        reply_ticket(ticket_id, reply)
+        log_admin_action(uid, "REPLY_TICKET", f"Ticket #{ticket_id}")
+
+        await update.message.reply_text(
+            f"✅ <b>Ticket Replied</b>\n\n🎫 Ticket: <code>#{ticket_id}</code>",
+            parse_mode="HTML"
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "👑 <b>Admin replied to your ticket</b>\n\n"
+                    f"🎫 <b>Ticket:</b> <code>#{ticket_id}</code>\n"
+                    f"📌 <b>Subject:</b> {subject}\n\n"
+                    f"💬 <b>Reply:</b>\n{reply}"
+                ),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+    except Exception:
+        await update.message.reply_text(
+            "❌ <b>Wrong Format</b>\n\nUse: <code>/replyticket TICKET_ID your reply</code>",
+            parse_mode="HTML"
+        )
+
+
+async def close_ticket_command(update, context):
+    uid = update.message.from_user.id
+
+    if not is_admin(uid):
+        await update.message.reply_text("❌ <b>Admin only.</b>", parse_mode="HTML")
+        return
+
+    try:
+        ticket_id = int(context.args[0])
+        ticket = get_ticket(ticket_id)
+
+        if not ticket:
+            await update.message.reply_text("❌ <b>Ticket not found.</b>", parse_mode="HTML")
+            return
+
+        _, user_id, first_name, username, subject, message, status, admin_reply, created, updated = ticket
+
+        close_ticket(ticket_id)
+        log_admin_action(uid, "CLOSE_TICKET", f"Ticket #{ticket_id}")
+
+        await update.message.reply_text(
+            f"🔒 <b>Ticket Closed</b>\n\n🎫 Ticket: <code>#{ticket_id}</code>",
+            parse_mode="HTML"
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "🔒 <b>Your support ticket was closed</b>\n\n"
+                    f"🎫 <b>Ticket:</b> <code>#{ticket_id}</code>\n"
+                    f"📌 <b>Subject:</b> {subject}"
+                ),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+    except Exception:
+        await update.message.reply_text(
+            "❌ <b>Wrong Format</b>\n\nUse: <code>/closeticket TICKET_ID</code>",
+            parse_mode="HTML"
+        )
