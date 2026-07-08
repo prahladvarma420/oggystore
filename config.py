@@ -54,7 +54,9 @@ PAYMENT_REQUIRED_CONFIRMATIONS = 5
 
 # Scan less blocks to avoid RPC rate-limit
 # 1200 blocks = about 1 hour on BSC
-PAYMENT_SCAN_BLOCKS = 1200
+# BSC now produces a block roughly every 0.45-0.75 seconds, so 8000 blocks is
+# about 1 hour of history. Override with the PAYMENT_SCAN_BLOCKS env variable.
+PAYMENT_SCAN_BLOCKS = int(os.getenv("PAYMENT_SCAN_BLOCKS", "8000"))
 
 # Decimal tolerance
 PAYMENT_AMOUNT_TOLERANCE = 0.000001

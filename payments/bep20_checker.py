@@ -9,7 +9,7 @@ from utils.error_logger import log_error
 from utils.timezone import now, now_text
 
 from utils.crypto import encrypt_text
-from database.db import cur, conn, add_balance, reserve_stock_items, get_available_stock_count
+from database.db import cur, conn, add_balance, reserve_stock_items, get_available_stock_count, get_setting, set_setting
 from config import (
     ADMIN_ID,
     RPC_URL,
@@ -122,16 +122,46 @@ def _matches_amount(paid: Decimal, expected: float) -> bool:
 # Public BSC RPCs reject large eth_getLogs ranges with {'code': -32005,
 # 'message': 'limit exceeded'}. Scan the window in small chunks instead.
 LOG_SCAN_CHUNK_BLOCKS = 450
+# Cap catch-up work per cycle; anything left is scanned on the next cycles.
+MAX_CHUNKS_PER_CYCLE = 12
 
 
-def _get_recent_incoming_usdt_logs(w3: Web3):
+def _load_last_scanned_block(context) -> int:
+    cached = context.bot_data.get("last_scanned_block")
+    if cached:
+        return int(cached)
+    try:
+        return int(get_setting("last_scanned_block") or 0)
+    except Exception:
+        return 0
+
+
+def _remember_scanned_block(context, block_number: int):
+    context.bot_data["last_scanned_block"] = int(block_number)
+    try:
+        set_setting("last_scanned_block", int(block_number))
+    except Exception:
+        pass
+
+
+def _get_recent_incoming_usdt_logs(context, w3: Web3):
     latest_block = w3.eth.block_number
     to_block = max(latest_block - PAYMENT_REQUIRED_CONFIRMATIONS, 0)
-    from_block = max(to_block - PAYMENT_SCAN_BLOCKS, 0)
+
+    # Resume from the last scanned block so payments are never skipped, but
+    # never look further back than PAYMENT_SCAN_BLOCKS behind the chain tip.
+    last_scanned = _load_last_scanned_block(context)
+    from_block = last_scanned + 1 if last_scanned else 0
+    from_block = max(from_block, to_block - PAYMENT_SCAN_BLOCKS, 0)
+
+    if from_block > to_block:
+        return [], None
 
     logs = []
     start = from_block
-    while start <= to_block:
+    chunks = 0
+    scanned_to = None
+    while start <= to_block and chunks < MAX_CHUNKS_PER_CYCLE:
         end = min(start + LOG_SCAN_CHUNK_BLOCKS - 1, to_block)
         transfer_filter = {
             "fromBlock": start,
@@ -144,9 +174,11 @@ def _get_recent_incoming_usdt_logs(w3: Web3):
             ],
         }
         logs.extend(w3.eth.get_logs(transfer_filter))
+        scanned_to = end
         start = end + 1
+        chunks += 1
 
-    return logs
+    return logs, scanned_to
 
 
 
@@ -216,7 +248,7 @@ async def check_payments(context):
 
     try:
         w3 = _get_web3(context)
-        logs = _get_recent_incoming_usdt_logs(w3)
+        logs, scanned_to = _get_recent_incoming_usdt_logs(context, w3)
     except Exception as exc:
         # Drop the cached connection so the next run rotates to a backup RPC.
         _drop_cached_web3(context)
@@ -403,3 +435,32 @@ async def check_payments(context):
                     log_error("Failed to notify admin about deposit", exc, extra=f"user={user_id} deposit={deposit_id}")
 
             break
+
+    # Alert the admin about wallet payments that matched no pending invoice
+    # (wrong amount sent, invoice expired or cancelled, etc.).
+    alerted = context.bot_data.setdefault("unmatched_tx_alerts", set())
+    for log in logs:
+        tx_hash = _tx_hash_from_log(log)
+        if not tx_hash or tx_hash in alerted or not _not_processed(tx_hash):
+            continue
+        alerted.add(tx_hash)
+        paid_amount = _amount_from_log(log)
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "⚠️ <b>Unmatched Payment Received</b>\n\n"
+                    f"💵 Amount: <code>{paid_amount:.5f} USDT</code>\n"
+                    f"🔗 TX: <code>{tx_hash}</code>\n\n"
+                    "No pending invoice matches this amount. If this is a real "
+                    "customer payment, credit it manually via Admin → Add Balance."
+                ),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            pass
+
+    # Only advance the scan pointer after processing finished successfully.
+    if scanned_to:
+        _remember_scanned_block(context, scanned_to)

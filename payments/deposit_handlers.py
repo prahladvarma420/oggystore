@@ -79,9 +79,11 @@ async def handle_deposit_amount(update, uid, text):
 
         unique_amount = round(amount + random.randint(100, 999) / 100000, 5)
 
+        # Set created explicitly in bot time (IST). The DB default is UTC,
+        # which made invoices look ~5.5h old and expire after ~30 minutes.
         cur.execute(
-            "INSERT INTO deposits(user_id, amount, unique_amount, status) VALUES(?,?,?,?)",
-            (uid, amount, unique_amount, "pending"),
+            "INSERT INTO deposits(user_id, amount, unique_amount, status, created) VALUES(?,?,?,?,?)",
+            (uid, amount, unique_amount, "pending", now_text()),
         )
         conn.commit()
 
