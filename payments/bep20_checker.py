@@ -119,6 +119,21 @@ def _matches_amount(paid: Decimal, expected: float) -> bool:
     return diff <= Decimal(str(PAYMENT_AMOUNT_TOLERANCE))
 
 
+# ERC-20 balanceOf(address) selector, used as a fallback verification method
+# because free public BSC RPCs sometimes return empty eth_getLogs results.
+BALANCE_OF_SELECTOR = "0x70a08231"
+
+
+def _wallet_usdt_balance(w3: Web3) -> Decimal:
+    data = BALANCE_OF_SELECTOR + _topic_address(USDT_BEP20_ADDRESS).replace("0x", "")
+    raw = w3.eth.call({"to": _to_checksum(USDT_BEP20_CONTRACT), "data": data})
+    if hasattr(raw, "hex"):
+        raw_int = int(raw.hex().replace("0x", "") or "0", 16)
+    else:
+        raw_int = int(str(raw).replace("0x", "") or "0", 16)
+    return Decimal(raw_int) / (Decimal(10) ** Decimal(USDT_DECIMALS))
+
+
 # Public BSC RPCs reject large eth_getLogs ranges with {'code': -32005,
 # 'message': 'limit exceeded'}. Scan the window in small chunks instead.
 LOG_SCAN_CHUNK_BLOCKS = 450
@@ -157,6 +172,8 @@ def _get_recent_incoming_usdt_logs(context, w3: Web3):
     if from_block > to_block:
         return [], None
 
+    print(f"[payscan] scanning blocks {from_block}-{to_block} (latest {latest_block})", flush=True)
+
     logs = []
     start = from_block
     chunks = 0
@@ -178,6 +195,7 @@ def _get_recent_incoming_usdt_logs(context, w3: Web3):
         start = end + 1
         chunks += 1
 
+    print(f"[payscan] scanned {chunks} chunk(s) up to block {scanned_to}, found {len(logs)} incoming transfer log(s)", flush=True)
     return logs, scanned_to
 
 
@@ -260,6 +278,11 @@ async def check_payments(context):
         )
         return
 
+    print(f"[payscan] pending invoices: {[(d[0], d[3]) for d in pending]}", flush=True)
+    for log in logs:
+        print(f"[payscan] log tx={_tx_hash_from_log(log)} amount={_amount_from_log(log)}", flush=True)
+
+    credited_ids = set()
     for deposit_id, user_id, base_amount, unique_amount, checkout_product_id, checkout_quantity, checkout_done in pending:
         for log in logs:
             tx_hash = _tx_hash_from_log(log)
@@ -434,6 +457,7 @@ async def check_payments(context):
                 except Exception as exc:
                     log_error("Failed to notify admin about deposit", exc, extra=f"user={user_id} deposit={deposit_id}")
 
+            credited_ids.add(deposit_id)
             break
 
     # Alert the admin about wallet payments that matched no pending invoice
@@ -460,6 +484,81 @@ async def check_payments(context):
             )
         except Exception:
             pass
+
+    # Fallback verification: detect payments by wallet balance increase.
+    # This works even when the RPC returns empty event logs.
+    try:
+        balance_now = _wallet_usdt_balance(w3)
+        prev = context.bot_data.get("last_wallet_balance")
+        if prev is None:
+            stored = get_setting("last_wallet_balance")
+            prev = Decimal(str(stored)) if stored else None
+
+        if prev is not None:
+            delta = balance_now - prev
+            if delta > 0:
+                matches = [
+                    d for d in pending
+                    if d[0] not in credited_ids and not d[4] and _matches_amount(delta, d[3])
+                ]
+                if len(matches) == 1:
+                    deposit_id, user_id, base_amount, unique_amount, _cpid, _cqty, _cdone = matches[0]
+                    pseudo_tx = f"balance-delta-{deposit_id}-{int(time.time())}"
+
+                    add_balance(user_id, float(base_amount))
+                    cur.execute(
+                        "UPDATE deposits SET status='paid', tx_hash=?, paid_at=? WHERE id=?",
+                        (pseudo_tx, now_text(), deposit_id),
+                    )
+                    cur.execute(
+                        "INSERT OR IGNORE INTO processed_txs(tx_hash, deposit_id, user_id, amount) VALUES(?,?,?,?)",
+                        (pseudo_tx, deposit_id, user_id, float(delta)),
+                    )
+                    conn.commit()
+                    credited_ids.add(deposit_id)
+                    print(f"[payscan] credited deposit #{deposit_id} via balance check (+{delta} USDT)", flush=True)
+
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=(
+                                "✅ <b>DEPOSIT CONFIRMED</b>\n\n"
+                                f"🧾 <b>Invoice:</b> <code>#{deposit_id}</code>\n"
+                                f"💵 <b>Paid:</b> <code>{delta:.5f} USDT</code>\n"
+                                f"💰 <b>Balance Added:</b> <code>{float(base_amount):.2f} USDT</code>\n\n"
+                                "🛍 <i>You can now buy products from Shop.</i>"
+                            ),
+                            parse_mode="HTML",
+                        )
+                    except Exception as exc:
+                        log_error("Failed to notify user about deposit", exc, extra=f"user={user_id} deposit={deposit_id}")
+
+                    try:
+                        await context.bot.send_message(
+                            chat_id=ADMIN_ID,
+                            text=(
+                                "💰 <b>AUTO PAYMENT CONFIRMED</b> (balance check)\n\n"
+                                f"👤 <b>User:</b> <code>{user_id}</code>\n"
+                                f"🧾 <b>Invoice:</b> <code>#{deposit_id}</code>\n"
+                                f"💵 <b>Paid:</b> <code>{delta:.5f} USDT</code>\n"
+                                f"💰 <b>Credit:</b> <code>{float(base_amount):.2f} USDT</code>"
+                            ),
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        pass
+                elif len(matches) > 1:
+                    await _notify_admin_error(
+                        context,
+                        f"Wallet balance increased by {delta} USDT but multiple pending "
+                        f"invoices match. Credit manually via Admin -> Add Balance.",
+                    )
+
+        context.bot_data["last_wallet_balance"] = balance_now
+        set_setting("last_wallet_balance", str(balance_now))
+        print(f"[payscan] wallet balance {balance_now} USDT", flush=True)
+    except Exception as exc:
+        log_error("Balance fallback check failed", exc)
 
     # Only advance the scan pointer after processing finished successfully.
     if scanned_to:
