@@ -262,21 +262,46 @@ async def check_payments(context):
 
     pending = _pending_deposits()
     if not pending:
+        # Keep the wallet balance baseline fresh even while idle, so that a
+        # payment sent immediately after invoice creation is detected by the
+        # balance check on the very next cycle.
+        try:
+            w3 = _get_web3(context)
+            balance_now = _wallet_usdt_balance(w3)
+            context.bot_data["last_wallet_balance"] = balance_now
+            set_setting("last_wallet_balance", str(balance_now))
+        except Exception:
+            _drop_cached_web3(context)
         return
 
     try:
         w3 = _get_web3(context)
-        logs, scanned_to = _get_recent_incoming_usdt_logs(context, w3)
     except Exception as exc:
-        # Drop the cached connection so the next run rotates to a backup RPC.
         _drop_cached_web3(context)
-        log_error("Payment checker RPC/log scan error", exc)
-        await _notify_admin_error(
-            context,
-            f"{exc}\n\nSet the RPC_URL variable on the Railway worker to a working BSC RPC "
-            f"if this keeps happening.",
-        )
+        print(f"[payscan] RPC connection failed: {exc}", flush=True)
+        log_error("Payment checker RPC connection error", exc)
         return
+
+    # The event-log scan is best-effort only: free public BSC RPCs often
+    # reject or stall on eth_getLogs. A failure here must NOT abort the
+    # cycle, because the wallet-balance check below still verifies payments
+    # reliably on every RPC.
+    logs, scanned_to = [], None
+    fails = context.bot_data.get("logscan_failures", 0)
+    cycle = context.bot_data.get("payscan_cycle", 0)
+    context.bot_data["payscan_cycle"] = cycle + 1
+    if fails < 5 or cycle % 20 == 0:
+        try:
+            logs, scanned_to = _get_recent_incoming_usdt_logs(context, w3)
+            context.bot_data["logscan_failures"] = 0
+        except Exception as exc:
+            context.bot_data["logscan_failures"] = fails + 1
+            # Drop the cached connection so the next run rotates to a backup RPC.
+            _drop_cached_web3(context)
+            print(f"[payscan] log scan failed ({fails + 1} in a row): {exc}", flush=True)
+            log_error("Payment checker RPC/log scan error", exc)
+    else:
+        print("[payscan] log scan disabled after repeated failures; using balance check only", flush=True)
 
     print(f"[payscan] pending invoices: {[(d[0], d[3]) for d in pending]}", flush=True)
     for log in logs:
