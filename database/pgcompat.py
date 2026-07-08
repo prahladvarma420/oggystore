@@ -191,6 +191,33 @@ class _PgCursor:
             return [d[0] for d in self._pg.description]
         return []
 
+    def _raw_execute(self, tsql, p):
+        """Execute with automatic reconnect.
+
+        Railway's public proxy silently drops idle TCP connections, which
+        makes psycopg raise 'the connection is lost' on the next query.
+        Recover by retrying on a fresh cursor, then on a fresh connection.
+        """
+        try:
+            self._pg.execute(tsql, p)
+            return
+        except Exception as exc:
+            if not self._conn._is_connection_error(exc):
+                raise
+        # Stale cursor (connection was already refreshed elsewhere): retry
+        # once on a fresh cursor from the current connection.
+        try:
+            self._pg = self._conn._pg.cursor()
+            self._pg.execute(tsql, p)
+            return
+        except Exception as exc:
+            if not self._conn._is_connection_error(exc):
+                raise
+        # Connection itself is dead: reconnect once and retry.
+        self._conn._reconnect()
+        self._pg = self._conn._pg.cursor()
+        self._pg.execute(tsql, p)
+
     def execute(self, sql, params=()):
         up = sql.strip().upper()
         # PRAGMA table_info(x) -> information_schema lookup (cid,name,type,...)
@@ -198,7 +225,7 @@ class _PgCursor:
             m = re.search(r"TABLE_INFO\(\s*([^)]+?)\s*\)", sql, re.I)
             table = (m.group(1).strip().strip('"').strip("'") if m else "")
             with self._conn._lock:
-                self._pg.execute(
+                self._raw_execute(
                     "SELECT (ordinal_position-1) AS cid, column_name AS name, "
                     "data_type AS type, 0 AS notnull, column_default AS dflt_value, "
                     "0 AS pk FROM information_schema.columns "
@@ -214,7 +241,7 @@ class _PgCursor:
         tsql, returns_id = _translate(sql)
         p = tuple(params) if params else None
         with self._conn._lock:
-            self._pg.execute(tsql, p)
+            self._raw_execute(tsql, p)
             if returns_id:
                 try:
                     row = self._pg.fetchone()
@@ -269,10 +296,43 @@ class _PgCursor:
 class _PgConn:
     def __init__(self, dsn):
         import psycopg  # lazy import: only needed when using Postgres
-        self._pg = psycopg.connect(dsn, autocommit=True)
+        self._psycopg = psycopg
+        self._dsn = dsn
         self._lock = threading.RLock()
+        self._pg = self._open()
         # accepted but ignored (sqlite3 compatibility):
         object.__setattr__(self, "row_factory", None)
+
+    def _open(self):
+        # TCP keepalives stop Railway's proxy from silently dropping the
+        # connection while the bot/panel sits idle.
+        return self._psycopg.connect(
+            self._dsn,
+            autocommit=True,
+            connect_timeout=15,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=3,
+        )
+
+    def _reconnect(self):
+        try:
+            self._pg.close()
+        except Exception:
+            pass
+        self._pg = self._open()
+
+    def _is_connection_error(self, exc) -> bool:
+        if isinstance(
+            exc,
+            (self._psycopg.OperationalError, self._psycopg.InterfaceError),
+        ):
+            return True
+        try:
+            return bool(self._pg.closed or self._pg.broken)
+        except Exception:
+            return False
 
     def cursor(self):
         return _PgCursor(self)
