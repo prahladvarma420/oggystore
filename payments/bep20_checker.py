@@ -119,23 +119,34 @@ def _matches_amount(paid: Decimal, expected: float) -> bool:
     return diff <= Decimal(str(PAYMENT_AMOUNT_TOLERANCE))
 
 
+# Public BSC RPCs reject large eth_getLogs ranges with {'code': -32005,
+# 'message': 'limit exceeded'}. Scan the window in small chunks instead.
+LOG_SCAN_CHUNK_BLOCKS = 450
+
+
 def _get_recent_incoming_usdt_logs(w3: Web3):
     latest_block = w3.eth.block_number
     to_block = max(latest_block - PAYMENT_REQUIRED_CONFIRMATIONS, 0)
     from_block = max(to_block - PAYMENT_SCAN_BLOCKS, 0)
 
-    transfer_filter = {
-        "fromBlock": from_block,
-        "toBlock": to_block,
-        "address": _to_checksum(USDT_BEP20_CONTRACT),
-        "topics": [
-            TRANSFER_TOPIC,
-            None,
-            _topic_address(USDT_BEP20_ADDRESS),
-        ],
-    }
+    logs = []
+    start = from_block
+    while start <= to_block:
+        end = min(start + LOG_SCAN_CHUNK_BLOCKS - 1, to_block)
+        transfer_filter = {
+            "fromBlock": start,
+            "toBlock": end,
+            "address": _to_checksum(USDT_BEP20_CONTRACT),
+            "topics": [
+                TRANSFER_TOPIC,
+                None,
+                _topic_address(USDT_BEP20_ADDRESS),
+            ],
+        }
+        logs.extend(w3.eth.get_logs(transfer_filter))
+        start = end + 1
 
-    return w3.eth.get_logs(transfer_filter)
+    return logs
 
 
 

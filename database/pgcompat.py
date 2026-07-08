@@ -114,6 +114,9 @@ def _translate(sql: str):
     s = re.sub(r"FROM\s+sqlite_master\s+WHERE\s+type='table'\s+AND\s+name=\?",
                "FROM information_schema.tables WHERE table_name=?", s, flags=re.I)
 
+    # --- last_insert_rowid() (SQLite) -> lastval() (Postgres) ---
+    s = re.sub(r"last_insert_rowid\s*\(\s*\)", "lastval()", s, flags=re.I)
+
     # --- date / time functions (order matters) ---
     s = re.sub(r"DATE\(\s*'now'\s*,\s*\?\s*\)", "(CURRENT_DATE + (?)::interval)", s, flags=re.I)
     s = re.sub(r"DATE\(\s*'now'\s*\)", "CURRENT_DATE", s, flags=re.I)
