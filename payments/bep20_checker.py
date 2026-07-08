@@ -45,10 +45,20 @@ def _config_ready() -> bool:
     )
 
 
+def _drop_cached_web3(context):
+    context.bot_data.pop("web3_rpc", None)
+    context.bot_data.pop("web3_rpc_url", None)
+
+
 def _get_web3(context):
     cached = context.bot_data.get("web3_rpc")
-    if cached and cached.is_connected():
-        return cached
+    if cached:
+        try:
+            if cached.is_connected():
+                return cached
+        except Exception:
+            pass
+        _drop_cached_web3(context)
 
     rpc_urls = [RPC_URL] + list(BACKUP_RPC_URLS or [])
     last_error = None
@@ -56,14 +66,15 @@ def _get_web3(context):
     for url in rpc_urls:
         try:
             w3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 20}))
-            if w3.is_connected():
-                context.bot_data["web3_rpc"] = w3
-                context.bot_data["web3_rpc_url"] = url
-                return w3
+            # Force a real RPC call: is_connected() alone can miss 403 blocks.
+            w3.eth.block_number
+            context.bot_data["web3_rpc"] = w3
+            context.bot_data["web3_rpc_url"] = url
+            return w3
         except Exception as exc:
-            last_error = exc
+            last_error = f"{url} -> {exc}"
 
-    raise RuntimeError(f"Could not connect to BSC RPC. Last error: {last_error}")
+    raise RuntimeError(f"Could not connect to any BSC RPC. Last error: {last_error}")
 
 
 def _pending_deposits():
@@ -195,10 +206,13 @@ async def check_payments(context):
         w3 = _get_web3(context)
         logs = _get_recent_incoming_usdt_logs(w3)
     except Exception as exc:
+        # Drop the cached connection so the next run rotates to a backup RPC.
+        _drop_cached_web3(context)
         log_error("Payment checker RPC/log scan error", exc)
         await _notify_admin_error(
             context,
-            f"{exc}\n\nCheck RPC_URL in config.py. Try another RPC if this keeps happening.",
+            f"{exc}\n\nSet the RPC_URL variable on the Railway worker to a working BSC RPC "
+            f"if this keeps happening.",
         )
         return
 

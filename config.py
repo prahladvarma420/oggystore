@@ -17,15 +17,25 @@ DB_PATH = "shopbot.db"
 # ================== AUTO PAYMENT SETTINGS: RPC / WEB3 ==================
 # No private key needed. Never put private key in this bot.
 
-# Main RPC
-RPC_URL = "https://bsc.publicnode.com"
+# Main RPC.
+# Can be overridden on Railway with an RPC_URL variable (no code change needed).
+RPC_URL = os.getenv("RPC_URL", "https://bsc-dataseed.bnbchain.org")
 
-# Backup RPCs
-BACKUP_RPC_URLS = [
-    "https://bsc-dataseed.binance.org/",
+# Backup RPCs.
+# Can be overridden on Railway with a comma-separated BACKUP_RPC_URLS variable.
+_DEFAULT_BACKUP_RPC_URLS = [
     "https://bsc-dataseed1.bnbchain.org",
+    "https://bsc-dataseed2.bnbchain.org",
+    "https://bsc-dataseed1.binance.org",
+    "https://bsc.drpc.org",
+    "https://1rpc.io/bnb",
     "https://bsc-rpc.publicnode.com",
 ]
+BACKUP_RPC_URLS = [
+    u.strip()
+    for u in os.getenv("BACKUP_RPC_URLS", "").split(",")
+    if u.strip()
+] or _DEFAULT_BACKUP_RPC_URLS
 
 BSC_CHAIN_ID = 56
 
