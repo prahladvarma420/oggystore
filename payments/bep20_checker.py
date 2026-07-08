@@ -1,3 +1,4 @@
+import html
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -187,7 +188,7 @@ async def _notify_admin_error(context, message: str):
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"⚠️ <b>Web3 Payment Checker Error</b>\n\n<code>{message}</code>",
+            text=f"⚠️ <b>Web3 Payment Checker Error</b>\n\n<code>{html.escape(str(message), quote=False)}</code>",
             parse_mode="HTML",
         )
     except Exception:

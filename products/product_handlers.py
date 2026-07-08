@@ -1,4 +1,5 @@
 from datetime import datetime
+import html
 import random
 import time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -140,7 +141,11 @@ def clean(value, default="Not mentioned"):
         return default
 
     value = str(value).strip()
-    return value if value else default
+    if not value:
+        return default
+    # Escape <, > and & so Telegram HTML parse_mode never fails on stored
+    # text like "delivery in <7 days" or "<3".
+    return html.escape(value, quote=False)
 
 
 
@@ -278,6 +283,7 @@ async def show_quantity_menu(q, uid: int, product_id: int):
         return
 
     name, price, old_stock = product
+    name = html.escape(str(name), quote=False)
     stock = get_available_stock_count(product_id) or old_stock
     balance = get_balance(uid)
 
@@ -303,6 +309,7 @@ async def show_order_preview(q, uid: int, product_id: int, quantity: int):
         return
 
     name, price, old_stock = product
+    name = html.escape(str(name), quote=False)
     stock = get_available_stock_count(product_id) or old_stock
     quantity = int(quantity)
 
@@ -427,6 +434,7 @@ async def show_product(q, pid: int):
         return
 
     _, name, price, old_stock, description, validity, warranty, rules, redeem_link, max_per_order, image_file_id, featured, flash_price, flash_ends_at = p
+    name = html.escape(str(name), quote=False)
 
     description = clean(description, "No description added.")
     validity = clean(validity)
@@ -526,6 +534,7 @@ async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1):
         return
 
     name, price, old_stock = product
+    name = html.escape(str(name), quote=False)
     stock = get_available_stock_count(pid) or old_stock
     quantity = int(quantity)
 
@@ -654,6 +663,8 @@ async def buy_product(q, uid: int, pid: int, quantity: int = 1):
             return
 
         name, price, old_stock, fallback_delivery, validity, warranty, redeem_link, max_per_order = p
+        raw_name = str(name)
+        name = html.escape(raw_name, quote=False)
         validity = clean(validity)
         warranty = clean(warranty, "No warranty")
         redeem_link = clean(redeem_link, "Not required")
@@ -756,7 +767,7 @@ Please deposit funds first to complete this purchase.""",
 
         cur.execute(
             "INSERT INTO orders(user_id, product_name, price, delivery) VALUES(?,?,?,?)",
-            (uid, f"{name} x{quantity}", total_price, encrypt_text(delivery_text))
+            (uid, f"{raw_name} x{quantity}", total_price, encrypt_text(delivery_text))
         )
         conn.commit()
 

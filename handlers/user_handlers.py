@@ -1,4 +1,5 @@
 from pathlib import Path
+import html
 import re
 import time
 from telegram.ext import ContextTypes
@@ -459,7 +460,8 @@ Thank you for using our store.""",
             text += "No orders found yet."
         else:
             for order_id, name, price, delivery, created in rows:
-                delivery = decrypt_text(delivery)
+                name = html.escape(str(name), quote=False)
+                delivery = html.escape(str(decrypt_text(delivery)), quote=False)
                 text += (
                     f"🧾 <b>Order #{order_id}</b>\n"
                     f"📦 {name}\n"
@@ -597,6 +599,10 @@ Example:
             text += "No tickets found."
         else:
             for ticket_id, subject, message, status, admin_reply, created, updated in rows:
+                subject = html.escape(str(subject), quote=False)
+                message = html.escape(str(message), quote=False)
+                if admin_reply:
+                    admin_reply = html.escape(str(admin_reply), quote=False)
                 status_icon = "🟢 Open" if status == "open" else "✅ Answered" if status == "answered" else "🔒 Closed"
                 short_msg = message[:120] + "..." if len(message) > 120 else message
                 text += (
@@ -859,7 +865,7 @@ It will be used on your next wallet purchase.""",
 
             if not rows:
                 await update.message.reply_text(
-                    f"🔍 <b>No products found for:</b> <code>{keyword}</code>",
+                    f"🔍 <b>No products found for:</b> <code>{html.escape(str(keyword), quote=False)}</code>",
                     reply_markup=main_menu(uid),
                     parse_mode="HTML"
                 )
@@ -867,9 +873,9 @@ It will be used on your next wallet purchase.""",
 
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             buttons = []
-            msg = f"🔍 <b>Search Results for:</b> <code>{keyword}</code>\n\n"
+            msg = f"🔍 <b>Search Results for:</b> <code>{html.escape(str(keyword), quote=False)}</code>\n\n"
             for pid, name, price, stock in rows:
-                msg += f"• <b>{name}</b> — <code>${float(price):.2f}</code> | Stock: <code>{stock}</code>\n"
+                msg += f"• <b>{html.escape(str(name), quote=False)}</b> — <code>${float(price):.2f}</code> | Stock: <code>{stock}</code>\n"
                 buttons.append([InlineKeyboardButton(f"🛍 {name[:35]}", callback_data=f"product_{pid}")])
             buttons.append([InlineKeyboardButton("◀️ Back", callback_data="home")])
 
@@ -983,8 +989,8 @@ Admin will reply soon.""",
                         "🎫 <b>New Support Ticket</b>\n\n"
                         f"🧾 <b>Ticket:</b> <code>#{ticket_id}</code>\n"
                         f"👤 <b>User:</b> <code>{uid}</code>\n"
-                        f"📌 <b>Subject:</b> {subject}\n"
-                        f"📝 <b>Message:</b> {message}\n\n"
+                        f"📌 <b>Subject:</b> {html.escape(str(subject), quote=False)}\n"
+                        f"📝 <b>Message:</b> {html.escape(str(message), quote=False)}\n\n"
                         f"Reply: <code>/replyticket {ticket_id} your reply</code>"
                     ),
                     parse_mode="HTML"
@@ -1015,7 +1021,7 @@ Admin will reply soon.""",
                 f"""✅ <b>Ticket Created</b>
 
 🎫 <b>Ticket ID:</b> <code>#{ticket_id}</code>
-📌 <b>Subject:</b> {subject}
+📌 <b>Subject:</b> {html.escape(str(subject), quote=False)}
 
 Admin will reply soon.""",
                 reply_markup=support_menu(),
@@ -1030,8 +1036,8 @@ Admin will reply soon.""",
                         "🎫 <b>New Support Ticket</b>\n\n"
                         f"🧾 <b>Ticket:</b> <code>#{ticket_id}</code>\n"
                         f"👤 <b>User:</b> <code>{uid}</code>\n"
-                        f"📌 <b>Subject:</b> {subject}\n"
-                        f"📝 <b>Message:</b> {message}\n\n"
+                        f"📌 <b>Subject:</b> {html.escape(str(subject), quote=False)}\n"
+                        f"📝 <b>Message:</b> {html.escape(str(message), quote=False)}\n\n"
                         f"Reply: <code>/replyticket {ticket_id} your reply</code>"
                     ),
                     parse_mode="HTML"

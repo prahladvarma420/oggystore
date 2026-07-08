@@ -1,3 +1,4 @@
+import html
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -58,7 +59,7 @@ async def error_logs_command(update, context):
         logs = logs[-3800:]
 
     await update.message.reply_text(
-        f"🧾 <b>Recent Error Logs</b>\n\n<code>{logs}</code>",
+        f"🧾 <b>Recent Error Logs</b>\n\n<code>{html.escape(logs, quote=False)}</code>",
         parse_mode="HTML"
     )
 
@@ -71,7 +72,7 @@ async def global_error_handler(update, context):
         from config import ADMIN_ID
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"⚠️ <b>Bot Error Logged</b>\n\n<code>{error}</code>",
+            text=f"⚠️ <b>Bot Error Logged</b>\n\n<code>{html.escape(str(error), quote=False)}</code>",
             parse_mode="HTML"
         )
     except Exception:
