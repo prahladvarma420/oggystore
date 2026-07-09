@@ -357,7 +357,7 @@ async def broadcast_flash_sale(context, product_id: int, name: str, old_price: f
 
         try:
             ends_dt = datetime.strptime(ends_at, "%Y-%m-%d %H:%M:%S")
-            remaining = ends_dt - now()
+            remaining = ends_dt - datetime.strptime(now().strftime("%Y-%m-%d %H:%M:%S"), "%Y-%m-%d %H:%M:%S")
             hours_left = max(1, int(remaining.total_seconds() // 3600))
             ends_text = f"ends in {hours_left}h"
         except Exception:
@@ -367,8 +367,9 @@ async def broadcast_flash_sale(context, product_id: int, name: str, old_price: f
             "flash_sale_broadcast",
             "🧨 <b>FLASH SALE — LIMITED TIME!</b>\n\n📦 <b>{product_name}</b>\n\n💵 <b>Was:</b> <s>${old_price}</s>\n⚡ <b>Now:</b> <code>${new_price} USDT</code> <b>({discount_percent}% OFF)</b>\n\n🏃 <b>Hurry — {validity}</b>\nGrab it before the timer runs out 👇",
             product_name=name,
-            old_price=f"{old_price:.2f}",
-            new_price=f"{new_price:.2f}",
+            old_price=f"${old_price:.2f}",
+            new_price=f"${new_price:.2f}",
+            discount_text=f"{discount}% OFF" if discount else "SALE",
             discount_percent=f"-{discount}" if discount else "SALE",
             validity=ends_text,
         )
