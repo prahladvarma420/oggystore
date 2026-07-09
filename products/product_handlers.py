@@ -389,7 +389,7 @@ async def show_shop(q):
 
         kb.append([
             InlineKeyboardButton(
-                f"{'⭐ ' if featured else ''}{colorful_product_icon(name)} {name} • ${price:.2f} • {colorful_stock_badge(stock)}",
+                f"{'⭐ ' if featured else ''}{name} • ${price:.2f} • {colorful_stock_badge(stock)}",
                 callback_data=f"product_{pid}"
             )
         ])
