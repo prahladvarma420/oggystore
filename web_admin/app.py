@@ -1406,7 +1406,53 @@ def api_coupon_create():
        "coupons WHERE code=?),0),?)",
        (code, dtype, value, 1, max_uses, code, expires_at))
     log_action("create_coupon", code)
-    return jsonify({"ok": True})
+
+    # Auto-broadcast the new coupon to all bot users (same as TG admin).
+    sent = failed = 0
+    try:
+        if dtype == "percent":
+            discount_text = "{:g}% OFF".format(value)
+        else:
+            discount_text = "${:.2f} OFF".format(value)
+
+        validity_text = "Limited time"
+        try:
+            end_dt = dt.datetime.strptime(str(expires_at), "%Y-%m-%d %H:%M:%S")
+            remaining = end_dt - dt.datetime.strptime(now().strftime("%Y-%m-%d %H:%M:%S"), "%Y-%m-%d %H:%M:%S")
+            hours = max(1, int(remaining.total_seconds() // 3600))
+            validity_text = "Valid for {}h".format(hours)
+        except Exception:
+            if expires_at:
+                validity_text = str(expires_at)
+
+        uses_text = "Unlimited uses" if not max_uses else "Only {} uses".format(max_uses)
+
+        msg = botdb.render_message_template(
+            "coupon_broadcast",
+            "\U0001f39f <b>NEW COUPON AVAILABLE!</b>\n\n\U0001f49d <b>Discount:</b> <code>{discount}</code>\n\U0001f3ab <b>Coupon Code:</b> <code>{code}</code>\n\u23f3 <b>Validity:</b> <code>{validity}</code>\n\U0001f525 <b>Limit:</b> <code>{limit}</code>\n\nApply this coupon before checkout and save on your next purchase \U0001f447",
+            discount=discount_text,
+            code=code,
+            validity=validity_text,
+            limit=uses_text,
+        )
+
+        kb = {"inline_keyboard": [
+            [{"text": "\U0001f6cd Shop Now", "callback_data": "shop"}],
+            [{"text": "\U0001f39f Apply Coupon", "callback_data": "apply_coupon"}]
+        ]}
+
+        users = q("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
+        for u in users:
+            ok_send, _info = tg_send(u["user_id"], msg, reply_markup=kb)
+            if ok_send:
+                sent += 1
+            else:
+                failed += 1
+        log_action("coupon_broadcast", "{} sent={} failed={}".format(code, sent, failed))
+    except Exception:
+        pass
+
+    return jsonify({"ok": True, "broadcast_sent": sent, "broadcast_failed": failed})
 
 
 @app.route("/api/coupons/<code>/toggle", methods=["POST"])
