@@ -1,5 +1,5 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from database.db import get_product_price_tiers, cur
+from database.db import get_product_price_tiers, cur, is_admin
 from config import ADMIN_ID
 
 
@@ -24,7 +24,9 @@ def main_menu(uid=None):
     ]
 
     try:
-        if uid == ADMIN_ID:
+        # Show the Admin Panel button for the owner AND any admin promoted
+        # via the bot or the web admin panel (admins table).
+        if uid is not None and is_admin(uid):
             rows.insert(0, [InlineKeyboardButton("🛡 Admin Panel", callback_data="admin_panel")])
     except Exception:
         pass

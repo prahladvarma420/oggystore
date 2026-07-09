@@ -131,10 +131,10 @@ async def admin(update, context: ContextTypes.DEFAULT_TYPE):
     try:
         welcome_coupon = get_setting("auto_welcome_coupon", "")
         if welcome_coupon:
-            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (uid,))
+            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (user.id,))
             order_count = cur.fetchone()[0]
             if order_count == 0:
-                set_user_coupon(uid, welcome_coupon)
+                set_user_coupon(user.id, welcome_coupon)
     except Exception:
         pass
 
