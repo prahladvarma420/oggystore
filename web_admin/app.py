@@ -990,6 +990,61 @@ def api_products():
     return jsonify({"ok": True, "products": [product_row(p) for p in rows]})
 
 
+def _broadcast_to_all(msg, pid=None, button_text=None):
+    """Send a message to every eligible bot user directly from the web admin."""
+    kb = None
+    if pid and button_text:
+        kb = {"inline_keyboard": [[{"text": button_text, "callback_data": "product_{}".format(pid)}]]}
+    sent = failed = 0
+    try:
+        users = q("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
+    except Exception:
+        return 0, 0
+    for u in users:
+        ok_send, _info = tg_send(u["user_id"], msg, reply_markup=kb)
+        if ok_send:
+            sent += 1
+        else:
+            failed += 1
+    return sent, failed
+
+
+def _product_alert_message(name, price, added, available, mode):
+    if mode == "product":
+        title = "\U0001f195 <b>New Product Added!</b>"
+        intro = "\u26a1 New product is now available!"
+    else:
+        title = "\U0001f195 <b>New Stock Added!</b>"
+        intro = "\u26a1 Grab yours before they\u2019re gone!"
+    return ("{}\n\n"
+            "\U0001f4e6 <b>{}</b>\n"
+            "\u2795 <b>Added:</b> <b>{}</b>\n"
+            "\u2705 <b>Available:</b> <b>{}</b>\n"
+            "\U0001f4b0 <b>Price:</b> <b>${:.2f}</b>\n\n"
+            "<i>{}</i>").format(title, name, added, available, float(price or 0), intro)
+
+
+def _price_change_message(name, old_price, new_price, available):
+    if new_price < old_price:
+        pct = round((old_price - new_price) / old_price * 100) if old_price > 0 else 0
+        title = "\U0001f525 <b>PRICE DROP ALERT!</b>"
+        change_line = "\U0001f4c9 <b>Price Dropped:</b> <b>-{}%</b> \U0001f389".format(pct)
+    else:
+        pct = round((new_price - old_price) / old_price * 100) if old_price > 0 else 0
+        title = "\U0001f4e2 <b>PRICE UPDATE!</b>"
+        change_line = "\U0001f4c8 <b>Price Increased:</b> <b>+{}%</b>".format(pct)
+    bar = "\u2501" * 18
+    return ("{}\n{}\n\n"
+            "\U0001f4e6 <b>{}</b>\n\n"
+            "\U0001f4b0 <b>Old Price:</b> <s>${:.2f}</s>\n"
+            "\u2728 <b>New Price:</b> <b>${:.2f}</b>\n"
+            "{}\n"
+            "\U0001f4ca <b>Available Stock:</b> <b>{}</b>\n\n"
+            "{}\n"
+            "\U0001f6d2 <i>Tap below to grab it now!</i> \U0001f447").format(
+        title, bar, name, old_price, new_price, change_line, available, bar)
+
+
 @app.route("/api/products/create", methods=["POST"])
 @login_required
 def api_product_create():
@@ -1017,7 +1072,19 @@ def api_product_create():
     if codes:
         added = botdb.restock_product(pid, codes)
     log_action("create_product", "#{} {} (+{} codes)".format(pid, name, added))
-    return jsonify({"ok": True, "id": pid, "added_codes": added})
+
+    # Auto-broadcast the new product to all bot users (same as TG admin).
+    sent = failed = 0
+    if int(bool(d.get("active", 1))):
+        try:
+            available = botdb.get_available_stock_count(pid)
+            msg = _product_alert_message(name, price, added, available, "product")
+            sent, failed = _broadcast_to_all(msg, pid=pid, button_text="\U0001f6d2 Tap to Buy Now")
+            log_action("product_broadcast", "#{} sent={} failed={}".format(pid, sent, failed))
+        except Exception:
+            pass
+    return jsonify({"ok": True, "id": pid, "added_codes": added,
+                    "broadcast_sent": sent, "broadcast_failed": failed})
 
 
 @app.route("/api/products/<int:pid>/update", methods=["POST"])
@@ -1035,9 +1102,34 @@ def api_product_update(pid):
             vals.append(caster(d[k]) if caster != str else str(d[k]))
     if not fields:
         return jsonify({"ok": False, "error": "Nothing to update"}), 400
+
+    old_price = None
+    if "price" in d and d["price"] is not None:
+        prev = q("SELECT price FROM products WHERE id=?", (pid,), one=True)
+        if prev:
+            old_price = float(prev["price"] or 0)
+
     vals.append(pid)
     ex("UPDATE products SET {} WHERE id=?".format(", ".join(fields)), tuple(vals))
     log_action("edit_product", "#{} -> {}".format(pid, list(d.keys())))
+
+    # Auto-broadcast price changes to all bot users instantly.
+    if old_price is not None:
+        try:
+            new_price = float(d["price"])
+            if abs(new_price - old_price) >= 0.005:
+                prod = q("SELECT name FROM products WHERE id=?", (pid,), one=True)
+                pname = prod["name"] if prod else "Product"
+                available = botdb.get_available_stock_count(pid)
+                msg = _price_change_message(pname, old_price, new_price, available)
+                sent, failed = _broadcast_to_all(msg, pid=pid, button_text="\U0001f6d2 Buy Now")
+                if sent == 0 and failed > 0:
+                    # Web admin couldn't reach Telegram - let the bot send it within ~1 min instead.
+                    botdb.queue_price_change_broadcast(pid, old_price, new_price)
+                log_action("price_broadcast", "#{} {} -> {} sent={} failed={}".format(pid, old_price, new_price, sent, failed))
+        except Exception:
+            pass
+
     return jsonify({"ok": True})
 
 
@@ -1104,7 +1196,7 @@ def api_product_flash(pid):
             validity=ends_text,
         )
         kb = {"inline_keyboard": [[{"text": "\U0001f6d2 Buy " + str(prod["name"])[:28],
-                                    "callback_data": "product{}".format(pid)}]]}
+                                    "callback_data": "product_{}".format(pid)}]]}
         users = q("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
         sent = failed = 0
         for u in users:
@@ -1128,8 +1220,21 @@ def api_stock_add(pid):
         return jsonify({"ok": False, "error": "No codes provided"}), 400
     added = botdb.restock_product(pid, codes)
     log_action("add_stock", "#{} +{}".format(pid, added))
-    return jsonify({"ok": True, "added": added,
-                    "available": botdb.get_available_stock_count(pid)})
+    available = botdb.get_available_stock_count(pid)
+
+    # Auto-broadcast new stock to all bot users (same as TG admin).
+    sent = failed = 0
+    if added > 0:
+        try:
+            prod = q("SELECT name, price, active FROM products WHERE id=?", (pid,), one=True)
+            if prod and int(prod["active"] or 0) == 1:
+                msg = _product_alert_message(prod["name"], prod["price"], added, available, "stock")
+                sent, failed = _broadcast_to_all(msg, pid=pid, button_text="\U0001f6d2 Tap to Buy Now")
+                log_action("stock_broadcast", "#{} sent={} failed={}".format(pid, sent, failed))
+        except Exception:
+            pass
+    return jsonify({"ok": True, "added": added, "available": available,
+                    "broadcast_sent": sent, "broadcast_failed": failed})
 
 
 @app.route("/api/products/<int:pid>/stock")

@@ -1094,6 +1094,40 @@ def create_scheduled_broadcast(message: str, run_at: str):
     return cur.lastrowid
 
 
+def queue_price_change_broadcast(product_id: int, old_price: float, new_price: float):
+    """Queue an automatic price-change announcement (the bot sends it within ~1 minute)."""
+    try:
+        cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        name = row[0]
+        available = get_available_stock_count(product_id)
+
+        if new_price < old_price:
+            pct = round((old_price - new_price) / old_price * 100) if old_price > 0 else 0
+            title = "\U0001f525 <b>PRICE DROP ALERT!</b>"
+            change_line = f"\U0001f4c9 <b>Price Dropped:</b> <b>-{pct}%</b> \U0001f389"
+        else:
+            pct = round((new_price - old_price) / old_price * 100) if old_price > 0 else 0
+            title = "\U0001f4e2 <b>PRICE UPDATE!</b>"
+            change_line = f"\U0001f4c8 <b>Price Increased:</b> <b>+{pct}%</b>"
+
+        bar = "\u2501" * 18
+        msg = (f"{title}\n{bar}\n\n"
+               f"\U0001f4e6 <b>{name}</b>\n\n"
+               f"\U0001f4b0 <b>Old Price:</b> <s>${old_price:.2f}</s>\n"
+               f"\u2728 <b>New Price:</b> <b>${new_price:.2f}</b>\n"
+               f"{change_line}\n"
+               f"\U0001f4ca <b>Available Stock:</b> <b>{available}</b>\n\n"
+               f"{bar}\n"
+               f"\U0001f6cd <i>Open the Shop in the bot to grab it now!</i>")
+
+        return create_scheduled_broadcast(msg, now_text())
+    except Exception:
+        return None
+
+
 def get_pending_scheduled_broadcasts(now_text: str):
     cur.execute(
         "SELECT id, message FROM scheduled_broadcasts WHERE status='pending' AND run_at<=? ORDER BY run_at ASC",

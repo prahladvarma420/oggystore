@@ -788,6 +788,56 @@ async def broadcast_product_update(context, product_id: int, product_name: str, 
         return 0, 0
 
 
+async def broadcast_price_change(context, product_id: int, product_name: str, old_price: float, new_price: float, available: int):
+    """Broadcast a price change alert to all users."""
+    try:
+        cur.execute("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
+        users = cur.fetchall()
+
+        if new_price < old_price:
+            pct = round((old_price - new_price) / old_price * 100) if old_price > 0 else 0
+            title = "\U0001f525 <b>PRICE DROP ALERT!</b>"
+            change_line = f"\U0001f4c9 <b>Price Dropped:</b> <b>-{pct}%</b> \U0001f389"
+        else:
+            pct = round((new_price - old_price) / old_price * 100) if old_price > 0 else 0
+            title = "\U0001f4e2 <b>PRICE UPDATE!</b>"
+            change_line = f"\U0001f4c8 <b>Price Increased:</b> <b>+{pct}%</b>"
+
+        bar = "\u2501" * 18
+        msg = (f"{title}\n{bar}\n\n"
+               f"\U0001f4e6 <b>{product_name}</b>\n\n"
+               f"\U0001f4b0 <b>Old Price:</b> <s>${old_price:.2f}</s>\n"
+               f"\u2728 <b>New Price:</b> <b>${new_price:.2f}</b>\n"
+               f"{change_line}\n"
+               f"\U0001f4ca <b>Available Stock:</b> <b>{available}</b>\n\n"
+               f"{bar}\n"
+               f"\U0001f6cd <i>Tap below to grab it now!</i> \U0001f447")
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("\U0001f6d2 Buy Now", callback_data=f"product_{product_id}")]
+        ])
+
+        sent = 0
+        failed = 0
+        for row in users:
+            try:
+                await context.bot.send_message(
+                    chat_id=row[0],
+                    text=msg,
+                    reply_markup=kb,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+
+        log_admin_action(0, "AUTO_PRICE_BROADCAST", f"product={product_id} {old_price}->{new_price} sent={sent} failed={failed}")
+        return sent, failed
+    except Exception:
+        return 0, 0
+
+
 admin_action_cooldowns = {}
 DANGEROUS_ADMIN_COOLDOWN_SECONDS = 3
 
@@ -3257,7 +3307,7 @@ You must include the confirmation word <code>DELETE</code>.""",
             _, product_id_text, field = state.split(":", 2)
             product_id = int(product_id_text)
             value = text.strip()
-            cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+            cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
             product = cur.fetchone()
             if not product:
                 await update.message.reply_text("❌ <b>Product not found.</b>", parse_mode="HTML")
@@ -3274,7 +3324,21 @@ You must include the confirmation word <code>DELETE</code>.""",
             conn.commit()
             log_admin_action(uid, "EASY_EDIT_PRODUCT", f"Product #{product_id} field={field}")
             user_state.pop(uid, None)
-            await update.message.reply_text(f"✅ <b>Product Updated</b>\n\n🆔 Product ID: <code>{product_id}</code>\n✏️ Field: <code>{field}</code>", reply_markup=product_edit_options_keyboard(product_id), parse_mode="HTML")
+
+            # Auto-broadcast price changes to all users.
+            broadcast_note = ""
+            if field == "price":
+                try:
+                    old_price = float(product[1] or 0)
+                    new_price = float(value)
+                    if abs(new_price - old_price) >= 0.005:
+                        available = get_available_stock_count(product_id)
+                        sent, failed = await broadcast_price_change(context, product_id, str(product[0]), old_price, new_price, available)
+                        broadcast_note = f"\n\U0001f4e2 Price broadcast sent to <b>{sent}</b> users"
+                except Exception:
+                    broadcast_note = "\n\u26a0\ufe0f Price broadcast failed"
+
+            await update.message.reply_text(f"✅ <b>Product Updated</b>\n\n🆔 Product ID: <code>{product_id}</code>\n✏️ Field: <code>{field}</code>{broadcast_note}", reply_markup=product_edit_options_keyboard(product_id), parse_mode="HTML")
         except Exception as exc:
             await update.message.reply_text(f"❌ <b>Update failed.</b>\n\n<code>{exc}</code>", parse_mode="HTML")
             return True
