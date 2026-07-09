@@ -3,6 +3,7 @@ import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from web3 import Web3
 
 from utils.error_logger import log_error
@@ -90,6 +91,41 @@ def _pending_deposits():
         (cutoff,),
     )
     return cur.fetchall()
+
+
+async def _expire_old_deposits(context):
+    """Mark stale pending invoices as expired and notify their owners."""
+    cutoff = (now() - timedelta(hours=DEPOSIT_EXPIRE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute(
+        "SELECT id, user_id, amount FROM deposits WHERE status='pending' AND created < ?",
+        (cutoff,),
+    )
+    rows = cur.fetchall()
+
+    for dep_id, dep_uid, amount in rows:
+        cur.execute(
+            "UPDATE deposits SET status='expired' WHERE id=? AND status='pending'",
+            (dep_id,)
+        )
+        conn.commit()
+
+        try:
+            await context.bot.send_message(
+                chat_id=dep_uid,
+                text=(
+                    "⌛ <b>Invoice Expired</b>\n\n"
+                    f"🧾 Invoice <b>#{dep_id}</b> for <b>{float(amount):.2f} USDT</b> "
+                    "expired without payment.\n\n"
+                    "Still want to deposit? Create a fresh invoice below.\n"
+                    "⚠️ If you already paid this invoice, contact support."
+                ),
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("💰 Create New Invoice", callback_data="deposit")]]
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
 
 def _not_processed(tx_hash: str) -> bool:
@@ -259,6 +295,12 @@ async def _notify_admin_error(context, message: str):
 async def check_payments(context):
     if not _config_ready():
         return
+
+    # Expire stale invoices and notify their owners (best-effort).
+    try:
+        await _expire_old_deposits(context)
+    except Exception as exc:
+        log_error("Deposit expiry sweep failed", exc)
 
     pending = _pending_deposits()
     if not pending:

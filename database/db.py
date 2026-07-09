@@ -251,6 +251,39 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS bundles(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        price REAL NOT NULL,
+        active INTEGER DEFAULT 1,
+        created TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS bundle_items(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bundle_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
+        quantity INTEGER DEFAULT 1
+    )
+    """)
+
+    # One-time cleanup for existing installs: in the delivery message only
+    # the codes should be copyable. Order id / paid / balance become bold.
+    try:
+        cur.execute(
+            "UPDATE message_templates SET body = REPLACE(REPLACE(REPLACE(body, "
+            "'<b>#{order_id}</b>', '<b>#{order_id}</b>'), "
+            "'<b>${paid}</b>', '<b>${paid}</b>'), "
+            "'<b>${balance}</b>', '<b>${balance}</b>') "
+            "WHERE key='delivery_success'"
+        )
+        conn.commit()
+    except Exception:
+        pass
+
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('referral_percent', '5')")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('low_stock_alert_threshold', '3')")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('low_stock_alert_levels', '10,5,1')")
@@ -270,7 +303,7 @@ def init_db():
         ),
         "delivery_success": (
             "Delivery Success Message",
-            "✅ <b>Payment Successful!</b>\\n━━━━━━━━━━━━━━━━━━━━\\n\\n🧾 <b>Order ID:</b> <code>#{order_id}</code>\\n\\n📦 <b>{product_name}</b>\\n\\n🔑 <b>Code(s):</b>\\n<code>{delivery}</code>\\n\\n━━━━━━━━━━━━━━━━━━━━\\n\\n💰 <b>Paid:</b> <code>${paid}</code>\\n💼 <b>Remaining Balance:</b> <code>${balance}</code>\\n\\n━━━━━━━━━━━━━━━━━━━━\\nThank you for your purchase! 🎉\\n\\nUse /orders to view your order history."
+            "✅ <b>Payment Successful!</b>\\n━━━━━━━━━━━━━━━━━━━━\\n\\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\\n\\n📦 <b>{product_name}</b>\\n\\n🔑 <b>Code(s):</b>\\n<code>{delivery}</code>\\n\\n━━━━━━━━━━━━━━━━━━━━\\n\\n💰 <b>Paid:</b> <b>${paid}</b>\\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\\n\\n━━━━━━━━━━━━━━━━━━━━\\nThank you for your purchase! 🎉\\n\\nUse /orders to view your order history."
         ),
         "coupon_broadcast": (
             "Coupon Broadcast Message",
@@ -318,7 +351,7 @@ def ensure_user(user):
         ),
         "delivery_success": (
             "Delivery Success Message",
-            "✅ <b>Payment Successful!</b>\\n━━━━━━━━━━━━━━━━━━━━\\n\\n🧾 <b>Order ID:</b> <code>#{order_id}</code>\\n\\n📦 <b>{product_name}</b>\\n\\n🔑 <b>Code(s):</b>\\n<code>{delivery}</code>\\n\\n━━━━━━━━━━━━━━━━━━━━\\n\\n💰 <b>Paid:</b> <code>${paid}</code>\\n💼 <b>Remaining Balance:</b> <code>${balance}</code>\\n\\n━━━━━━━━━━━━━━━━━━━━\\nThank you for your purchase! 🎉\\n\\nUse /orders to view your order history."
+            "✅ <b>Payment Successful!</b>\\n━━━━━━━━━━━━━━━━━━━━\\n\\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\\n\\n📦 <b>{product_name}</b>\\n\\n🔑 <b>Code(s):</b>\\n<code>{delivery}</code>\\n\\n━━━━━━━━━━━━━━━━━━━━\\n\\n💰 <b>Paid:</b> <b>${paid}</b>\\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\\n\\n━━━━━━━━━━━━━━━━━━━━\\nThank you for your purchase! 🎉\\n\\nUse /orders to view your order history."
         ),
         "coupon_broadcast": (
             "Coupon Broadcast Message",
@@ -646,6 +679,62 @@ def reserve_stock_items(product_id: int, user_id: int, quantity: int):
         deliveries.append(decrypt_text(delivery))
 
     return deliveries
+
+
+# ---------- Bundle deals ----------
+
+def create_bundle(name, price, items):
+    """items: list of (product_id, quantity). Returns new bundle id."""
+    cur.execute(
+        "INSERT INTO bundles(name, price, active, created) VALUES(?,?,1,?)",
+        (name, float(price), now_text())
+    )
+    conn.commit()
+    cur.execute("SELECT last_insert_rowid()")
+    bundle_id = cur.fetchone()[0]
+
+    for product_id, quantity in items:
+        cur.execute(
+            "INSERT INTO bundle_items(bundle_id, product_id, quantity) VALUES(?,?,?)",
+            (bundle_id, int(product_id), int(quantity))
+        )
+    conn.commit()
+    return bundle_id
+
+
+def get_active_bundles():
+    cur.execute("SELECT id, name, price FROM bundles WHERE active=1 ORDER BY id DESC")
+    return cur.fetchall()
+
+
+def get_all_bundles():
+    cur.execute("SELECT id, name, price, active FROM bundles ORDER BY id DESC")
+    return cur.fetchall()
+
+
+def get_bundle(bundle_id: int):
+    cur.execute("SELECT id, name, price, active FROM bundles WHERE id=?", (bundle_id,))
+    return cur.fetchone()
+
+
+def get_bundle_items(bundle_id: int):
+    cur.execute(
+        """
+        SELECT bi.product_id, bi.quantity, p.name, p.price
+        FROM bundle_items bi
+        JOIN products p ON p.id = bi.product_id
+        WHERE bi.bundle_id=?
+        ORDER BY bi.id ASC
+        """,
+        (bundle_id,)
+    )
+    return cur.fetchall()
+
+
+def delete_bundle(bundle_id: int):
+    cur.execute("DELETE FROM bundle_items WHERE bundle_id=?", (bundle_id,))
+    cur.execute("DELETE FROM bundles WHERE id=?", (bundle_id,))
+    conn.commit()
 
 
 # ---------- Referral / Withdrawal / Featured helpers ----------

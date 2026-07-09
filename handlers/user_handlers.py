@@ -9,8 +9,8 @@ from keyboards.menus import main_menu, profile_menu, back_home, support_menu
 from utils.texts import welcome_text
 from utils.ui import edit_or_send
 from utils.states import user_state
-from products.product_handlers import show_shop, show_product, buy_product, show_order_preview, start_direct_checkout, show_quantity_menu, show_order_preview
-from payments.deposit_handlers import start_deposit, handle_deposit_amount
+from products.product_handlers import show_shop, show_product, buy_product, show_order_preview, start_direct_checkout, show_quantity_menu, show_bundles, show_bundle_details, buy_bundle
+from payments.deposit_handlers import start_deposit, handle_deposit_amount, deposit_shortfall
 from admin.admin_handlers import show_admin_panel, handle_admin_callback, handle_admin_message
 from config import ADMIN_USERNAME, ADMIN_ID
 
@@ -244,6 +244,26 @@ Example:
         await start_deposit(q, uid)
         return
 
+    if data.startswith("depneed_"):
+        try:
+            need_amount = float(data.split("_", 1)[1])
+        except Exception:
+            need_amount = 0.0
+        await deposit_shortfall(q, uid, need_amount)
+        return
+
+    if data == "bundles":
+        await show_bundles(q)
+        return
+
+    if data.startswith("buybundle_"):
+        await buy_bundle(q, uid, int(data.split("_")[1]))
+        return
+
+    if data.startswith("bundle_"):
+        await show_bundle_details(q, uid, int(data.split("_")[1]))
+        return
+
     if data == "deposit_history":
         from payments.deposit_handlers import show_deposit_history
         await show_deposit_history(q, uid)
@@ -276,17 +296,17 @@ Example:
 👤 <b>Name:</b> {first_name or 'User'}
 🔗 <b>Username:</b> {uname}
 
-💰 <b>Available Balance:</b> <code>{float(balance or 0):.2f} USDT</code>
-📥 <b>Total Deposited:</b> <code>{float(dep_total or 0):.2f} USDT</code>
-🧾 <b>Paid Deposits:</b> <code>{dep_count}</code>
+💰 <b>Available Balance:</b> <b>{float(balance or 0):.2f} USDT</b>
+📥 <b>Total Deposited:</b> <b>{float(dep_total or 0):.2f} USDT</b>
+🧾 <b>Paid Deposits:</b> <b>{dep_count}</b>
 
-🛒 <b>Total Orders:</b> <code>{order_count}</code>
-💸 <b>Total Spent:</b> <code>{float(total_spent or 0):.2f} USDT</code>
+🛒 <b>Total Orders:</b> <b>{order_count}</b>
+💸 <b>Total Spent:</b> <b>{float(total_spent or 0):.2f} USDT</b>
 
-🎁 <b>Referral Earnings:</b> <code>{float(ref_earn or 0):.6f} USDT</code>
-⏳ <b>Pending Referral:</b> <code>{float(ref_pending or 0):.6f} USDT</code>
-⭐ <b>Loyalty Points:</b> <code>{int(loyalty_points or 0)}</code>
-🏆 <b>VIP Rank:</b> <code>{vip_rank or 'Bronze'}</code>
+🎁 <b>Referral Earnings:</b> <b>{float(ref_earn or 0):.6f} USDT</b>
+⏳ <b>Pending Referral:</b> <b>{float(ref_pending or 0):.6f} USDT</b>
+⭐ <b>Loyalty Points:</b> <b>{int(loyalty_points or 0)}</b>
+🏆 <b>VIP Rank:</b> <b>{vip_rank or 'Bronze'}</b>
 
 Use Deposit to add balance, then pay directly from wallet during checkout.""",
             profile_menu()
@@ -397,15 +417,15 @@ Payment done but balance not added.""",
 👤 <b>Name:</b> {first_name or 'User'}
 🔗 <b>Username:</b> {uname}
 
-💼 <b>Wallet Balance:</b> <code>{float(bal or 0):.2f} USDT</code>
-🛒 <b>Total Orders:</b> <code>{order_count}</code>
-💰 <b>Total Spent:</b> <code>${float(total_spent or 0):.2f}</code>
+💼 <b>Wallet Balance:</b> <b>{float(bal or 0):.2f} USDT</b>
+🛒 <b>Total Orders:</b> <b>{order_count}</b>
+💰 <b>Total Spent:</b> <b>${float(total_spent or 0):.2f}</b>
 
-💳 <b>Paid Deposits:</b> <code>{dep_count}</code>
-📥 <b>Total Deposited:</b> <code>{float(dep_total or 0):.2f} USDT</code>
+💳 <b>Paid Deposits:</b> <b>{dep_count}</b>
+📥 <b>Total Deposited:</b> <b>{float(dep_total or 0):.2f} USDT</b>
 
-🎁 <b>Referral Earnings:</b> <code>{float(ref_earn or 0):.6f} USDT</code>
-⏳ <b>Pending Referral:</b> <code>{float(ref_pending or 0):.6f} USDT</code>
+🎁 <b>Referral Earnings:</b> <b>{float(ref_earn or 0):.6f} USDT</b>
+⏳ <b>Pending Referral:</b> <b>{float(ref_pending or 0):.6f} USDT</b>
 
 🎟 <b>Coupon:</b> {get_user_coupon(uid) or 'None'}
 🔔 <b>Notifications:</b> {'ON ✅' if notifications else 'OFF ❌'}""",

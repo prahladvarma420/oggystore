@@ -1,3 +1,5 @@
+import math
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from database.db import get_product_price_tiers, cur, is_admin
 from config import ADMIN_ID
@@ -122,6 +124,7 @@ def admin_marketing_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"), InlineKeyboardButton("⏰ Scheduled", callback_data="admin_scheduled_broadcasts")],
         [InlineKeyboardButton("🎟 Coupons", callback_data="admin_coupons")],
+        [InlineKeyboardButton("🎁 Bundle Deals", callback_data="admin_bundles")],
         [InlineKeyboardButton("🤖 Auto Marketing", callback_data="admin_auto_marketing")],
         [InlineKeyboardButton("🎁 Referral Settings", callback_data="admin_referral_settings")],
         [InlineKeyboardButton("⭐ Featured Products", callback_data="admin_featured_products")],
@@ -274,13 +277,24 @@ def order_preview_menu(product_id, quantity, balance=0, total_price=0, coupon_co
             InlineKeyboardButton("❌ Remove", callback_data=f"checkout_coupon_remove_{product_id}_{quantity}")
         ]
 
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton(f"💚 Pay Wallet (${float(balance):.2f})", callback_data=f"buy_{product_id}_{quantity}")],
         [InlineKeyboardButton("⚡ Pay USDT BEP20", callback_data=f"directpay_{product_id}_{quantity}")],
         coupon_row,
         [InlineKeyboardButton("🔢 Change Qty", callback_data=f"qtymenu_{product_id}")],
         [InlineKeyboardButton("⬅️ Back To Product", callback_data=f"product_{product_id}")],
-    ])
+    ]
+
+    # Low-balance smart prompt: offer to deposit exactly what's missing.
+    try:
+        need = float(total_price) - float(balance)
+        if need > 0:
+            need = math.ceil(need * 100) / 100.0
+            rows.insert(1, [InlineKeyboardButton(f"💰 Deposit ${need:.2f} More", callback_data=f"depneed_{need:.2f}")])
+    except Exception:
+        pass
+
+    return InlineKeyboardMarkup(rows)
 
 
 def coupon_apply_menu():

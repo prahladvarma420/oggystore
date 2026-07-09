@@ -1,9 +1,11 @@
 from datetime import datetime
 import html
+import io
+import math
 import random
 import time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from database.db import render_message_template,  cur, conn, get_balance, get_available_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y
+from database.db import render_message_template,  cur, conn, get_balance, get_available_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items
 from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
 from utils.crypto import encrypt_text
 from utils.ui import edit_or_send
@@ -293,9 +295,9 @@ async def show_quantity_menu(q, uid: int, product_id: int):
 
 🧾 <b>Choose Offer</b>
 
-💰 <b>Base Price:</b> <code>${float(price):.2f}</code>
-💼 <b>Your Balance:</b> <code>{balance:.2f} USDT</code>
-📊 <b>Available Stock:</b> <code>{stock}</code>
+💰 <b>Base Price:</b> <b>${float(price):.2f}</b>
+💼 <b>Your Balance:</b> <b>{balance:.2f} USDT</b>
+📊 <b>Available Stock:</b> <b>{stock}</b>
 
 Choose an offer below or use custom quantity:""",
         quantity_select_menu(product_id, stock)
@@ -339,7 +341,7 @@ async def show_order_preview(q, uid: int, product_id: int, quantity: int):
         if coupon:
             discount = calculate_coupon_discount(original_total, coupon)
             total_price = round(original_total - discount, 2)
-            coupon_line = f"🎟 <b>Coupon:</b> <code>{coupon_code}</code> — saved <code>${discount:.2f}</code>"
+            coupon_line = f"🎟 <b>Coupon:</b> <b>{coupon_code}</b> — saved <b>${discount:.2f}</b>"
         else:
             clear_user_coupon(uid)
             coupon_code = None
@@ -382,11 +384,19 @@ async def show_shop(q):
         return
 
     kb = []
+    hidden_count = 0
+    visible_count = 0
 
     for pid, name, price, old_stock, validity, featured in products:
         live_stock = get_available_stock_count(pid)
         stock = live_stock if live_stock > 0 else old_stock
 
+        # Auto-hide products that are completely out of stock.
+        if int(stock or 0) <= 0:
+            hidden_count += 1
+            continue
+
+        visible_count += 1
         kb.append([
             InlineKeyboardButton(
                 f"{'⭐ ' if featured else ''}{name} • ${price:.2f} • {colorful_stock_badge(stock)}",
@@ -394,10 +404,24 @@ async def show_shop(q):
             )
         ])
 
+    bundles = get_active_bundles()
+    if bundles:
+        kb.insert(0, [InlineKeyboardButton("🎁 Bundle Deals", callback_data="bundles")])
+
+    if visible_count == 0 and not bundles:
+        await edit_or_send(
+            q,
+            "🛍 <b>Products</b>\n\n🚧 All products are being restocked right now.\n\nPlease check back soon!",
+            shop_nav()
+        )
+        return
+
     kb.append([
         InlineKeyboardButton("🔄 Refresh", callback_data="shop"),
         InlineKeyboardButton("⬅️ Back", callback_data="home")
     ])
+
+    restock_note = f"\n😴 Restocking soon: <b>{hidden_count}</b>" if hidden_count else ""
 
     await edit_or_send(
         q,
@@ -405,7 +429,7 @@ async def show_shop(q):
 
 Browse products and get instant delivery.
 
-📦 Available products: <b>{len(products)}</b>
+📦 Available products: <b>{visible_count}</b>{restock_note}
 ⚡ Delivery: <b>Automatic</b>
 💳 Payment: <b>Wallet Balance</b>
 
@@ -477,14 +501,14 @@ async def show_product(q, pid: int):
                     final_tp = float(tp)
                     if original_base and original_base > 0:
                         final_tp = round(float(tp) * (float(display_price) / original_base), 2)
-                    offer_lines += f"\n• <b>{tq}</b> for <code>${final_tp:.2f}</code>"
+                    offer_lines += f"\n• <b>{tq}</b> for <b>${final_tp:.2f}</b>"
     except Exception:
         offer_lines = ""
 
     text = f"""🧳 <b>{name}</b>
 
-💰 <b>Price:</b> <code>${display_price:.2f}</code>{sale_text}
-📦 <b>Stock:</b> <code>{stock}</code> {stock_text}\n🔔 <b>Waiting:</b> <code>{get_restock_wait_count(pid)}</code>
+💰 <b>Price:</b> <b>${display_price:.2f}</b>{sale_text}
+📦 <b>Stock:</b> <b>{stock}</b> {stock_text}\n🔔 <b>Waiting:</b> <b>{get_restock_wait_count(pid)}</b>
 ⚡ <b>Delivery:</b> Instant{offer_lines}
 
 ━━━━━━━━━━━━━━
@@ -723,11 +747,12 @@ Please select a lower quantity or check again later.""",
 🔢 <b>Quantity:</b> {quantity}
 💰 <b>Total:</b> {total_price:.2f} USDT
 👛 <b>Your Balance:</b> {balance:.2f} USDT
-➕ <b>Need More:</b> {need:.2f} USDT
+➕ <b>Need More:</b> {math.ceil(need * 100) / 100:.2f} USDT
 
-Please deposit funds first to complete this purchase.""",
+Deposit exactly what's missing with one tap below.""",
                 InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💰 Deposit Now", callback_data="deposit")],
+                    [InlineKeyboardButton(f"💰 Deposit ${math.ceil(need * 100) / 100:.2f} Now", callback_data=f"depneed_{math.ceil(need * 100) / 100:.2f}")],
+                    [InlineKeyboardButton("💰 Deposit Custom Amount", callback_data="deposit")],
                     [InlineKeyboardButton("⬅️ Back To Products", callback_data="shop")],
                 ]),
             )
@@ -787,7 +812,7 @@ Please deposit funds first to complete this purchase.""",
                     text=(
                         "🎁 <b>Referral Earning Added</b>\n\n"
                         f"👤 Referred user bought: <b>{name}</b>\n"
-                        f"💰 Earning: <code>{referral_earning:.6f} USDT</code>\n\n"
+                        f"💰 Earning: <b>{referral_earning:.6f} USDT</b>\n\n"
                         "Use Profile → Referrals to view earnings."
                     ),
                     parse_mode="HTML"
@@ -812,18 +837,20 @@ Please deposit funds first to complete this purchase.""",
 
         coupon_line = ""
         if discount > 0 and coupon_code:
-            coupon_line = f"\n🎟 <b>Coupon:</b> <code>{coupon_code}</code> saved <code>${discount:.2f}</code>"
+            coupon_line = f"\n🎟 <b>Coupon:</b> <b>{coupon_code}</b> saved <b>${discount:.2f}</b>"
 
         first_discount_line = ""
         if first_purchase_discount > 0:
-            first_discount_line = f"\n🎉 <b>First Purchase:</b> saved <code>${first_purchase_discount:.2f}</code>"
+            first_discount_line = f"\n🎉 <b>First Purchase:</b> saved <b>${first_purchase_discount:.2f}</b>"
+
+        codes_as_file = quantity >= 15
 
         delivery_message = render_message_template(
             "delivery_success",
-            "✅ <b>Payment Successful!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order ID:</b> <code>#{order_id}</code>\n\n📦 <b>{product_name}</b>\n\n🔑 <b>Code(s):</b>\n<code>{delivery}</code>\n\n━━━━━━━━━━━━━━━━━━━━\n\n💰 <b>Paid:</b> <code>${paid}</code>\n💼 <b>Remaining Balance:</b> <code>${balance}</code>\n\n━━━━━━━━━━━━━━━━━━━━\nThank you for your purchase! 🎉\n\nUse /orders to view your order history.",
+            "✅ <b>Payment Successful!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\n\n📦 <b>{product_name}</b>\n\n🔑 <b>Code(s):</b>\n<code>{delivery}</code>\n\n━━━━━━━━━━━━━━━━━━━━\n\n💰 <b>Paid:</b> <b>${paid}</b>\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\n\n━━━━━━━━━━━━━━━━━━━━\nThank you for your purchase! 🎉\n\nUse /orders to view your order history.",
             order_id=order_id,
             product_name=name,
-            delivery=delivery_text,
+            delivery=("📎 Your codes are attached as a file below (15+ items)." if codes_as_file else delivery_text),
             paid=f"{total_price:.2f}",
             balance=f"{new_balance:.2f}",
         )
@@ -840,6 +867,25 @@ Please deposit funds first to complete this purchase.""",
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
+
+        # Large orders: deliver codes as a .txt file instead of a huge message.
+        if codes_as_file:
+            try:
+                codes_file = io.BytesIO(delivery_text.encode("utf-8"))
+                codes_file.name = f"order_{order_id}_codes.txt"
+                await q.message.reply_document(
+                    document=codes_file,
+                    filename=f"order_{order_id}_codes.txt",
+                    caption=f"🔑 Codes for Order #{order_id} ({quantity} items)"
+                )
+            except Exception as file_exc:
+                log_error("Delivery file send failed", file_exc, extra=f"order={order_id}")
+                chunk_size = 3500
+                for chunk_start in range(0, len(delivery_text), chunk_size):
+                    await q.message.reply_text(
+                        f"<code>{html.escape(delivery_text[chunk_start:chunk_start + chunk_size], quote=False)}</code>",
+                        parse_mode="HTML",
+                    )
 
         await q.message.reply_text(
             "🏠 <b>Main Menu</b>",
@@ -873,3 +919,270 @@ If balance was deducted, contact admin immediately.""",
             await maybe_low_stock_alert(_ctx, pid)
         except Exception:
             pass
+
+
+# ============================ BUNDLE DEALS ============================
+
+async def show_bundles(q):
+    bundles = get_active_bundles()
+
+    if not bundles:
+        await edit_or_send(
+            q,
+            "🎁 <b>Bundle Deals</b>\n\nNo bundles available right now.\n\nCheck back soon!",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back To Products", callback_data="shop")]])
+        )
+        return
+
+    kb = []
+    for bid, bname, bprice in bundles:
+        kb.append([InlineKeyboardButton(f"🎁 {bname} • ${float(bprice):.2f}", callback_data=f"bundle_{bid}")])
+    kb.append([InlineKeyboardButton("⬅️ Back To Products", callback_data="shop")])
+
+    await edit_or_send(
+        q,
+        "🎁 <b>Bundle Deals</b>\n\nGet more for less — combo packs at a special price.\n\nSelect a bundle below:",
+        InlineKeyboardMarkup(kb)
+    )
+
+
+async def show_bundle_details(q, uid: int, bundle_id: int):
+    bundle = get_bundle(bundle_id)
+
+    if not bundle or not bundle[3]:
+        await edit_or_send(q, "❌ <b>Bundle not found.</b>", back_home())
+        return
+
+    _bid, bname_raw, bprice, _active = bundle
+    bname = html.escape(str(bname_raw), quote=False)
+    bprice = float(bprice)
+    items = get_bundle_items(bundle_id)
+
+    if not items:
+        await edit_or_send(q, "❌ <b>This bundle has no products yet.</b>", back_home())
+        return
+
+    balance = get_balance(uid)
+    total_value = 0.0
+    available = True
+    item_lines = ""
+
+    for product_id, item_qty, pname, pprice in items:
+        pname_safe = html.escape(str(pname), quote=False)
+        worth = float(pprice) * int(item_qty)
+        total_value += worth
+        enough = get_available_stock_count(product_id) >= int(item_qty)
+        if not enough:
+            available = False
+        mark = "✅" if enough else "🔴"
+        item_lines += f"{mark} <b>{item_qty}×</b> {pname_safe} <i>(worth ${worth:.2f})</i>\n"
+
+    savings = max(0.0, total_value - bprice)
+
+    text = f"""🎁 <b>{bname}</b>
+
+{item_lines}
+💵 Total value: <s>${total_value:.2f}</s>
+💎 Bundle price: <b>${bprice:.2f}</b>
+🤑 You save: <b>${savings:.2f}</b>
+
+👛 Your balance: <b>{balance:.2f} USDT</b>"""
+
+    kb = []
+    if available:
+        kb.append([InlineKeyboardButton(f"💚 Buy Bundle (${bprice:.2f})", callback_data=f"buybundle_{bundle_id}")])
+        if balance < bprice:
+            need = math.ceil((bprice - balance) * 100) / 100.0
+            kb.append([InlineKeyboardButton(f"💰 Deposit ${need:.2f} More", callback_data=f"depneed_{need:.2f}")])
+    else:
+        text += "\n\n🔴 <b>Some items are out of stock right now.</b>"
+    kb.append([InlineKeyboardButton("⬅️ Back To Bundles", callback_data="bundles")])
+
+    await edit_or_send(q, text, InlineKeyboardMarkup(kb))
+
+
+async def buy_bundle(q, uid: int, bundle_id: int):
+    lock_key = f"{uid}:bundle:{bundle_id}"
+    now_ts = time.time()
+    old_lock = PURCHASE_LOCKS.get(lock_key)
+
+    if old_lock and now_ts - old_lock < PURCHASE_LOCK_TIMEOUT_SECONDS:
+        await edit_or_send(
+            q,
+            "⏳ <b>Order already processing</b>\n\nPlease wait a few seconds. Do not click Buy multiple times.",
+            back_home()
+        )
+        return
+
+    PURCHASE_LOCKS[lock_key] = now_ts
+
+    try:
+        bundle = get_bundle(bundle_id)
+        if not bundle or not bundle[3]:
+            await edit_or_send(q, "❌ <b>Bundle not found.</b>", back_home())
+            return
+
+        _bid, bname_raw, bprice, _active = bundle
+        bname = html.escape(str(bname_raw), quote=False)
+        bprice = float(bprice)
+        items = get_bundle_items(bundle_id)
+
+        if not items:
+            await edit_or_send(q, "❌ <b>This bundle has no products yet.</b>", back_home())
+            return
+
+        # Verify stock for every component before reserving anything.
+        for product_id, item_qty, pname, _pprice in items:
+            if get_available_stock_count(product_id) < int(item_qty):
+                await edit_or_send(
+                    q,
+                    f"❌ <b>Not Enough Stock</b>\n\n<b>{html.escape(str(pname), quote=False)}</b> is out of stock for this bundle.",
+                    InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back To Bundles", callback_data="bundles")]])
+                )
+                return
+
+        balance = get_balance(uid)
+
+        if balance < bprice:
+            need = math.ceil((bprice - balance) * 100) / 100.0
+            await edit_or_send(
+                q,
+                f"""❌ <b>Insufficient Balance</b>
+
+🎁 <b>Bundle:</b> {bname}
+💰 <b>Total:</b> {bprice:.2f} USDT
+👛 <b>Your Balance:</b> {balance:.2f} USDT
+➕ <b>Need More:</b> {need:.2f} USDT""",
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton(f"💰 Deposit ${need:.2f} Now", callback_data=f"depneed_{need:.2f}")],
+                    [InlineKeyboardButton("⬅️ Back To Bundles", callback_data="bundles")],
+                ]),
+            )
+            return
+
+        # Reserve stock from every component product.
+        sections = []
+        total_codes = 0
+        for product_id, item_qty, pname, _pprice in items:
+            deliveries = reserve_stock_items(product_id, uid, int(item_qty))
+            if deliveries is None:
+                conn.rollback()
+                await edit_or_send(
+                    q,
+                    "❌ <b>Purchase Failed</b>\n\nStock changed while processing. Please try again.",
+                    InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back To Bundles", callback_data="bundles")]])
+                )
+                return
+            new_stock = get_available_stock_count(product_id)
+            cur.execute("UPDATE products SET stock=? WHERE id=?", (new_stock, product_id))
+            total_codes += len(deliveries)
+            sections.append((str(pname), format_delivery_items(deliveries)))
+
+        cur.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND balance>=?", (bprice, uid, bprice))
+
+        if cur.rowcount == 0:
+            conn.rollback()
+            await edit_or_send(
+                q,
+                "❌ <b>Purchase Failed</b>\n\nYour balance changed while processing this order.\n\nPlease refresh and try again.",
+                main_menu(uid)
+            )
+            return
+
+        delivery_text = ""
+        for pname, section_text in sections:
+            delivery_text += f"📦 {pname}:\n{section_text}\n\n"
+        delivery_text = delivery_text.strip()
+
+        cur.execute(
+            "INSERT INTO orders(user_id, product_name, price, delivery) VALUES(?,?,?,?)",
+            (uid, f"🎁 {bname_raw} (bundle)", bprice, encrypt_text(delivery_text))
+        )
+        conn.commit()
+        order_id = cur.lastrowid
+
+        add_loyalty_points(uid, bprice)
+        new_balance = get_balance(uid)
+
+        codes_as_file = total_codes >= 15
+        if codes_as_file:
+            codes_block = "📎 Your codes are attached as a file below (15+ items)."
+        else:
+            codes_block = f"<code>{html.escape(delivery_text, quote=False)}</code>"
+
+        message = f"""✅ <b>Payment Successful!</b>
+━━━━━━━━━━━━━━━━━━━━
+
+🧾 <b>Order ID:</b> <b>#{order_id}</b>
+
+🎁 <b>{bname}</b>
+
+🔑 <b>Code(s):</b>
+{codes_block}
+
+━━━━━━━━━━━━━━━━━━━━
+
+💰 <b>Paid:</b> <b>${bprice:.2f}</b>
+💼 <b>Remaining Balance:</b> <b>${new_balance:.2f}</b>
+
+Thank you for your purchase! 🎉"""
+
+        try:
+            await q.edit_message_text(message, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception:
+            await q.message.reply_text(message, parse_mode="HTML", disable_web_page_preview=True)
+
+        if codes_as_file:
+            try:
+                codes_file = io.BytesIO(delivery_text.encode("utf-8"))
+                codes_file.name = f"order_{order_id}_codes.txt"
+                await q.message.reply_document(
+                    document=codes_file,
+                    filename=f"order_{order_id}_codes.txt",
+                    caption=f"🔑 Codes for Order #{order_id}"
+                )
+            except Exception as file_exc:
+                log_error("Bundle file send failed", file_exc, extra=f"order={order_id}")
+                chunk_size = 3500
+                for chunk_start in range(0, len(delivery_text), chunk_size):
+                    await q.message.reply_text(
+                        f"<code>{html.escape(delivery_text[chunk_start:chunk_start + chunk_size], quote=False)}</code>",
+                        parse_mode="HTML",
+                    )
+
+        try:
+            await notify_admin_order(
+                q.message.get_bot(),
+                uid,
+                0,
+                f"🎁 {bname_raw} (bundle)",
+                bprice,
+                1,
+                0,
+            )
+        except Exception:
+            pass
+
+        await q.message.reply_text(
+            "🏠 <b>Main Menu</b>",
+            reply_markup=main_menu(uid),
+            parse_mode="HTML",
+        )
+
+    except Exception as exc:
+        conn.rollback()
+        log_error("Bundle purchase error", exc, extra=f"user={uid} bundle={bundle_id}")
+        await edit_or_send(
+            q,
+            f"""❌ <b>Purchase Error</b>
+
+Something went wrong while processing your bundle order.
+
+<code>{exc}</code>
+
+If balance was deducted, contact admin immediately.""",
+            main_menu(uid)
+        )
+
+    finally:
+        PURCHASE_LOCKS.pop(lock_key, None)

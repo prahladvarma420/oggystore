@@ -6,7 +6,7 @@ import os
 import shutil
 from datetime import datetime, timedelta
 
-from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, render_message_template, cur, conn, is_admin, is_owner, add_admin, remove_admin, get_admins, add_balance, add_stock_items, get_available_stock_count, get_sold_stock_count, get_total_stock_count, restock_product, block_user, unblock_user, log_admin_action, get_admin_logs, update_product_details, get_open_tickets, get_ticket, reply_ticket, close_ticket, get_pending_withdrawals, update_withdrawal_status, set_setting, get_setting, set_product_featured, remove_product_image, get_product_price_tiers, set_product_price_tier, delete_product_price_tier, clear_product_price_tiers, validate_coupon, list_message_templates, get_message_template, set_message_template, smart_dashboard_stats, clear_admin_logs, create_backup_zip, restore_backup_zip
+from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, render_message_template, cur, conn, is_admin, is_owner, add_admin, remove_admin, get_admins, add_balance, add_stock_items, get_available_stock_count, get_sold_stock_count, get_total_stock_count, restock_product, block_user, unblock_user, log_admin_action, get_admin_logs, update_product_details, get_open_tickets, get_ticket, reply_ticket, close_ticket, get_pending_withdrawals, update_withdrawal_status, set_setting, get_setting, set_product_featured, remove_product_image, get_product_price_tiers, set_product_price_tier, delete_product_price_tier, clear_product_price_tiers, validate_coupon, list_message_templates, get_message_template, set_message_template, smart_dashboard_stats, clear_admin_logs, create_backup_zip, restore_backup_zip, create_bundle, get_all_bundles, get_bundle_items, delete_bundle
 from utils.crypto import decrypt_text
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
 from config import DB_PATH, ADMIN_ID
@@ -898,6 +898,49 @@ async def handle_admin_callback(q, uid, data, context):
         await show_admin_panel(q, uid)
         return True
 
+    if data == "admin_bundles":
+        import html as _html
+        bundles = get_all_bundles()
+        text = "🎁 <b>Bundle Deals</b>\n\n"
+        kb = []
+        if not bundles:
+            text += "No bundles created yet.\n\nCreate one to show a 🎁 Bundle Deals section in the shop."
+        else:
+            for bid, bname, bprice, active in bundles:
+                status = "🟢" if active else "🔴"
+                items = get_bundle_items(bid)
+                items_text = ", ".join(f"{iqty}× {_html.escape(str(ipname), quote=False)}" for _ipid, iqty, ipname, _ipp in items) or "empty"
+                text += f"{status} <b>#{bid} {_html.escape(str(bname), quote=False)}</b> — ${float(bprice):.2f}\n{items_text}\n\n"
+                kb.append([InlineKeyboardButton(f"🗑 Delete #{bid}", callback_data=f"admin_bundle_del_{bid}")])
+        kb.append([InlineKeyboardButton("➕ Create Bundle", callback_data="admin_bundle_add")])
+        kb.append([InlineKeyboardButton("⬅️ Admin Home", callback_data="admin_panel")])
+        await edit_or_send(q, text, InlineKeyboardMarkup(kb))
+        return True
+
+    if data == "admin_bundle_add":
+        user_state[uid] = "admin_bundle_create"
+        await edit_or_send(
+            q,
+            "🎁 <b>Create Bundle</b>\n\n"
+            "Send bundle details in this format:\n\n"
+            "<code>Bundle Name | 9.99 | 12:1, 15:2</code>\n\n"
+            "• <b>9.99</b> = bundle price\n"
+            "• <b>12:1</b> = product ID 12 × quantity 1\n"
+            "• Separate products with commas",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_bundles")]])
+        )
+        return True
+
+    if data.startswith("admin_bundle_del_"):
+        del_bundle_id = int(data.split("_")[-1])
+        delete_bundle(del_bundle_id)
+        await edit_or_send(
+            q,
+            f"🗑 Bundle <b>#{del_bundle_id}</b> deleted.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back To Bundles", callback_data="admin_bundles")]])
+        )
+        return True
+
     if data == "admin_section_products":
         await edit_or_send(
             q,
@@ -1771,7 +1814,7 @@ Send:
                       f"🧾 <b>Order:</b> <code>#{order_id}</code>\n"
                       f"📦 <b>Product:</b> {product_name}\n"
                       f"💰 <b>Paid:</b> <code>${price:.2f}</code>\n\n"
-                      f"🔑 <b>Your Delivery</b>\n<code>{delivery}</code>"),
+                      f"���� <b>Your Delivery</b>\n<code>{delivery}</code>"),
                 parse_mode="HTML"
             )
             log_admin_action(uid, "ORDER_DETAIL_RESEND", f"Order #{order_id} to user {target_id}")
@@ -2641,6 +2684,50 @@ async def handle_admin_message(update, context, uid, text, state):
             await update.message.reply_text("✅ Buy X Get Y updated.", reply_markup=admin_sales_settings_keyboard(), parse_mode="HTML")
         except Exception:
             await update.message.reply_text("❌ Use format: <code>5 | 1</code>", parse_mode="HTML")
+        return True
+
+    if state == "admin_bundle_create" and is_admin(uid):
+        try:
+            parts = [x.strip() for x in text.split("|")]
+            if len(parts) != 3:
+                raise ValueError("format")
+
+            bundle_name = parts[0]
+            bundle_price = float(parts[1])
+            if not bundle_name or bundle_price <= 0:
+                raise ValueError("price")
+
+            bundle_items = []
+            for chunk in parts[2].split(","):
+                pid_s, qty_s = chunk.strip().split(":")
+                item_pid = int(pid_s)
+                item_qty = int(qty_s)
+                if item_qty <= 0:
+                    raise ValueError("qty")
+                cur.execute("SELECT id FROM products WHERE id=? AND active=1", (item_pid,))
+                if not cur.fetchone():
+                    await update.message.reply_text(
+                        f"❌ Product ID <b>{item_pid}</b> not found or inactive.",
+                        parse_mode="HTML"
+                    )
+                    return True
+                bundle_items.append((item_pid, item_qty))
+
+            if not bundle_items:
+                raise ValueError("empty")
+
+            new_bundle_id = create_bundle(bundle_name, bundle_price, bundle_items)
+            user_state.pop(uid, None)
+            await update.message.reply_text(
+                f"✅ Bundle <b>#{new_bundle_id}</b> created (${bundle_price:.2f}).\n\n"
+                "It now appears in the shop under 🎁 Bundle Deals.",
+                parse_mode="HTML"
+            )
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Use format: <code>Bundle Name | 9.99 | 12:1, 15:2</code>",
+                parse_mode="HTML"
+            )
         return True
 
     if state == "admin_ban_user" and is_admin(uid):

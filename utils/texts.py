@@ -24,12 +24,12 @@ Premium digital products with instant delivery.
 def deposit_text(balance):
     return f"""💰 <b>Add Funds</b>
 
-Current balance: <code>{balance:.2f} USDT</code>
+Current balance: <b>{balance:.2f} USDT</b>
 
 Send the amount you want to deposit.
 
-Minimum: <code>0.1 USDT</code>
-Maximum: <code>5000 USDT</code>
+Minimum: <b>0.1 USDT</b>
+Maximum: <b>5000 USDT</b>
 
 Payment method:
 USDT BEP20 / BNB Smart Chain

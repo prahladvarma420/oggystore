@@ -43,8 +43,8 @@ async def show_deposit_history(q, uid):
 
             text += (
                 f"🧾 <b>Invoice #{dep_id}</b>\n"
-                f"💵 Amount: <code>{amount:.2f} USDT</code>\n"
-                f"🎯 Exact Pay: <code>{unique_amount:.5f} USDT</code>\n"
+                f"💵 Amount: <b>{amount:.2f} USDT</b>\n"
+                f"🎯 Exact Pay: <code>{unique_amount:.5f}</code> USDT\n"
                 f"📌 Status: <b>{status_text}</b>\n"
             )
 
@@ -60,6 +60,75 @@ async def show_deposit_history(q, uid):
     await edit_or_send(q, text, deposit_menu())
 
 
+def _create_invoice(uid, amount):
+    """Cancel older pending invoices and create a fresh one. Returns (id, unique_amount)."""
+    # Cancel older pending invoices for the same user to avoid confusion.
+    cur.execute(
+        "UPDATE deposits SET status='cancelled' WHERE user_id=? AND status='pending'",
+        (uid,)
+    )
+
+    unique_amount = round(amount + random.randint(100, 999) / 100000, 5)
+
+    # Set created explicitly in bot time (IST). The DB default is UTC,
+    # which made invoices look ~5.5h old and expire after ~30 minutes.
+    cur.execute(
+        "INSERT INTO deposits(user_id, amount, unique_amount, status, created) VALUES(?,?,?,?,?)",
+        (uid, amount, unique_amount, "pending", now_text()),
+    )
+    conn.commit()
+
+    cur.execute("SELECT last_insert_rowid()")
+    invoice_id = cur.fetchone()[0]
+    return invoice_id, unique_amount
+
+
+def _invoice_text(amount, unique_amount, invoice_id):
+    return f"""⚡ <b>USDT BEP20 Auto Payment</b>
+
+━━━━━━━━━━━━━━━━━━
+
+💵 <b>Amount:</b> ${amount:.2f}
+💎 <b>Send exactly:</b> <code>{unique_amount:.5f}</code> USDT
+🌐 <b>Network:</b> <b>BNB Smart Chain (BEP20)</b>
+
+━━━━━━━━━━━━━━━━━━
+
+🏧 <b>Wallet address:</b>
+<code>{USDT_BEP20_ADDRESS}</code>
+
+━━━━━━━━━━━━━━━━━━
+
+🧾 <b>Invoice ID:</b> <b>#{invoice_id}</b>
+🟠 <b>Status:</b> <b>Waiting For Payment</b>
+⏳ <b>Expires in:</b> <b>{DEPOSIT_EXPIRE_HOURS} hours</b>
+
+━━━━━━━━━━━━━━━━━━
+
+⚠️ <b>Important</b>
+• Send only <b>USDT BEP20</b>.
+• Send the <b>exact amount</b> shown above.
+• Do not send <b>{amount:.2f} USDT</b>; send <b>{unique_amount:.5f} USDT</b>.
+• Your wallet will be credited automatically after confirmation.
+
+✅ <i>No screenshot or TX hash is needed.</i>
+🤖 <i>The bot checks blockchain payments automatically.</i>
+
+<b>{STORE_NAME}</b>"""
+
+
+async def deposit_shortfall(q, uid, amount):
+    """Instantly create an invoice for a pre-computed shortfall amount."""
+    try:
+        amount = round(float(amount), 2)
+    except Exception:
+        amount = 0.0
+
+    amount = max(0.1, min(5000.0, amount))
+    invoice_id, unique_amount = _create_invoice(uid, amount)
+    await edit_or_send(q, _invoice_text(amount, unique_amount, invoice_id), deposit_invoice_menu())
+
+
 async def handle_deposit_amount(update, uid, text):
     try:
         amount = float(text)
@@ -71,57 +140,10 @@ async def handle_deposit_amount(update, uid, text):
             )
             return True
 
-        # Cancel older pending invoices for the same user to avoid confusion.
-        cur.execute(
-            "UPDATE deposits SET status='cancelled' WHERE user_id=? AND status='pending'",
-            (uid,)
-        )
-
-        unique_amount = round(amount + random.randint(100, 999) / 100000, 5)
-
-        # Set created explicitly in bot time (IST). The DB default is UTC,
-        # which made invoices look ~5.5h old and expire after ~30 minutes.
-        cur.execute(
-            "INSERT INTO deposits(user_id, amount, unique_amount, status, created) VALUES(?,?,?,?,?)",
-            (uid, amount, unique_amount, "pending", now_text()),
-        )
-        conn.commit()
-
-        cur.execute("SELECT last_insert_rowid()")
-        invoice_id = cur.fetchone()[0]
+        invoice_id, unique_amount = _create_invoice(uid, amount)
 
         await update.message.reply_text(
-            f"""⚡ <b>USDT BEP20 Auto Payment</b>
-
-━━━━━━━━━━━━━━━━━━
-
-💵 <b>Amount:</b> <code>${amount:.2f}</code>
-💎 <b>Send exactly:</b> <code>{unique_amount:.5f} USDT</code>
-🌐 <b>Network:</b> <b>BNB Smart Chain (BEP20)</b>
-
-━━━━━━━━━━━━━━━━━━
-
-🏧 <b>Wallet address:</b>
-<code>{USDT_BEP20_ADDRESS}</code>
-
-━━━━━━━━━━━━━━━━━━
-
-🧾 <b>Invoice ID:</b> <code>#{invoice_id}</code>
-🟠 <b>Status:</b> <b>Waiting For Payment</b>
-⏳ <b>Expires in:</b> <code>{DEPOSIT_EXPIRE_HOURS} hours</code>
-
-━━━━━━━━━━━━━━━━━━
-
-⚠️ <b>Important</b>
-• Send only <b>USDT BEP20</b>.
-• Send the <b>exact amount</b> shown above.
-• Do not send <code>{amount:.2f} USDT</code>; send <code>{unique_amount:.5f} USDT</code>.
-• Your wallet will be credited automatically after confirmation.
-
-✅ <i>No screenshot or TX hash is needed.</i>
-🤖 <i>The bot checks blockchain payments automatically.</i>
-
-<b>{STORE_NAME}</b>""",
+            _invoice_text(amount, unique_amount, invoice_id),
             reply_markup=deposit_invoice_menu(),
             parse_mode="HTML",
             disable_web_page_preview=True
