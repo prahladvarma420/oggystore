@@ -383,18 +383,16 @@ async def show_shop(q):
         )
         return
 
+    # One query for all live stock counts (faster than one query per product).
+    cur.execute("SELECT product_id, COUNT(*) FROM product_stock WHERE sold=0 GROUP BY product_id")
+    live_counts = {row[0]: row[1] for row in cur.fetchall()}
+
     kb = []
-    hidden_count = 0
     visible_count = 0
 
     for pid, name, price, old_stock, validity, featured in products:
-        live_stock = get_available_stock_count(pid)
+        live_stock = live_counts.get(pid, 0)
         stock = live_stock if live_stock > 0 else old_stock
-
-        # Auto-hide products that are completely out of stock.
-        if int(stock or 0) <= 0:
-            hidden_count += 1
-            continue
 
         visible_count += 1
         kb.append([
@@ -408,20 +406,10 @@ async def show_shop(q):
     if bundles:
         kb.insert(0, [InlineKeyboardButton("🎁 Bundle Deals", callback_data="bundles")])
 
-    if visible_count == 0 and not bundles:
-        await edit_or_send(
-            q,
-            "🛍 <b>Products</b>\n\n🚧 All products are being restocked right now.\n\nPlease check back soon!",
-            shop_nav()
-        )
-        return
-
     kb.append([
         InlineKeyboardButton("🔄 Refresh", callback_data="shop"),
         InlineKeyboardButton("⬅️ Back", callback_data="home")
     ])
-
-    restock_note = f"\n😴 Restocking soon: <b>{hidden_count}</b>" if hidden_count else ""
 
     await edit_or_send(
         q,
@@ -429,7 +417,7 @@ async def show_shop(q):
 
 Browse products and get instant delivery.
 
-📦 Available products: <b>{visible_count}</b>{restock_note}
+📦 Available products: <b>{visible_count}</b>
 ⚡ Delivery: <b>Automatic</b>
 💳 Payment: <b>Wallet Balance</b>
 
