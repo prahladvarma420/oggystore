@@ -11,6 +11,7 @@ from utils.crypto import decrypt_text
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
+from utils.premium_emoji import premium_html
 from utils.states import user_state
 from utils.timezone import now, now_text, today_prefix, month_prefix
 
@@ -2688,6 +2689,7 @@ async def handle_admin_message(update, context, uid, text, state):
 
     if state == "admin_schedule_broadcast" and is_admin(uid):
         try:
+            text = premium_html(update, text)
             run_at, message = [x.strip() for x in text.split("|", 1)]
             # Validate rough format
             datetime.strptime(run_at, "%Y-%m-%d %H:%M")
@@ -3116,7 +3118,7 @@ async def handle_admin_message(update, context, uid, text, state):
         return True
 
     if state == "admin_add_product_description" and is_admin(uid):
-        admin_temp_data.setdefault(uid, {})["description"] = text
+        admin_temp_data.setdefault(uid, {})["description"] = premium_html(update, text)
         user_state[uid] = "admin_add_product_validity"
         await update.message.reply_text(
             "📌 <b>Step 4/7</b>\n\nSend validity or skip.\n\nExample:\n<code>30 Days</code>",
@@ -3126,7 +3128,7 @@ async def handle_admin_message(update, context, uid, text, state):
         return True
 
     if state == "admin_add_product_validity" and is_admin(uid):
-        admin_temp_data.setdefault(uid, {})["validity"] = text
+        admin_temp_data.setdefault(uid, {})["validity"] = premium_html(update, text)
         user_state[uid] = "admin_add_product_warranty"
         await update.message.reply_text(
             "🛡 <b>Step 5/7</b>\n\nSend warranty or skip.\n\nExample:\n<code>Replacement if invalid</code>",
@@ -3136,7 +3138,7 @@ async def handle_admin_message(update, context, uid, text, state):
         return True
 
     if state == "admin_add_product_warranty" and is_admin(uid):
-        admin_temp_data.setdefault(uid, {})["warranty"] = text
+        admin_temp_data.setdefault(uid, {})["warranty"] = premium_html(update, text)
         user_state[uid] = "admin_add_product_rules"
         await update.message.reply_text(
             "📜 <b>Step 6/7</b>\n\nSend rules/terms or skip.",
@@ -3146,7 +3148,7 @@ async def handle_admin_message(update, context, uid, text, state):
         return True
 
     if state == "admin_add_product_rules" and is_admin(uid):
-        admin_temp_data.setdefault(uid, {})["rules"] = text
+        admin_temp_data.setdefault(uid, {})["rules"] = premium_html(update, text)
         user_state[uid] = "admin_add_product_photo"
         await update.message.reply_text(
             "🖼 <b>Step 7/7</b>\n\nSend product photo or skip.",
@@ -3308,6 +3310,9 @@ You must include the confirmation word <code>DELETE</code>.""",
             _, product_id_text, field = state.split(":", 2)
             product_id = int(product_id_text)
             value = text.strip()
+            if field in ("description", "validity", "warranty", "rules"):
+                # Preserve Telegram premium emojis as <tg-emoji> HTML tags.
+                value = premium_html(update, text).strip()
             cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
             product = cur.fetchone()
             if not product:
@@ -3947,7 +3952,7 @@ Example:
         return True
 
     if state == "admin_add_product_description" and is_admin(uid):
-        admin_temp_data.setdefault(uid, {})["description"] = text
+        admin_temp_data.setdefault(uid, {})["description"] = premium_html(update, text)
         user_state[uid] = "admin_add_product_validity"
 
         await update.message.reply_text(
@@ -3963,7 +3968,7 @@ Example:
         return True
 
     if state == "admin_add_product_validity" and is_admin(uid):
-        admin_temp_data.setdefault(uid, {})["validity"] = text
+        admin_temp_data.setdefault(uid, {})["validity"] = premium_html(update, text)
         user_state[uid] = "admin_add_product_warranty"
 
         await update.message.reply_text(
@@ -3982,7 +3987,7 @@ If no warranty, send:
         return True
 
     if state == "admin_add_product_warranty" and is_admin(uid):
-        admin_temp_data.setdefault(uid, {})["warranty"] = text
+        admin_temp_data.setdefault(uid, {})["warranty"] = premium_html(update, text)
         user_state[uid] = "admin_add_product_rules"
 
         await update.message.reply_text(
@@ -3998,7 +4003,7 @@ Example:
         return True
 
     if state == "admin_add_product_rules" and is_admin(uid):
-        admin_temp_data.setdefault(uid, {})["rules"] = text
+        admin_temp_data.setdefault(uid, {})["rules"] = premium_html(update, text)
         user_state[uid] = "admin_add_product_redeem"
 
         await update.message.reply_text(
@@ -4858,6 +4863,7 @@ Example:
         return True
 
     if state == "admin_broadcast" and is_admin(uid):
+        text = premium_html(update, text)
         cur.execute("SELECT user_id FROM users")
         users = cur.fetchall()
 

@@ -145,6 +145,10 @@ def clean(value, default="Not mentioned"):
     value = str(value).strip()
     if not value:
         return default
+    # Text captured with premium emojis is stored as ready-to-send HTML
+    # (<tg-emoji> tags, already escaped) — display it as-is.
+    if "<tg-emoji" in value:
+        return value
     # Escape <, > and & so Telegram HTML parse_mode never fails on stored
     # text like "delivery in <7 days" or "<3".
     return html.escape(value, quote=False)
