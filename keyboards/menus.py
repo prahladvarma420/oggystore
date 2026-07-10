@@ -206,15 +206,24 @@ def product_buy_menu(product_id, price, stock, max_per_order=999):
                             callback_data=f"previewbuy_{product_id}_{qty}"
                         )
                     ])
+        else:
+            rows.append([
+                InlineKeyboardButton(
+                    f"⚡ 1 for ${base_price:.2f}",
+                    callback_data=f"previewbuy_{product_id}_1"
+                )
+            ])
+
         if stock > 1:
             rows.append([InlineKeyboardButton("✨ Custom Quantity", callback_data=f"customqty_{product_id}")])
-
-        rows.append([InlineKeyboardButton("🛒 Buy Now", callback_data=f"previewbuy_{product_id}_1")])
     else:
         rows.append([InlineKeyboardButton("🔔 Notify Me When Back", callback_data=f"notify_stock_{product_id}")])
         rows.append([InlineKeyboardButton("🔄 Refresh Stock", callback_data=f"product_{product_id}")])
 
-    rows.append([InlineKeyboardButton("◀ Back to Shop", callback_data="shop")])
+    rows.append([
+        InlineKeyboardButton("💰 Deposit", callback_data="deposit"),
+        InlineKeyboardButton("⬅️ Back to Products", callback_data="shop")
+    ])
 
     return InlineKeyboardMarkup(rows)
 
@@ -253,7 +262,10 @@ def quantity_select_menu(product_id, stock):
     if stock > 1:
         rows.append([InlineKeyboardButton("✨ Custom Quantity", callback_data=f"customqty_{product_id}")])
 
-    rows.append([InlineKeyboardButton("◀ Back to Product", callback_data=f"product_{product_id}")])
+    rows.append([
+        InlineKeyboardButton("⬅️ Back To Product", callback_data=f"product_{product_id}"),
+        InlineKeyboardButton("💰 Deposit", callback_data="deposit"),
+    ])
 
     return InlineKeyboardMarkup(rows)
 

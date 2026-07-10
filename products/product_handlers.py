@@ -329,25 +329,17 @@ async def show_quantity_menu(q, uid: int, product_id: int):
     stock = get_available_stock_count(product_id) or old_stock
     balance = get_balance(uid)
 
-    sold_count = get_sold_stock_count(product_id)
-    offers_block = bulk_discount_lines(product_id, float(price), stock)
-
-    text = f"""<b>Select Quantity</b>
-
-{colorful_product_icon(name)} <b>{name}</b>
-{format_price(float(price))} / code
-🟢 <b>{stock}</b> in stock
-🔥 <b>{sold_count}</b> sold
-"""
-
-    if offers_block:
-        text += f"\n{offers_block}\n"
-
-    text += "\nHow many codes do you want?"
-
     await edit_or_send(
         q,
-        text,
+        f"""📦 <b>{name}</b>
+
+🧾 <b>Choose Offer</b>
+
+💰 <b>Base Price:</b> <b>${float(price):.2f}</b>
+💼 <b>Your Balance:</b> <b>{balance:.2f} USDT</b>
+📊 <b>Available Stock:</b> <b>{stock}</b>
+
+Choose an offer below or use custom quantity:""",
         quantity_select_menu(product_id, stock)
     )
 
