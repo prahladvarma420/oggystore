@@ -23,18 +23,18 @@ _BLUE_CB_EXACT = {
     "support_ticket", "search", "admin_panel",
 }
 
-# Buy / pay actions -> blue
-_BLUE_CB_PREFIXES = ("previewbuy_", "directpay_", "buy_", "paywallet", "walletpay", "pay_")
-_BLUE_TEXT_PARTS = ("buy", "pay")
+# Buy / pay / quantity actions -> blue
+_BLUE_CB_PREFIXES = ("previewbuy_", "directpay_", "buy_", "paywallet", "walletpay", "pay_", "qtymenu_", "customqty_")
+_BLUE_TEXT_PARTS = ("buy", "pay", "change qty", "quantity")
 
 # Destructive / negative actions -> red (checked first, strongest signal)
 _RED_CB_PARTS = ("cancel", "close", "delete", "remove", "reject", "block", "clear")
 _RED_TEXT_PARTS = ("\u274c", "\U0001f5d1", "cancel", "close", "delete", "remove", "reject", "block")
 
 # Helpful / positive actions -> green
-_GREEN_CB_PREFIXES = ("depneed_", "qtymenu_", "approve", "confirm")
+_GREEN_CB_PREFIXES = ("depneed_", "approve", "confirm")
 _GREEN_CB_PARTS = ("approve", "confirm", "coupon", "refresh")
-_GREEN_TEXT_PARTS = ("\u2705", "confirm", "approve", "refresh", "coupon", "change qty")
+_GREEN_TEXT_PARTS = ("\u2705", "confirm", "approve", "refresh", "coupon")
 
 
 def _infer_style(text, callback_data):
