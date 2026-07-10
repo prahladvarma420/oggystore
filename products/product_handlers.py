@@ -5,7 +5,7 @@ import math
 import random
 import time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from database.db import render_message_template,  cur, conn, get_balance, get_available_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items
+from database.db import render_message_template,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items
 from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
 from utils.crypto import encrypt_text
 from utils.ui import edit_or_send
@@ -162,6 +162,35 @@ def format_price(price) -> str:
     return f"${price:.2f}"
 
 
+def bulk_discount_lines(product_id: int, display_price, stock: int) -> str:
+    """Bulk Discounts block using this product's price offers (qty tiers)."""
+    try:
+        tiers = get_product_price_tiers(product_id)
+        if not tiers:
+            return ""
+
+        original_base = None
+        for _, tq, tp in tiers:
+            if int(tq) == 1:
+                original_base = float(tp)
+                break
+
+        lines = []
+        for _, tq, tp in tiers:
+            tq = int(tq)
+            if stock >= tq:
+                final_tp = float(tp)
+                if original_base and original_base > 0:
+                    final_tp = round(float(tp) * (float(display_price) / original_base), 2)
+                lines.append(f"{tq} for <b>{format_price(final_tp)}</b>")
+
+        if not lines:
+            return ""
+        return "<b>Bulk Discounts:</b>\n" + "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def colorful_stock_badge(stock: int):
     try:
         stock = int(stock or 0)
@@ -300,17 +329,25 @@ async def show_quantity_menu(q, uid: int, product_id: int):
     stock = get_available_stock_count(product_id) or old_stock
     balance = get_balance(uid)
 
+    sold_count = get_sold_stock_count(product_id)
+    offers_block = bulk_discount_lines(product_id, float(price), stock)
+
+    text = f"""<b>Select Quantity</b>
+
+{colorful_product_icon(name)} <b>{name}</b>
+{format_price(float(price))} / code
+🟢 <b>{stock}</b> in stock
+🔥 <b>{sold_count}</b> sold
+"""
+
+    if offers_block:
+        text += f"\n{offers_block}\n"
+
+    text += "\nHow many codes do you want?"
+
     await edit_or_send(
         q,
-        f"""📦 <b>{name}</b>
-
-🧾 <b>Choose Offer</b>
-
-💰 <b>Base Price:</b> <b>${float(price):.2f}</b>
-💼 <b>Your Balance:</b> <b>{balance:.2f} USDT</b>
-📊 <b>Available Stock:</b> <b>{stock}</b>
-
-Choose an offer below or use custom quantity:""",
+        text,
         quantity_select_menu(product_id, stock)
     )
 
@@ -473,49 +510,35 @@ async def show_product(q, pid: int):
         except Exception:
             sale_text = f"\n🔥 <b>FLASH SALE:</b> <s>${float(price):.2f}</s> ➜ <b>${display_price:.2f}</b>"
 
-    # Build cleaner premium product card.
-    offer_lines = ""
-    try:
-        tiers = get_product_price_tiers(pid)
-        if tiers:
-            # Scale displayed offers using current display price and 1-item offer as original base.
-            original_base = None
-            for _, tq, tp in tiers:
-                if int(tq) == 1:
-                    original_base = float(tp)
-                    break
+    # Clean product card styled like the reference design.
+    offers_block = bulk_discount_lines(pid, display_price, stock)
+    sold_count = get_sold_stock_count(pid)
 
-            offer_lines = "\n🔥 <b>Offers</b>"
-            for _, tq, tp in tiers:
-                tq = int(tq)
-                if stock >= tq:
-                    final_tp = float(tp)
-                    if original_base and original_base > 0:
-                        final_tp = round(float(tp) * (float(display_price) / original_base), 2)
-                    offer_lines += f"\n• <b>{tq}</b> for <b>${final_tp:.2f}</b>"
-    except Exception:
-        offer_lines = ""
+    detail_quote = description
+    if validity and validity != "Not mentioned":
+        detail_quote += f"\n✅ {validity}"
+    if warranty and warranty != "No warranty":
+        detail_quote += f"\n🛡 {warranty}"
 
-    text = f"""🧳 <b>{name}</b>
+    text = f"""{colorful_product_icon(name)} <b>{name}</b>
 
-💰 <b>Price:</b> <b>${display_price:.2f}</b>{sale_text}
-📦 <b>Stock:</b> <b>{stock}</b> {stock_text}\n🔔 <b>Waiting:</b> <b>{get_restock_wait_count(pid)}</b>
-⚡ <b>Delivery:</b> Instant{offer_lines}
+Price: <b>{format_price(display_price)} / code</b>{sale_text}
 
-━━━━━━━━━━━━━━
-📦 <b>Product Details</b>
-
-{description}
-
-✅ {validity}
-🛡 {warranty}
-
-📌 <b>Rules</b>
-{rules}
-
-━━━━━━━━━━━━━━
-👇 <b>Choose an offer below:</b>
+🔥 <b>{sold_count}</b> sold
 """
+
+    if stock <= 0:
+        text += "\n🔴 <b>Out of stock</b>\n"
+
+    if offers_block:
+        text += f"\n{offers_block}\n"
+
+    text += f"\n<blockquote>{detail_quote}</blockquote>\n"
+
+    if rules and rules != "No special rules.":
+        text += f"\n<blockquote>📌 {rules}</blockquote>\n"
+
+    text += "\n<i>Delivery is automatic after payment confirmation.</i>"
 
     if image_file_id:
         try:
