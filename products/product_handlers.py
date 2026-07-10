@@ -151,6 +151,17 @@ def clean(value, default="Not mentioned"):
 
 
 
+def format_price(price) -> str:
+    """$18 for whole numbers, $1.50 otherwise — clean shop-list style."""
+    try:
+        price = float(price)
+    except Exception:
+        price = 0.0
+    if price == int(price):
+        return f"${int(price)}"
+    return f"${price:.2f}"
+
+
 def colorful_stock_badge(stock: int):
     try:
         stock = int(stock or 0)
@@ -397,7 +408,7 @@ async def show_shop(q):
         visible_count += 1
         kb.append([
             InlineKeyboardButton(
-                f"{'⭐ ' if featured else ''}{name} • ${price:.2f} • {colorful_stock_badge(stock)}",
+                f"{'⭐ ' if featured else ''}{name} — {format_price(price)} (Stock: {stock})",
                 callback_data=f"product_{pid}"
             )
         ])
@@ -408,20 +419,12 @@ async def show_shop(q):
 
     kb.append([
         InlineKeyboardButton("🔄 Refresh", callback_data="shop"),
-        InlineKeyboardButton("⬅️ Back", callback_data="home")
+        InlineKeyboardButton("Back", callback_data="home")
     ])
 
     await edit_or_send(
         q,
-        f"""🛍 <b>Products</b>
-
-Browse products and get instant delivery.
-
-📦 Available products: <b>{visible_count}</b>
-⚡ Delivery: <b>Automatic</b>
-💳 Payment: <b>Wallet Balance</b>
-
-Select a product below:""",
+        "🏪 <b>Available Products :</b>",
         InlineKeyboardMarkup(kb)
     )
 

@@ -84,37 +84,20 @@ def _create_invoice(uid, amount):
 
 
 def _invoice_text(amount, unique_amount, invoice_id):
-    return f"""⚡ <b>USDT BEP20 Auto Payment</b>
+    return f"""🪙 <b>USDT BEP20</b>
+<b>Auto-verification enabled</b>
 
-━━━━━━━━━━━━━━━━━━
+⚛️ Order: <b>${amount:.2f} USDT</b>
 
-💵 <b>Amount:</b> ${amount:.2f}
-💎 <b>Send exactly:</b> <code>{unique_amount:.5f}</code> USDT
-🌐 <b>Network:</b> <b>BNB Smart Chain (BEP20)</b>
-
-━━━━━━━━━━━━━━━━━━
-
-🏧 <b>Wallet address:</b>
+🟢 Send EXACTLY: <code>{unique_amount:.5f}</code> <b>USDT</b>
+<b>To Address (BEP20 (BNB Smart Chain)):</b>
 <code>{USDT_BEP20_ADDRESS}</code>
 
-━━━━━━━━━━━━━━━━━━
+⚠️ Send <b>exactly</b> this amount on the <b>BEP20 (BNB Smart Chain)</b> network — it must match to the <b>last decimal</b>, or your payment will NOT be matched automatically.
+Expires in <b>{DEPOSIT_EXPIRE_HOURS} hours</b>.
 
-🧾 <b>Invoice ID:</b> <b>#{invoice_id}</b>
-🟠 <b>Status:</b> <b>Waiting For Payment</b>
-⏳ <b>Expires in:</b> <b>{DEPOSIT_EXPIRE_HOURS} hours</b>
-
-━━━━━━━━━━━━━━━━━━
-
-⚠️ <b>Important</b>
-• Send only <b>USDT BEP20</b>.
-• Send the <b>exact amount</b> shown above.
-• Do not send <b>{amount:.2f} USDT</b>; send <b>{unique_amount:.5f} USDT</b>.
-• Your wallet will be credited automatically after confirmation.
-
-✅ <i>No screenshot or TX hash is needed.</i>
-🤖 <i>The bot checks blockchain payments automatically.</i>
-
-<b>{STORE_NAME}</b>"""
+Payment ID: <b>#{invoice_id}</b>
+Payment will be verified and credited automatically."""
 
 
 async def deposit_shortfall(q, uid, amount):
@@ -126,7 +109,7 @@ async def deposit_shortfall(q, uid, amount):
 
     amount = max(0.1, min(5000.0, amount))
     invoice_id, unique_amount = _create_invoice(uid, amount)
-    await edit_or_send(q, _invoice_text(amount, unique_amount, invoice_id), deposit_invoice_menu())
+    await edit_or_send(q, _invoice_text(amount, unique_amount, invoice_id), deposit_invoice_menu(invoice_id))
 
 
 async def handle_deposit_amount(update, uid, text):
@@ -144,7 +127,7 @@ async def handle_deposit_amount(update, uid, text):
 
         await update.message.reply_text(
             _invoice_text(amount, unique_amount, invoice_id),
-            reply_markup=deposit_invoice_menu(),
+            reply_markup=deposit_invoice_menu(invoice_id),
             parse_mode="HTML",
             disable_web_page_preview=True
         )

@@ -252,6 +252,23 @@ Example:
         await deposit_shortfall(q, uid, need_amount)
         return
 
+    if data.startswith("canceldep_"):
+        try:
+            invoice_id = int(data.split("_", 1)[1])
+        except Exception:
+            invoice_id = 0
+        cur.execute(
+            "UPDATE deposits SET status='cancelled' WHERE id=? AND user_id=? AND status='pending'",
+            (invoice_id, uid)
+        )
+        conn.commit()
+        await edit_or_send(
+            q,
+            f"🚫 <b>Payment Cancelled</b>\n\nInvoice <b>#{invoice_id}</b> has been cancelled.\nNo payment will be matched for it anymore.\n\nYou can create a new deposit anytime from 💰 Deposit.",
+            main_menu(uid)
+        )
+        return
+
     if data == "bundles":
         await show_bundles(q)
         return

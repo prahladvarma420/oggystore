@@ -53,11 +53,12 @@ def deposit_menu():
     ])
 
 
-def deposit_invoice_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧾 Deposit History", callback_data="deposit_history")],
-        [InlineKeyboardButton("🛍 Shop", callback_data="shop"), InlineKeyboardButton("🏠 Main Menu", callback_data="home")]
-    ])
+def deposit_invoice_menu(invoice_id=None):
+    rows = []
+    if invoice_id:
+        rows.append([InlineKeyboardButton("❌ Cancel Payment", callback_data=f"canceldep_{invoice_id}")])
+    rows.append([InlineKeyboardButton("🏠 Main Menu", callback_data="home")])
+    return InlineKeyboardMarkup(rows)
 
 
 def profile_menu():
