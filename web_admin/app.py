@@ -994,7 +994,7 @@ def _broadcast_to_all(msg, pid=None, button_text=None):
     """Send a message to every eligible bot user directly from the web admin."""
     kb = None
     if pid and button_text:
-        kb = {"inline_keyboard": [[{"text": button_text, "callback_data": "product_{}".format(pid)}]]}
+        kb = {"inline_keyboard": [[{"text": button_text, "callback_data": "product_{}".format(pid), "style": "primary"}]]}
     sent = failed = 0
     try:
         users = q("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
@@ -1226,7 +1226,8 @@ def api_product_flash(pid):
             validity=ends_text,
         )
         kb = {"inline_keyboard": [[{"text": "\U0001f6d2 Buy " + str(prod["name"])[:28],
-                                    "callback_data": "product_{}".format(pid)}]]}
+                                    "callback_data": "product_{}".format(pid),
+                                    "style": "primary"}]]}
         users = q("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
         sent = failed = 0
         for u in users:
@@ -1496,8 +1497,8 @@ def api_coupon_create():
         )
 
         kb = {"inline_keyboard": [
-            [{"text": "\U0001f6cd Shop Now", "callback_data": "shop"}],
-            [{"text": "\U0001f39f Apply Coupon", "callback_data": "apply_coupon"}]
+            [{"text": "\U0001f6cd Shop Now", "callback_data": "shop", "style": "primary"}],
+            [{"text": "\U0001f39f Apply Coupon", "callback_data": "apply_coupon", "style": "success"}]
         ]}
 
         users = q("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
