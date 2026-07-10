@@ -1024,6 +1024,20 @@ def _product_alert_message(name, price, added, available, mode):
             "<i>{}</i>").format(title, name, added, available, float(price or 0), intro)
 
 
+def _offer_alert_message(name, price, tiers, available):
+    lines = []
+    for _tid, qty, tier_price in tiers:
+        each = tier_price / qty if qty else tier_price
+        lines.append("\u2022 <b>{}</b> for <b>${:.2f}</b> (${:.2f} each)".format(qty, tier_price, each))
+    return ("\U0001f525 <b>NEW OFFER ALERT!</b>\n\n"
+            "\U0001f4e6 <b>{}</b>\n"
+            "\U0001f4b0 <b>Price:</b> <b>${:.2f}</b> / code\n"
+            "\u2705 <b>Available:</b> <b>{}</b>\n\n"
+            "\U0001f381 <b>BULK DISCOUNT ACTIVE</b>\n{}\n\n"
+            "\u26a1 <i>Grab this deal before it\u2019s gone!</i>").format(
+        name, float(price or 0), available, "\n".join(lines))
+
+
 def _price_change_message(name, old_price, new_price, available):
     if new_price < old_price:
         pct = round((old_price - new_price) / old_price * 100) if old_price > 0 else 0
@@ -1269,7 +1283,19 @@ def api_tier_set(pid):
     d = request.get_json(force=True)
     botdb.set_product_price_tier(pid, int(d["quantity"]), float(d["price"]))
     log_action("set_tier", "#{} q{} ${}".format(pid, d["quantity"], d["price"]))
-    return jsonify({"ok": True})
+    sent = failed = 0
+    if d.get("notify", True):
+        try:
+            prow = q("SELECT name, price FROM products WHERE id=?", (pid,))
+            tiers = botdb.get_product_price_tiers(pid)
+            if prow and tiers:
+                available = botdb.get_available_stock_count(pid)
+                msg = _offer_alert_message(prow[0]["name"], prow[0]["price"], tiers, available)
+                sent, failed = _broadcast_to_all(msg, pid=pid, button_text="\U0001f6d2 Tap to Buy Now")
+                log_action("offer_broadcast", "#{} sent={} failed={}".format(pid, sent, failed))
+        except Exception:
+            pass
+    return jsonify({"ok": True, "sent": sent, "failed": failed})
 
 
 @app.route("/api/products/<int:pid>/tiers/delete", methods=["POST"])

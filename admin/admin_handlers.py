@@ -791,6 +791,68 @@ async def broadcast_product_update(context, product_id: int, product_name: str, 
         return 0, 0
 
 
+async def broadcast_new_offer(context, product_id: int):
+    """Broadcast a bulk-discount / price-offer alert to all users."""
+    try:
+        cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
+        row = cur.fetchone()
+        if not row:
+            return 0, 0
+        product_name, price = row
+
+        tiers = get_product_price_tiers(product_id)
+        if not tiers:
+            return 0, 0
+
+        available = get_available_stock_count(product_id)
+
+        offer_lines = []
+        for _tid, qty, tier_price in tiers:
+            each = tier_price / qty if qty else tier_price
+            offer_lines.append(f"• <b>{qty}</b> for <b>${tier_price:.2f}</b> (${each:.2f} each)")
+        offers_block = "\n".join(offer_lines)
+
+        msg = f"""🔥 <b>NEW OFFER ALERT!</b>
+
+📦 <b>{product_name}</b>
+💰 <b>Price:</b> <code>${float(price or 0):.2f}</code> / code
+✅ <b>Available:</b> <code>{available}</code>
+
+🎁 <b>BULK DISCOUNT ACTIVE</b>
+{offers_block}
+
+⚡ <i>Grab this deal before it’s gone!</i>"""
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛒 Tap to Buy Now", callback_data=f"product_{product_id}")]
+        ])
+
+        cur.execute("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
+        users = cur.fetchall()
+
+        sent = 0
+        failed = 0
+
+        for urow in users:
+            try:
+                await context.bot.send_message(
+                    chat_id=urow[0],
+                    text=msg,
+                    reply_markup=kb,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+
+        log_admin_action(0, "AUTO_OFFER_BROADCAST", f"product={product_id} sent={sent} failed={failed}")
+        return sent, failed
+
+    except Exception:
+        return 0, 0
+
+
 async def broadcast_price_change(context, product_id: int, product_name: str, old_price: float, new_price: float, available: int):
     """Broadcast a price change alert to all users."""
     try:
@@ -3038,8 +3100,10 @@ async def handle_admin_message(update, context, uid, text, state):
             log_admin_action(uid, "PRICE_OFFER_SET", f"Product {product_id} | {saved}")
             user_state.pop(uid, None)
 
+            sent, failed = await broadcast_new_offer(context, product_id)
+
             await update.message.reply_text(
-                "✅ <b>Price offers saved.</b>",
+                f"✅ <b>Price offers saved.</b>\n📢 <b>Offer alert broadcast:</b> sent to <code>{sent}</code> users (failed: <code>{failed}</code>).",
                 reply_markup=price_offers_keyboard(product_id),
                 parse_mode="HTML"
             )
