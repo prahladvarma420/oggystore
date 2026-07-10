@@ -1,10 +1,15 @@
 """Automatic button colors (Telegram Bot API 9.4+, python-telegram-bot 22.7+).
 
 Color scheme used across the whole bot:
-- green  ('success'): buy / pay / confirm / approve / deposit amounts
-- red    ('danger') : cancel / close / delete / remove / reject / block / clear
-- blue   ('primary'): main menu actions (shop, deposit, wallet, orders, ...)
-- no style (default): navigation, back buttons and everything else
+- blue   ('primary'): buy / pay buttons and main menu actions
+- green  ('success'): refresh, apply coupon, change qty, deposit amounts,
+                      confirm / approve
+- red    ('danger') : back buttons, cancel / close / delete / remove /
+                      reject / block / clear
+- no style (default): everything else
+
+Shop list product buttons get explicit colors (red = out of stock,
+blue = in stock) passed via style=.
 
 Older Telegram apps (released before Feb 9, 2026) simply show the normal
 default buttons - no errors, fully backward compatible.
@@ -18,14 +23,18 @@ _BLUE_CB_EXACT = {
     "support_ticket", "search", "admin_panel",
 }
 
+# Buy / pay actions -> blue
+_BLUE_CB_PREFIXES = ("previewbuy_", "directpay_", "buy_", "paywallet", "walletpay", "pay_")
+_BLUE_TEXT_PARTS = ("buy", "pay")
+
 # Destructive / negative actions -> red (checked first, strongest signal)
 _RED_CB_PARTS = ("cancel", "close", "delete", "remove", "reject", "block", "clear")
 _RED_TEXT_PARTS = ("\u274c", "\U0001f5d1", "cancel", "close", "delete", "remove", "reject", "block")
 
-# Positive / money actions -> green
-_GREEN_CB_PREFIXES = ("previewbuy_", "directpay_", "buy_", "depneed_", "approve", "confirm", "paywallet", "walletpay", "pay_")
-_GREEN_CB_PARTS = ("approve", "confirm",)
-_GREEN_TEXT_PARTS = ("\u2705", "buy", "pay", "confirm", "approve", "redeem now", "i have paid")
+# Helpful / positive actions -> green
+_GREEN_CB_PREFIXES = ("depneed_", "qtymenu_", "approve", "confirm")
+_GREEN_CB_PARTS = ("approve", "confirm", "coupon", "refresh")
+_GREEN_TEXT_PARTS = ("\u2705", "confirm", "approve", "refresh", "coupon", "change qty")
 
 
 def _infer_style(text, callback_data):
@@ -35,6 +44,10 @@ def _infer_style(text, callback_data):
     # unblock must not match "block"-red; treat it as green (positive)
     if "unblock" in cb or "unblock" in t:
         return "success"
+
+    # Back buttons -> red (but not "Backup" or "Notify Me When Back")
+    if "back" in t and "backup" not in t and "notify" not in t:
+        return "danger"
 
     if any(p in cb for p in _RED_CB_PARTS) or any(p in t for p in _RED_TEXT_PARTS):
         return "danger"
@@ -46,7 +59,11 @@ def _infer_style(text, callback_data):
     ):
         return "success"
 
-    if cb in _BLUE_CB_EXACT:
+    if (
+        cb in _BLUE_CB_EXACT
+        or cb.startswith(_BLUE_CB_PREFIXES)
+        or any(p in t for p in _BLUE_TEXT_PARTS)
+    ):
         return "primary"
 
     return None

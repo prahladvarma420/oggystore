@@ -443,7 +443,8 @@ async def show_shop(q):
         kb.append([
             InlineKeyboardButton(
                 f"{'⭐ ' if featured else ''}{name} — {format_price(price)} (Stock: {stock})",
-                callback_data=f"product_{pid}"
+                callback_data=f"product_{pid}",
+                style="danger" if int(stock or 0) <= 0 else "primary"
             )
         ])
 
