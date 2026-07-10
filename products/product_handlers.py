@@ -453,7 +453,14 @@ async def show_shop(q):
 
     await edit_or_send(
         q,
-        "🏪 <b>Available Products :</b>",
+        """🛍 <b>Products</b>
+
+Browse products and get instant delivery.
+
+⚡ Delivery: <b>Automatic</b>
+💳 Payment: <b>Wallet Balance</b>
+
+Select a product below:""",
         InlineKeyboardMarkup(kb)
     )
 
