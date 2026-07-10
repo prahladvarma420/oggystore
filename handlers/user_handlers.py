@@ -908,7 +908,8 @@ It will be used on your next wallet purchase.""",
                 )
                 return
 
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            from telegram import InlineKeyboardMarkup
+            from utils.button_styles import AutoStyledButton as InlineKeyboardButton
             buttons = []
             msg = f"🔍 <b>Search Results for:</b> <code>{html.escape(str(keyword), quote=False)}</code>\n\n"
             for pid, name, price, stock in rows:

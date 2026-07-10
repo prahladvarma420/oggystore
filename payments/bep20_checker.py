@@ -3,7 +3,8 @@ import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardMarkup
+from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 from web3 import Web3
 
 from utils.error_logger import log_error

@@ -1,6 +1,7 @@
 import math
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardMarkup
+from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 from database.db import get_product_price_tiers, cur, is_admin
 from config import ADMIN_ID
 

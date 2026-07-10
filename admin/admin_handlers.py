@@ -1,4 +1,5 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardMarkup
+from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 import time
 import io
 import csv
