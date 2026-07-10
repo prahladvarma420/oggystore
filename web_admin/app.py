@@ -1024,6 +1024,22 @@ def _product_alert_message(name, price, added, available, mode):
             "<i>{}</i>").format(title, name, added, available, float(price or 0), intro)
 
 
+def _publish_offer_alert(pid):
+    """Broadcast the current price offers of a product to all users (one message)."""
+    try:
+        prow = q("SELECT name, price FROM products WHERE id=?", (pid,))
+        tiers = botdb.get_product_price_tiers(pid)
+        if not prow or not tiers:
+            return 0, 0
+        available = botdb.get_available_stock_count(pid)
+        msg = _offer_alert_message(prow[0]["name"], prow[0]["price"], tiers, available)
+        sent, failed = _broadcast_to_all(msg, pid=pid, button_text="\U0001f6d2 Tap to Buy Now")
+        log_action("offer_broadcast", "#{} sent={} failed={}".format(pid, sent, failed))
+        return sent, failed
+    except Exception:
+        return 0, 0
+
+
 def _offer_alert_message(name, price, tiers, available):
     lines = []
     for _tid, qty, tier_price in tiers:
@@ -1285,17 +1301,34 @@ def api_tier_set(pid):
     log_action("set_tier", "#{} q{} ${}".format(pid, d["quantity"], d["price"]))
     sent = failed = 0
     if d.get("notify", True):
-        try:
-            prow = q("SELECT name, price FROM products WHERE id=?", (pid,))
-            tiers = botdb.get_product_price_tiers(pid)
-            if prow and tiers:
-                available = botdb.get_available_stock_count(pid)
-                msg = _offer_alert_message(prow[0]["name"], prow[0]["price"], tiers, available)
-                sent, failed = _broadcast_to_all(msg, pid=pid, button_text="\U0001f6d2 Tap to Buy Now")
-                log_action("offer_broadcast", "#{} sent={} failed={}".format(pid, sent, failed))
-        except Exception:
-            pass
+        sent, failed = _publish_offer_alert(pid)
     return jsonify({"ok": True, "sent": sent, "failed": failed})
+
+
+@app.route("/api/products/<int:pid>/tiers/bulk_set", methods=["POST"])
+@login_required
+def api_tier_bulk_set(pid):
+    """Save multiple price offers at once, then publish a single broadcast."""
+    d = request.get_json(force=True)
+    items = d.get("tiers") or []
+    saved = 0
+    for it in items:
+        try:
+            qty = int(it["quantity"])
+            price = float(it["price"])
+            if qty <= 0 or price <= 0:
+                continue
+            botdb.set_product_price_tier(pid, qty, price)
+            saved += 1
+        except Exception:
+            continue
+    if not saved:
+        return jsonify({"ok": False, "error": "No valid offers"}), 400
+    log_action("set_tiers_bulk", "#{} saved={}".format(pid, saved))
+    sent = failed = 0
+    if d.get("notify", True):
+        sent, failed = _publish_offer_alert(pid)
+    return jsonify({"ok": True, "saved": saved, "sent": sent, "failed": failed})
 
 
 @app.route("/api/products/<int:pid>/tiers/delete", methods=["POST"])

@@ -358,10 +358,29 @@ async function manageTiers(id) {
       <label><span>Total price</span><input id="ti_price" type="number" step="0.01"></label>
     </div>
     <div class="toolbar" style="margin-top:14px"><div class="grow"></div><button class="btn btn-glow" id="tiAdd"><span>Save Tier</span></button></div>
+    <p class="muted" style="margin:14px 0 6px">Or add <b>multiple offers</b> at once — one per line as <b>QUANTITY | TOTAL PRICE</b>:</p>
+    <textarea id="ti_bulk" rows="4" style="width:100%" placeholder="1 | 1&#10;5 | 4&#10;10 | 7"></textarea>
+    <div class="toolbar" style="margin-top:10px"><div class="grow"></div><button class="btn btn-glow" id="tiBulk"><span>📢 Save & Publish All</span></button></div>
     <div class="tbl-wrap"><table><thead><tr><th>Qty</th><th>Price</th><th></th></tr></thead><tbody>${tiers || '<tr><td colspan=3 class="muted">No tiers</td></tr>'}</tbody></table></div>`);
   $("#tiAdd").onclick = async () => {
     const r = await post(`/api/products/${id}/tiers/set`, { quantity: parseInt(val("ti_qty")), price: parseFloat(val("ti_price")) });
     if (r.ok) { toast("Tier saved"); await reloadProducts(); manageTiers(id); } else toast("Failed", "err");
+  };
+  $("#tiBulk").onclick = async () => {
+    const lines = val("ti_bulk").split("\n").map(s => s.trim()).filter(Boolean);
+    if (!lines.length) { toast("Enter at least one offer line", "err"); return; }
+    const items = [];
+    for (const line of lines) {
+      const parts = line.split("|");
+      const quantity = parseInt((parts[0] || "").trim());
+      const price = parseFloat((parts[1] || "").trim());
+      if (parts.length !== 2 || !quantity || !price || quantity <= 0 || price <= 0) {
+        toast("Invalid line: " + line + " \u2014 use QUANTITY | PRICE", "err"); return;
+      }
+      items.push({ quantity, price });
+    }
+    const r = await post(`/api/products/${id}/tiers/bulk_set`, { tiers: items });
+    if (r.ok) { toast(`Saved ${r.saved} offers \u2022 published to ${r.sent} users`); await reloadProducts(); manageTiers(id); } else toast("Failed", "err");
   };
 }
 async function delTier(id, qty) {
