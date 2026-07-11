@@ -1032,17 +1032,19 @@ def _broadcast_to_all(msg, pid=None, button_text=None):
 
 def _product_alert_message(name, price, added, available, mode):
     if mode == "product":
-        title = "\U0001f195 <b>New Product Added!</b>"
-        intro = "\u26a1 New product is now available!"
+        key = "new_product_broadcast"
+        default_msg = "🆕 <b>New Product Added!</b>\n\n📦 <b>{product}</b>\n➕ <b>Added:</b> <code>{added}</code>\n✅ <b>Available:</b> <code>{available}</code>\n💰 <b>Price:</b> <code>{price}</code>\n\n<i>⚡ New product is now available!</i>"
     else:
-        title = "\U0001f195 <b>New Stock Added!</b>"
-        intro = "\u26a1 Grab yours before they\u2019re gone!"
-    return ("{}\n\n"
-            "\U0001f4e6 <b>{}</b>\n"
-            "\u2795 <b>Added:</b> <b>{}</b>\n"
-            "\u2705 <b>Available:</b> <b>{}</b>\n"
-            "\U0001f4b0 <b>Price:</b> <b>${:.2f}</b>\n\n"
-            "<i>{}</i>").format(title, name, added, available, float(price or 0), intro)
+        key = "stock_added_broadcast"
+        default_msg = "🆕 <b>New Stock Added!</b>\n\n📦 <b>{product}</b>\n➕ <b>Added:</b> <code>{added}</code>\n✅ <b>Available:</b> <code>{available}</code>\n💰 <b>Price:</b> <code>{price}</code>\n\n<i>⚡ Grab yours before they’re gone!</i>"
+    return botdb.render_message_template(
+        key,
+        default_msg,
+        product_name=name,
+        added=added,
+        available=available,
+        price="${:.2f}".format(float(price or 0)),
+    )
 
 
 def _publish_offer_alert(pid):
@@ -1245,6 +1247,7 @@ def api_product_flash(pid):
             discount_text=("{}% OFF".format(discount) if discount else "SALE"),
             discount_percent=("-{}".format(discount) if discount else "SALE"),
             validity=ends_text,
+            stock=botdb.get_available_stock_count(pid),
         )
         btn_text, btn_icon = button_name_icon(prod["name"])
         flash_btn = {"text": "\U0001f6d2 Buy " + btn_text[:28],

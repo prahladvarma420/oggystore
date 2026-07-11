@@ -11,7 +11,7 @@ from utils.error_logger import log_error
 from utils.timezone import now, now_text
 
 from utils.crypto import encrypt_text
-from database.db import cur, conn, add_balance, reserve_stock_items, get_available_stock_count, get_setting, set_setting
+from database.db import cur, conn, add_balance, reserve_stock_items, get_available_stock_count, get_setting, set_setting, get_balance, render_message_template
 from config import (
     ADMIN_ID,
     RPC_URL,
@@ -26,6 +26,11 @@ from config import (
 )
 
 TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex().replace("0x", "")
+
+DEPOSIT_SUCCESS_DEFAULT = (
+    "✅ <b>DEPOSIT CONFIRMED</b>\n\n🧾 <b>Invoice:</b> <code>#{invoice_id}</code>\n💵 <b>Paid:</b> <code>{paid} USDT</code>\n💰 <b>Balance Added:</b> <code>{amount} USDT</code>\n💼 <b>New Balance:</b> <code>{balance} USDT</code>\n🔗 <b>TX:</b> {tx}\n\n🛍 <i>You can now buy products from Shop.</i>"
+)
+
 
 
 def _to_checksum(address: str) -> str:
@@ -491,15 +496,14 @@ async def check_payments(context):
                 try:
                     await context.bot.send_message(
                         chat_id=user_id,
-                        text=(
-                            "✅ <b>DEPOSIT CONFIRMED</b>\n\n"
-                            "━━━━━━━━━━━━━━━\n\n"
-                            f"🧾 <b>Invoice:</b> <code>#{deposit_id}</code>\n"
-                            f"💵 <b>Paid:</b> <code>{paid_amount:.5f} USDT</code>\n"
-                            f"💰 <b>Balance Added:</b> <code>{float(base_amount):.2f} USDT</code>\n"
-                            f"🔗 <b>TX:</b> <a href='{tx_link}'>{short_tx}</a>\n\n"
-                            "━━━━━━━━━━━━━━━\n\n"
-                            "🛍 <i>You can now buy products from Shop.</i>"
+                        text=render_message_template(
+                            "deposit_success",
+                            DEPOSIT_SUCCESS_DEFAULT,
+                            invoice_id=deposit_id,
+                            paid=f"{paid_amount:.5f}",
+                            amount=f"{float(base_amount):.2f}",
+                            balance=f"{get_balance(user_id):.2f}",
+                            tx=f"<a href='{tx_link}'>{short_tx}</a>",
                         ),
                         parse_mode="HTML",
                         disable_web_page_preview=True,
@@ -589,12 +593,14 @@ async def check_payments(context):
                     try:
                         await context.bot.send_message(
                             chat_id=user_id,
-                            text=(
-                                "✅ <b>DEPOSIT CONFIRMED</b>\n\n"
-                                f"🧾 <b>Invoice:</b> <code>#{deposit_id}</code>\n"
-                                f"💵 <b>Paid:</b> <code>{delta:.5f} USDT</code>\n"
-                                f"💰 <b>Balance Added:</b> <code>{float(base_amount):.2f} USDT</code>\n\n"
-                                "🛍 <i>You can now buy products from Shop.</i>"
+                            text=render_message_template(
+                                "deposit_success",
+                                DEPOSIT_SUCCESS_DEFAULT,
+                                invoice_id=deposit_id,
+                                paid=f"{delta:.5f}",
+                                amount=f"{float(base_amount):.2f}",
+                                balance=f"{get_balance(user_id):.2f}",
+                                tx="verified by balance check",
                             ),
                             parse_mode="HTML",
                         )

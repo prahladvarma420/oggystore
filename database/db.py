@@ -296,6 +296,20 @@ def init_db():
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('inactive_days', '7')")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('inactive_coupon', '')")
 
+    # One-time upgrade: old deposit_success default -> full detailed version
+    try:
+        cur.execute(
+            "UPDATE message_templates SET body=? WHERE key='deposit_success' AND body IN (?,?,?,?)",
+            ('✅ <b>DEPOSIT CONFIRMED</b>\n\n🧾 <b>Invoice:</b> <code>#{invoice_id}</code>\n💵 <b>Paid:</b> <code>{paid} USDT</code>\n💰 <b>Balance Added:</b> <code>{amount} USDT</code>\n💼 <b>New Balance:</b> <code>{balance} USDT</code>\n🔗 <b>TX:</b> {tx}\n\n🛍 <i>You can now buy products from Shop.</i>',
+             '✅ <b>Deposit Confirmed</b>\\n\\n💵 Amount: <code>{amount} USDT</code>\\n\\nYour wallet balance has been updated.',
+             '✅ <b>Deposit Confirmed</b>\n\n💵 Amount: <code>{amount} USDT</code>\n\nYour wallet balance has been updated.',
+             '✅ Deposit Confirmed\n\n💵 Amount: {amount} USDT\n\nYour wallet balance has been updated.',
+             '✅ Deposit Confirmed\\n\\n💵 Amount: {amount} USDT\\n\\nYour wallet balance has been updated.'),
+        )
+        conn.commit()
+    except Exception:
+        pass
+
     default_templates = {
         "welcome": (
             "Welcome Message",
@@ -317,9 +331,17 @@ def init_db():
             "Restock Alert Message",
             "🔔 <b>Back In Stock!</b>\\n\\n📦 <b>{product_name}</b>\\n📊 Available: <code>{stock}</code>\\n\\nTap below to buy now 👇"
         ),
+        "new_product_broadcast": (
+            "New Product Broadcast Message",
+            "🆕 <b>New Product Added!</b>\n\n📦 <b>{product}</b>\n➕ <b>Added:</b> <code>{added}</code>\n✅ <b>Available:</b> <code>{available}</code>\n💰 <b>Price:</b> <code>{price}</code>\n\n<i>⚡ New product is now available!</i>"
+        ),
+        "stock_added_broadcast": (
+            "Stock Added Broadcast Message",
+            "🆕 <b>New Stock Added!</b>\n\n📦 <b>{product}</b>\n➕ <b>Added:</b> <code>{added}</code>\n✅ <b>Available:</b> <code>{available}</code>\n💰 <b>Price:</b> <code>{price}</code>\n\n<i>⚡ Grab yours before they’re gone!</i>"
+        ),
         "deposit_success": (
             "Deposit Success Message",
-            "✅ <b>Deposit Confirmed</b>\\n\\n💵 Amount: <code>{amount} USDT</code>\\n\\nYour wallet balance has been updated."
+            "✅ <b>DEPOSIT CONFIRMED</b>\n\n🧾 <b>Invoice:</b> <code>#{invoice_id}</code>\n💵 <b>Paid:</b> <code>{paid} USDT</code>\n💰 <b>Balance Added:</b> <code>{amount} USDT</code>\n💼 <b>New Balance:</b> <code>{balance} USDT</code>\n🔗 <b>TX:</b> {tx}\n\n🛍 <i>You can now buy products from Shop.</i>"
         )
     }
 
@@ -365,9 +387,17 @@ def ensure_user(user):
             "Restock Alert Message",
             "🔔 <b>Back In Stock!</b>\\n\\n📦 <b>{product_name}</b>\\n📊 Available: <code>{stock}</code>\\n\\nTap below to buy now 👇"
         ),
+        "new_product_broadcast": (
+            "New Product Broadcast Message",
+            "🆕 <b>New Product Added!</b>\n\n📦 <b>{product}</b>\n➕ <b>Added:</b> <code>{added}</code>\n✅ <b>Available:</b> <code>{available}</code>\n💰 <b>Price:</b> <code>{price}</code>\n\n<i>⚡ New product is now available!</i>"
+        ),
+        "stock_added_broadcast": (
+            "Stock Added Broadcast Message",
+            "🆕 <b>New Stock Added!</b>\n\n📦 <b>{product}</b>\n➕ <b>Added:</b> <code>{added}</code>\n✅ <b>Available:</b> <code>{available}</code>\n💰 <b>Price:</b> <code>{price}</code>\n\n<i>⚡ Grab yours before they’re gone!</i>"
+        ),
         "deposit_success": (
             "Deposit Success Message",
-            "✅ <b>Deposit Confirmed</b>\\n\\n💵 Amount: <code>{amount} USDT</code>\\n\\nYour wallet balance has been updated."
+            "✅ <b>DEPOSIT CONFIRMED</b>\n\n🧾 <b>Invoice:</b> <code>#{invoice_id}</code>\n💵 <b>Paid:</b> <code>{paid} USDT</code>\n💰 <b>Balance Added:</b> <code>{amount} USDT</code>\n💼 <b>New Balance:</b> <code>{balance} USDT</code>\n🔗 <b>TX:</b> {tx}\n\n🛍 <i>You can now buy products from Shop.</i>"
         )
     }
 
@@ -1061,6 +1091,12 @@ def render_message_template(key: str, default: str = "", **kwargs):
         "new_price": kwargs.get("new_price", ""),
         "stock": kwargs.get("stock", ""),
         "amount": kwargs.get("amount", ""),
+        "invoice_id": kwargs.get("invoice_id", ""),
+        "invoice": kwargs.get("invoice_id", kwargs.get("invoice", "")),
+        "tx": kwargs.get("tx", ""),
+        "added": kwargs.get("added", ""),
+        "available": kwargs.get("available", ""),
+        "price": kwargs.get("price", ""),
     }
     body = get_message_template(key, default)
     try:
