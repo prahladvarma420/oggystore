@@ -2942,7 +2942,7 @@ async def handle_admin_message(update, context, uid, text, state):
 
         icon = "✅" if ok else "❌"
         await update.message.reply_text(
-            f"{icon} <b>Test result:</b> {html.escape(str(result_msg), quote=False)}",
+            f"{icon} <b>Test result:</b> {html.escape(str(result_msg)[:800], quote=False)}",
             reply_markup=admin_menu(),
             parse_mode="HTML"
         )

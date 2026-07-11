@@ -245,7 +245,7 @@ def send_family_invite_sync(email: str):
 
     except Exception as exc:
         log_error("M365 invite automation failed", exc, extra=f"email={email}")
-        return False, f"Automation error: {exc}", screenshot
+        return False, f"Automation error: {str(exc).strip()[:400]}", screenshot
 
     finally:
         try:
@@ -275,7 +275,7 @@ async def process_invite(bot, invite_id: int):
     try:
         ok, message, screenshot = await send_family_invite(email)
     except Exception as exc:
-        ok, message, screenshot = False, f"Unexpected error: {exc}", None
+        ok, message, screenshot = False, f"Unexpected error: {str(exc).strip()[:400]}", None
 
     if ok:
         set_m365_invite_status(invite_id, "sent", None)
