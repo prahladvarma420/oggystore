@@ -148,9 +148,13 @@ def send_family_invite_sync(email: str):
                     or "Failed to launch" in err_text
                     or "error while loading shared libraries" in err_text
                 ):
-                    # Browser missing OR it crashed on startup (usually missing
-                    # system libraries). Install browser + system deps, retry once.
-                    _install_chromium(with_deps=True)
+                    # Browser missing OR it crashed on startup. The system
+                    # libraries are baked into the image at build time via
+                    # railpack.json (deploy.aptPackages) and the browser binary
+                    # via the build install step, so this is only a rare
+                    # fallback. Install the browser binary ONLY (never apt at
+                    # runtime — apt-get hangs on the Railway runtime image).
+                    _install_chromium(with_deps=False)
                     browser = p.chromium.launch(
                         headless=True,
                         args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
