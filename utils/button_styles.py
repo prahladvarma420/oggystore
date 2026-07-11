@@ -20,7 +20,7 @@ from telegram import InlineKeyboardButton as _InlineKeyboardButton
 # Exact callback_data values that are "main actions" -> blue
 _BLUE_CB_EXACT = {
     "home", "shop", "deposit", "wallet", "orders", "profile",
-    "support_ticket", "search", "admin_panel",
+    "support_ticket", "search", "admin_panel", "deposit_history",
 }
 
 # Buy / pay / quantity actions -> blue

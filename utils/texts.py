@@ -32,17 +32,15 @@ Premium digital products with instant delivery.
 """
 
 
+DEPOSIT_PROMPT_DEFAULT = (
+    "💰 <b>Add Funds</b>\n\nCurrent balance: <b>{balance} USDT</b>\n\nSend the amount you want to deposit.\n\nMinimum: <b>{min} USDT</b>\nMaximum: <b>{max} USDT</b>\n\nPayment method:\nUSDT BEP20 / BNB Smart Chain\n\nAfter you enter the amount, the bot will create an automatic payment invoice."
+)
+
+
 def deposit_text(balance):
-    return f"""💰 <b>Add Funds</b>
-
-Current balance: <b>{balance:.2f} USDT</b>
-
-Send the amount you want to deposit.
-
-Minimum: <b>0.1 USDT</b>
-Maximum: <b>5000 USDT</b>
-
-Payment method:
-USDT BEP20 / BNB Smart Chain
-
-After you enter the amount, the bot will create an automatic payment invoice."""
+    values = {"balance": f"{float(balance or 0):.2f}", "min": "0.1", "max": "5000"}
+    try:
+        from database.db import render_message_template
+        return render_message_template("deposit_prompt", DEPOSIT_PROMPT_DEFAULT, **values)
+    except Exception:
+        return DEPOSIT_PROMPT_DEFAULT.format(**values)

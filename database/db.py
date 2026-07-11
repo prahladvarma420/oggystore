@@ -339,6 +339,22 @@ def init_db():
             "Stock Added Broadcast Message",
             "🆕 <b>New Stock Added!</b>\n\n📦 <b>{product}</b>\n➕ <b>Added:</b> <code>{added}</code>\n✅ <b>Available:</b> <code>{available}</code>\n💰 <b>Price:</b> <code>{price}</code>\n\n<i>⚡ Grab yours before they’re gone!</i>"
         ),
+        "deposit_prompt": (
+            "Deposit Menu Message",
+            "💰 <b>Add Funds</b>\n\nCurrent balance: <b>{balance} USDT</b>\n\nSend the amount you want to deposit.\n\nMinimum: <b>{min} USDT</b>\nMaximum: <b>{max} USDT</b>\n\nPayment method:\nUSDT BEP20 / BNB Smart Chain\n\nAfter you enter the amount, the bot will create an automatic payment invoice."
+        ),
+        "profile_message": (
+            "My Profile Message",
+            "👤 <b>My Profile</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💼 <b>Wallet Balance:</b> <b>{balance} USDT</b>\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💰 <b>Total Spent:</b> <b>${spent}</b>\n\n💳 <b>Paid Deposits:</b> <b>{deposits}</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n\n🎁 <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n\n🎟 <b>Coupon:</b> {coupon}\n🔔 <b>Notifications:</b> {notifications}"
+        ),
+        "wallet_message": (
+            "My Wallet Message",
+            "💼 <b>My Wallet</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💰 <b>Available Balance:</b> <b>{balance} USDT</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n🧾 <b>Paid Deposits:</b> <b>{deposits}</b>\n\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💸 <b>Total Spent:</b> <b>{spent} USDT</b>\n\n🎁 <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n⭐ <b>Loyalty Points:</b> <b>{loyalty_points}</b>\n🏆 <b>VIP Rank:</b> <b>{vip_rank}</b>\n\nUse Deposit to add balance, then pay directly from wallet during checkout."
+        ),
+        "support_prompt": (
+            "Support Ticket Message",
+            "🎫 <b>Create Support Ticket</b>\n\nSend your issue/message now.\n\nExample:\nPayment done but balance not added."
+        ),
         "deposit_success": (
             "Deposit Success Message",
             "✅ <b>DEPOSIT CONFIRMED</b>\n\n🧾 <b>Invoice:</b> <code>#{invoice_id}</code>\n💵 <b>Paid:</b> <code>{paid} USDT</code>\n💰 <b>Balance Added:</b> <code>{amount} USDT</code>\n💼 <b>New Balance:</b> <code>{balance} USDT</code>\n🔗 <b>TX:</b> {tx}\n\n🛍 <i>You can now buy products from Shop.</i>"
@@ -394,6 +410,22 @@ def ensure_user(user):
         "stock_added_broadcast": (
             "Stock Added Broadcast Message",
             "🆕 <b>New Stock Added!</b>\n\n📦 <b>{product}</b>\n➕ <b>Added:</b> <code>{added}</code>\n✅ <b>Available:</b> <code>{available}</code>\n💰 <b>Price:</b> <code>{price}</code>\n\n<i>⚡ Grab yours before they’re gone!</i>"
+        ),
+        "deposit_prompt": (
+            "Deposit Menu Message",
+            "💰 <b>Add Funds</b>\n\nCurrent balance: <b>{balance} USDT</b>\n\nSend the amount you want to deposit.\n\nMinimum: <b>{min} USDT</b>\nMaximum: <b>{max} USDT</b>\n\nPayment method:\nUSDT BEP20 / BNB Smart Chain\n\nAfter you enter the amount, the bot will create an automatic payment invoice."
+        ),
+        "profile_message": (
+            "My Profile Message",
+            "👤 <b>My Profile</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💼 <b>Wallet Balance:</b> <b>{balance} USDT</b>\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💰 <b>Total Spent:</b> <b>${spent}</b>\n\n💳 <b>Paid Deposits:</b> <b>{deposits}</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n\n🎁 <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n\n🎟 <b>Coupon:</b> {coupon}\n🔔 <b>Notifications:</b> {notifications}"
+        ),
+        "wallet_message": (
+            "My Wallet Message",
+            "💼 <b>My Wallet</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💰 <b>Available Balance:</b> <b>{balance} USDT</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n🧾 <b>Paid Deposits:</b> <b>{deposits}</b>\n\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💸 <b>Total Spent:</b> <b>{spent} USDT</b>\n\n🎁 <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n⭐ <b>Loyalty Points:</b> <b>{loyalty_points}</b>\n🏆 <b>VIP Rank:</b> <b>{vip_rank}</b>\n\nUse Deposit to add balance, then pay directly from wallet during checkout."
+        ),
+        "support_prompt": (
+            "Support Ticket Message",
+            "🎫 <b>Create Support Ticket</b>\n\nSend your issue/message now.\n\nExample:\nPayment done but balance not added."
         ),
         "deposit_success": (
             "Deposit Success Message",
@@ -1097,6 +1129,21 @@ def render_message_template(key: str, default: str = "", **kwargs):
         "added": kwargs.get("added", ""),
         "available": kwargs.get("available", ""),
         "price": kwargs.get("price", ""),
+        "user_id": kwargs.get("user_id", ""),
+        "username": kwargs.get("username", ""),
+        "name": kwargs.get("name", kwargs.get("user", "")),
+        "orders": kwargs.get("orders", ""),
+        "spent": kwargs.get("spent", ""),
+        "deposits": kwargs.get("deposits", ""),
+        "deposited": kwargs.get("deposited", ""),
+        "referral_earnings": kwargs.get("referral_earnings", ""),
+        "referral_pending": kwargs.get("referral_pending", ""),
+        "coupon": kwargs.get("coupon", ""),
+        "notifications": kwargs.get("notifications", ""),
+        "loyalty_points": kwargs.get("loyalty_points", ""),
+        "vip_rank": kwargs.get("vip_rank", ""),
+        "min": kwargs.get("min", ""),
+        "max": kwargs.get("max", ""),
     }
     body = get_message_template(key, default)
     try:

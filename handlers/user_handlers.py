@@ -24,6 +24,16 @@ user_last_action = {}
 user_warn_count = {}
 user_locked_until = {}
 
+PROFILE_MSG_DEFAULT = (
+    "👤 <b>My Profile</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💼 <b>Wallet Balance:</b> <b>{balance} USDT</b>\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💰 <b>Total Spent:</b> <b>${spent}</b>\n\n💳 <b>Paid Deposits:</b> <b>{deposits}</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n\n🎁 <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n\n🎟 <b>Coupon:</b> {coupon}\n🔔 <b>Notifications:</b> {notifications}"
+)
+WALLET_MSG_DEFAULT = (
+    "💼 <b>My Wallet</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💰 <b>Available Balance:</b> <b>{balance} USDT</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n🧾 <b>Paid Deposits:</b> <b>{deposits}</b>\n\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💸 <b>Total Spent:</b> <b>{spent} USDT</b>\n\n🎁 <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n⭐ <b>Loyalty Points:</b> <b>{loyalty_points}</b>\n🏆 <b>VIP Rank:</b> <b>{vip_rank}</b>\n\nUse Deposit to add balance, then pay directly from wallet during checkout."
+)
+SUPPORT_PROMPT_DEFAULT = (
+    "🎫 <b>Create Support Ticket</b>\n\nSend your issue/message now.\n\nExample:\nPayment done but balance not added."
+)
+
 
 def is_rate_limited(user_id: int) -> bool:
     if is_admin(user_id):
@@ -307,25 +317,22 @@ Example:
 
         await edit_or_send(
             q,
-            f"""💼 <b>My Wallet</b>
-
-🆔 <b>User ID:</b> <code>{uid}</code>
-👤 <b>Name:</b> {first_name or 'User'}
-🔗 <b>Username:</b> {uname}
-
-💰 <b>Available Balance:</b> <b>{float(balance or 0):.2f} USDT</b>
-📥 <b>Total Deposited:</b> <b>{float(dep_total or 0):.2f} USDT</b>
-🧾 <b>Paid Deposits:</b> <b>{dep_count}</b>
-
-🛒 <b>Total Orders:</b> <b>{order_count}</b>
-💸 <b>Total Spent:</b> <b>{float(total_spent or 0):.2f} USDT</b>
-
-🎁 <b>Referral Earnings:</b> <b>{float(ref_earn or 0):.6f} USDT</b>
-⏳ <b>Pending Referral:</b> <b>{float(ref_pending or 0):.6f} USDT</b>
-⭐ <b>Loyalty Points:</b> <b>{int(loyalty_points or 0)}</b>
-🏆 <b>VIP Rank:</b> <b>{vip_rank or 'Bronze'}</b>
-
-Use Deposit to add balance, then pay directly from wallet during checkout.""",
+            render_message_template(
+                "wallet_message",
+                WALLET_MSG_DEFAULT,
+                user_id=uid,
+                name=(first_name or "User"),
+                username=uname,
+                balance=f"{float(balance or 0):.2f}",
+                deposited=f"{float(dep_total or 0):.2f}",
+                deposits=dep_count,
+                orders=order_count,
+                spent=f"{float(total_spent or 0):.2f}",
+                referral_earnings=f"{float(ref_earn or 0):.6f}",
+                referral_pending=f"{float(ref_pending or 0):.6f}",
+                loyalty_points=int(loyalty_points or 0),
+                vip_rank=(vip_rank or "Bronze"),
+            ),
             profile_menu()
         )
         return
@@ -397,12 +404,11 @@ Example:
         user_state[uid] = "support_ticket_message"
         await edit_or_send(
             q,
-            """🎫 <b>Create Support Ticket</b>
-
-Send your issue/message now.
-
-Example:
-Payment done but balance not added.""",
+            render_message_template(
+                "support_prompt",
+                SUPPORT_PROMPT_DEFAULT,
+                name=(q.from_user.first_name or ""),
+            ),
             back_home()
         )
         return
@@ -428,24 +434,22 @@ Payment done but balance not added.""",
 
         await edit_or_send(
             q,
-            f"""👤 <b>My Profile</b>
-
-🆔 <b>User ID:</b> <code>{uid}</code>
-👤 <b>Name:</b> {first_name or 'User'}
-🔗 <b>Username:</b> {uname}
-
-💼 <b>Wallet Balance:</b> <b>{float(bal or 0):.2f} USDT</b>
-🛒 <b>Total Orders:</b> <b>{order_count}</b>
-💰 <b>Total Spent:</b> <b>${float(total_spent or 0):.2f}</b>
-
-💳 <b>Paid Deposits:</b> <b>{dep_count}</b>
-📥 <b>Total Deposited:</b> <b>{float(dep_total or 0):.2f} USDT</b>
-
-🎁 <b>Referral Earnings:</b> <b>{float(ref_earn or 0):.6f} USDT</b>
-⏳ <b>Pending Referral:</b> <b>{float(ref_pending or 0):.6f} USDT</b>
-
-🎟 <b>Coupon:</b> {get_user_coupon(uid) or 'None'}
-🔔 <b>Notifications:</b> {'ON ✅' if notifications else 'OFF ❌'}""",
+            render_message_template(
+                "profile_message",
+                PROFILE_MSG_DEFAULT,
+                user_id=uid,
+                name=(first_name or "User"),
+                username=uname,
+                balance=f"{float(bal or 0):.2f}",
+                orders=order_count,
+                spent=f"{float(total_spent or 0):.2f}",
+                deposits=dep_count,
+                deposited=f"{float(dep_total or 0):.2f}",
+                referral_earnings=f"{float(ref_earn or 0):.6f}",
+                referral_pending=f"{float(ref_pending or 0):.6f}",
+                coupon=(get_user_coupon(uid) or "None"),
+                notifications=("ON ✅" if notifications else "OFF ❌"),
+            ),
             profile_menu()
         )
         return
@@ -496,19 +500,23 @@ Thank you for using our store.""",
         if not rows:
             text += "No orders found yet."
         else:
+            shown = 0
             for order_id, name, price, delivery, created in rows:
                 name = str(name) if "<tg-emoji" in str(name) else html.escape(str(name), quote=False)
-                delivery = html.escape(str(decrypt_text(delivery)), quote=False)
-                text += (
+                delivery = html.escape(str(decrypt_text(delivery) or ""), quote=False)
+                if len(delivery) > 700:
+                    delivery = delivery[:700] + "..."
+                entry = (
                     f"🧾 <b>Order #{order_id}</b>\n"
                     f"📦 {name}\n"
-                    f"💰 <code>{price:.2f} USDT</code>\n"
-
+                    f"💰 <code>{float(price or 0):.2f} USDT</code>\n"
                     f"🔑 <b>Delivery:</b>\n<code>{delivery}</code>\n\n"
                 )
-
-        if len(text) > 3900:
-            text = text[:3900] + "\n..."
+                if len(text) + len(entry) > 3800:
+                    text += f"… and <b>{len(rows) - shown}</b> more order(s)."
+                    break
+                text += entry
+                shown += 1
 
         await edit_or_send(q, text, profile_menu())
         return

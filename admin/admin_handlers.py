@@ -129,6 +129,10 @@ def template_help_text(key: str):
         "flash_sale_broadcast": "{product}, {old_price}, {new_price}, {discount}, {validity}, {stock}",
         "restock_alert": "{product}, {stock}",
         "deposit_success": "{invoice_id}, {paid}, {amount}, {balance}, {tx}",
+        "deposit_prompt": "{balance}, {min}, {max}",
+        "profile_message": "{user_id}, {name}, {username}, {balance}, {orders}, {spent}, {deposits}, {deposited}, {referral_earnings}, {referral_pending}, {coupon}, {notifications}",
+        "wallet_message": "{user_id}, {name}, {username}, {balance}, {deposited}, {deposits}, {orders}, {spent}, {referral_earnings}, {referral_pending}, {loyalty_points}, {vip_rank}",
+        "support_prompt": "{name}",
         "new_product_broadcast": "{product}, {added}, {available}, {price}",
         "stock_added_broadcast": "{product}, {added}, {available}, {price}",
     }
@@ -145,6 +149,10 @@ def template_example_text(key: str):
         "deposit_success": "✅ DEPOSIT CONFIRMED\n\n🧾 Invoice: #{invoice_id}\n💵 Paid: {paid} USDT\n💰 Added: {amount} USDT\n💼 Balance: {balance} USDT",
         "new_product_broadcast": "🆕 New Product!\n\n📦 {product}\n✅ Available: {available}\n💰 Price: {price}",
         "stock_added_broadcast": "🆕 Stock Added!\n\n📦 {product}\n➕ Added: {added}\n✅ Available: {available}",
+        "deposit_prompt": "💰 Add Funds\n\nCurrent balance: {balance} USDT\n\nSend the amount you want to deposit.",
+        "profile_message": "👤 My Profile\n\n🆔 {user_id}\n💼 Balance: {balance} USDT\n🛒 Orders: {orders}",
+        "wallet_message": "💼 My Wallet\n\n💰 Balance: {balance} USDT\n📥 Deposited: {deposited} USDT",
+        "support_prompt": "🎫 Create Support Ticket\n\nSend your issue/message now.",
     }
     return examples.get(key, "Type the exact message you want.")
 
