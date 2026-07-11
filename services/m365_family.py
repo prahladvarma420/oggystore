@@ -156,8 +156,40 @@ def send_family_invite_sync(email: str):
                 locale="en-US",
             )
             page = context.new_page()
-            page.goto(SHARING_URL, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
-            page.wait_for_timeout(6000)
+
+            # Microsoft's account portal keeps background connections open, so
+            # goto() can time out even though the page rendered fine. Navigate
+            # with a tolerant strategy ("commit" = don't wait for full load),
+            # then give the app time to render and verify content ourselves.
+            for nav_url in (
+                SHARING_URL,
+                "https://account.microsoft.com/services/microsoft365/details",
+            ):
+                try:
+                    page.goto(nav_url, wait_until="commit", timeout=45000)
+                    break
+                except Exception:
+                    continue
+
+            # Wait for the sharing UI (it's a slow single-page app): poll for up
+            # to ~30s until a Share/invite control or a login redirect appears.
+            for _ in range(15):
+                if "login.live.com" in page.url or "login.microsoftonline" in page.url:
+                    break
+                found_ui = False
+                for probe in ("Share", "Start sharing", "Invite", "Manage sharing"):
+                    try:
+                        if page.get_by_role("button", name=probe, exact=False).first.is_visible(timeout=700):
+                            found_ui = True
+                            break
+                        if page.get_by_role("link", name=probe, exact=False).first.is_visible(timeout=300):
+                            found_ui = True
+                            break
+                    except Exception:
+                        continue
+                if found_ui:
+                    break
+                page.wait_for_timeout(2000)
 
             # Session expired -> Microsoft redirects to the login page.
             if "login.live.com" in page.url or "login.microsoftonline" in page.url:
@@ -169,16 +201,42 @@ def send_family_invite_sync(email: str):
                 return False, "Microsoft session EXPIRED — run tools/m365_login.py again and upload a fresh session.", screenshot
 
             # 1) Open the invite dialog (several possible button labels).
+            opened = False
             for label in ("Start sharing", "Invite people", "Invite someone", "Add people", "Share", "Invite"):
                 try:
                     btn = page.get_by_role("button", name=label, exact=False).first
                     if btn.is_visible(timeout=2500):
                         btn.click()
+                        opened = True
                         break
                 except Exception:
                     continue
 
+            # Fallback: some layouts use a link (e.g. "Manage sharing" at the top).
+            if not opened:
+                for label in ("Manage sharing", "Share"):
+                    try:
+                        lnk = page.get_by_role("link", name=label, exact=False).first
+                        if lnk.is_visible(timeout=2000):
+                            lnk.click()
+                            opened = True
+                            break
+                    except Exception:
+                        continue
+
             page.wait_for_timeout(2500)
+
+            # 1b) Some layouts show a chooser first (invite by email vs link).
+            for label in ("Invite via email", "Invite by email", "Invite via e-mail", "Email"):
+                try:
+                    btn = page.get_by_role("button", name=label, exact=False).first
+                    if btn.is_visible(timeout=1500):
+                        btn.click()
+                        break
+                except Exception:
+                    continue
+
+            page.wait_for_timeout(1500)
 
             # 2) Fill the customer's email.
             filled = False
