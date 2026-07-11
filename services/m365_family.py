@@ -75,6 +75,11 @@ def load_session():
 
 _RUNTIME_INSTALL_DONE = False
 
+# Tracks the last automation phase reached, so a hard timeout in the async
+# wrapper can still report WHERE the flow got stuck (the worker thread cannot
+# return a value once it is killed by asyncio.wait_for).
+_LAST_PHASE = "not started"
+
 
 def _install_chromium(with_deps: bool = False):
     """Last-resort runtime install if the build step did not install Chromium.
@@ -132,6 +137,8 @@ def send_family_invite_sync(email: str):
     tmp.close()
 
     screenshot = None
+    global _LAST_PHASE
+    _LAST_PHASE = "launching browser"
 
     try:
         with sync_playwright() as p:
@@ -173,26 +180,29 @@ def send_family_invite_sync(email: str):
             )
             page = context.new_page()
             # Cap every individual page operation so nothing can hang forever.
-            page.set_default_timeout(20000)
-            page.set_default_navigation_timeout(45000)
+            page.set_default_timeout(15000)
+            page.set_default_navigation_timeout(30000)
 
             # Microsoft's account portal keeps background connections open, so
             # goto() can time out even though the page rendered fine. Navigate
             # with a tolerant strategy ("commit" = don't wait for full load),
             # then give the app time to render and verify content ourselves.
+            # The /sharing URL redirects to /details, so try /details first.
+            _LAST_PHASE = "navigating to subscription page"
             for nav_url in (
-                SHARING_URL,
                 "https://account.microsoft.com/services/microsoft365/details",
+                SHARING_URL,
             ):
                 try:
-                    page.goto(nav_url, wait_until="commit", timeout=45000)
+                    page.goto(nav_url, wait_until="commit", timeout=25000)
                     break
                 except Exception:
                     continue
 
             # Wait for the sharing UI (it's a slow single-page app): poll for up
-            # to ~30s until a Share/invite control or a login redirect appears.
-            for _ in range(15):
+            # to ~18s until a Share/invite control or a login redirect appears.
+            _LAST_PHASE = "waiting for the subscription page to render"
+            for _ in range(12):
                 if "login.live.com" in page.url or "login.microsoftonline" in page.url:
                     break
                 found_ui = False
@@ -220,6 +230,7 @@ def send_family_invite_sync(email: str):
                 return False, "Microsoft session EXPIRED — run tools/m365_login.py again and upload a fresh session.", screenshot
 
             # 1) Open the invite dialog (several possible button labels).
+            _LAST_PHASE = "clicking the blue Share button"
             opened = False
             for label in ("Start sharing", "Invite people", "Invite someone", "Add people", "Share", "Invite"):
                 try:
@@ -247,6 +258,7 @@ def send_family_invite_sync(email: str):
 
             # 1b) "Share your benefits" chooser dialog: pick "Email invite"
             #     (the other option is "Copy link").
+            _LAST_PHASE = "choosing 'Email invite'"
             for label in ("Email invite", "Invite via email", "Invite by email", "Email"):
                 clicked_chooser = False
                 for role in ("button", "link"):
@@ -264,6 +276,7 @@ def send_family_invite_sync(email: str):
             page.wait_for_timeout(2000)
 
             # 2) Fill the customer's email into the "Add email" box.
+            _LAST_PHASE = "entering the email address"
             filled = False
             for selector in (
                 'input[placeholder="Add email" i]',
@@ -301,6 +314,7 @@ def send_family_invite_sync(email: str):
 
             # 3) Click the dialog's "Share" button to send the invite.
             #    It stays disabled until a valid email is entered.
+            _LAST_PHASE = "clicking 'Share' to send the invite"
             clicked = False
             for label in ("Share", "Send invite", "Send invitation", "Send", "Invite"):
                 try:
@@ -325,6 +339,7 @@ def send_family_invite_sync(email: str):
                     pass
 
             # Wait for the "Your invite has been sent" confirmation screen.
+            _LAST_PHASE = "waiting for the 'invite sent' confirmation"
             page.wait_for_timeout(6000)
 
             body_text = ""
@@ -386,7 +401,10 @@ async def send_family_invite(email: str):
     except asyncio.TimeoutError:
         return (
             False,
-            "Timed out after 150s (server may still be installing the browser — wait 2 min and retry).",
+            f"Timed out after 150s. Last step reached: {_LAST_PHASE}. "
+            "(If this is 'navigating' or 'waiting for the subscription page', "
+            "the page load or session is the problem; otherwise it stalled "
+            "inside the invite dialog.)",
             None,
         )
 
