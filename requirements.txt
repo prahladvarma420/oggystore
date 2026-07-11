@@ -6,3 +6,4 @@ cryptography
 flask
 psycopg[binary]
 gunicorn
+playwright

@@ -40,7 +40,7 @@ ID_TABLES = {
     "products", "product_stock", "orders", "deposits", "admin_logs",
     "tickets", "referrals", "withdrawal_requests", "product_price_tiers",
     "restock_notifications", "scheduled_broadcasts", "web_login_log",
-    "web_admins",
+    "web_admins", "m365_invites",
 }
 
 # Conflict targets for INSERT OR REPLACE -> ON CONFLICT (...) DO UPDATE.
