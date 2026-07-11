@@ -226,21 +226,28 @@ def send_family_invite_sync(email: str):
 
             page.wait_for_timeout(2500)
 
-            # 1b) Some layouts show a chooser first (invite by email vs link).
-            for label in ("Invite via email", "Invite by email", "Invite via e-mail", "Email"):
-                try:
-                    btn = page.get_by_role("button", name=label, exact=False).first
-                    if btn.is_visible(timeout=1500):
-                        btn.click()
-                        break
-                except Exception:
-                    continue
+            # 1b) "Share your benefits" chooser dialog: pick "Email invite"
+            #     (the other option is "Copy link").
+            for label in ("Email invite", "Invite via email", "Invite by email", "Email"):
+                clicked_chooser = False
+                for role in ("button", "link"):
+                    try:
+                        el = page.get_by_role(role, name=label, exact=True).first
+                        if el.is_visible(timeout=1200):
+                            el.click()
+                            clicked_chooser = True
+                            break
+                    except Exception:
+                        continue
+                if clicked_chooser:
+                    break
 
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(2000)
 
-            # 2) Fill the customer's email.
+            # 2) Fill the customer's email into the "Add email" box.
             filled = False
             for selector in (
+                'input[placeholder="Add email" i]',
                 'input[type="email"]',
                 'input[name="email"]',
                 'input[placeholder*="mail" i]',
@@ -249,7 +256,7 @@ def send_family_invite_sync(email: str):
             ):
                 try:
                     box = page.locator(selector).first
-                    if box.is_visible(timeout=2500):
+                    if box.is_visible(timeout=2000):
                         box.click()
                         box.fill(email)
                         filled = True
@@ -263,16 +270,23 @@ def send_family_invite_sync(email: str):
                 except Exception:
                     pass
                 browser.close()
-                return False, "Could not find the email box on the Microsoft sharing page (layout may have changed).", screenshot
+                return False, "Could not find the email box in the Microsoft invite dialog (layout may have changed).", screenshot
 
-            page.wait_for_timeout(800)
+            # Commit the email chip (some layouts require Enter/Tab to register
+            # it before the Share button becomes enabled).
+            try:
+                page.keyboard.press("Enter")
+            except Exception:
+                pass
+            page.wait_for_timeout(1200)
 
-            # 3) Click the send/invite button.
+            # 3) Click the dialog's "Share" button to send the invite.
+            #    It stays disabled until a valid email is entered.
             clicked = False
-            for label in ("Send invite", "Send invitation", "Invite", "Send", "Next", "Done"):
+            for label in ("Share", "Send invite", "Send invitation", "Send", "Invite"):
                 try:
-                    btn = page.get_by_role("button", name=label, exact=False).first
-                    if btn.is_visible(timeout=2500) and btn.is_enabled():
+                    btn = page.get_by_role("button", name=label, exact=True).first
+                    if btn.is_visible(timeout=2000) and btn.is_enabled():
                         btn.click()
                         clicked = True
                         break
@@ -280,11 +294,18 @@ def send_family_invite_sync(email: str):
                     continue
 
             if not clicked:
+                # Retry: re-press Enter to register email, then try Share again.
                 try:
                     page.keyboard.press("Enter")
+                    page.wait_for_timeout(1000)
+                    btn = page.get_by_role("button", name="Share", exact=True).first
+                    if btn.is_visible(timeout=1500) and btn.is_enabled():
+                        btn.click()
+                        clicked = True
                 except Exception:
                     pass
 
+            # Wait for the "Your invite has been sent" confirmation screen.
             page.wait_for_timeout(6000)
 
             body_text = ""
@@ -294,13 +315,13 @@ def send_family_invite_sync(email: str):
                 pass
 
             success_markers = (
+                "your invite has been sent",
+                "invite has been sent",
                 "invite sent",
                 "invitation sent",
                 "invitation was sent",
                 "sent an invite",
                 "sent an invitation",
-                "pending",
-                email.lower(),
             )
             ok = any(marker in body_text for marker in success_markers)
 
@@ -362,7 +383,7 @@ async def process_invite(bot, invite_id: int):
             await bot.send_message(
                 chat_id=user_id,
                 text=(
-                    "✅ <b>Microsoft 365 Invite Sent!</b>\n"
+                    "�� <b>Microsoft 365 Invite Sent!</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━\n\n"
                     f"📧 <b>Email:</b> <code>{safe_email}</code>\n\n"
                     "1️⃣ Open that inbox (check <b>Spam</b> too)\n"
