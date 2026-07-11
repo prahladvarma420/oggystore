@@ -2,35 +2,49 @@ import math
 
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
-from database.db import get_product_price_tiers, cur, is_admin
+from database.db import get_product_price_tiers, cur, is_admin, get_setting
+from utils.premium_emoji import button_premium
 from config import ADMIN_ID
 
 
+MAIN_MENU_BUTTONS = [
+    ("btn_shop", "🛍 Shop", "shop"),
+    ("btn_deposit", "💰 Deposit", "deposit"),
+    ("btn_profile", "👤 Profile", "profile"),
+    ("btn_support", "🆘 Support", "support_ticket"),
+    ("btn_orders", "📦 My Orders", "orders"),
+    ("btn_wallet", "💼 My Wallet", "wallet"),
+    ("btn_search", "🔍 Search", "search"),
+    ("btn_clear_chat", "🧹 Clear Chat", "clear_chat"),
+    ("btn_admin_panel", "🛡 Admin Panel", "admin_panel"),
+]
+
+
+def custom_button(key, default, cb):
+    """Main-menu button with an admin-customizable label. The first premium
+    emoji in the label becomes the button icon."""
+    try:
+        label = (get_setting(key, "") or "").strip() or default
+    except Exception:
+        label = default
+    text, icon = button_premium(label)
+    return InlineKeyboardButton(text or default, callback_data=cb, icon_custom_emoji_id=icon)
+
+
 def main_menu(uid=None):
+    b = {key: custom_button(key, default, cb) for key, default, cb in MAIN_MENU_BUTTONS}
     rows = [
-        [
-            InlineKeyboardButton("🛍 Shop", callback_data="shop"),
-            InlineKeyboardButton("💰 Deposit", callback_data="deposit")
-        ],
-        [
-            InlineKeyboardButton("👤 Profile", callback_data="profile"),
-            InlineKeyboardButton("🆘 Support", callback_data="support_ticket")
-        ],
-        [
-            InlineKeyboardButton("📦 My Orders", callback_data="orders"),
-            InlineKeyboardButton("💼 My Wallet", callback_data="wallet")
-        ],
-        [
-            InlineKeyboardButton("🔍 Search", callback_data="search"),
-            InlineKeyboardButton("🧹 Clear Chat", callback_data="clear_chat")
-        ],
+        [b["btn_shop"], b["btn_deposit"]],
+        [b["btn_profile"], b["btn_support"]],
+        [b["btn_orders"], b["btn_wallet"]],
+        [b["btn_search"], b["btn_clear_chat"]],
     ]
 
     try:
         # Show the Admin Panel button for the owner AND any admin promoted
         # via the bot or the web admin panel (admins table).
         if uid is not None and is_admin(uid):
-            rows.insert(0, [InlineKeyboardButton("🛡 Admin Panel", callback_data="admin_panel")])
+            rows.insert(0, [b["btn_admin_panel"]])
     except Exception:
         pass
 
@@ -86,6 +100,7 @@ def admin_menu():
         [InlineKeyboardButton("✏️ Message Templates", callback_data="admin_message_templates")],
         [InlineKeyboardButton("🎟 Coupons", callback_data="admin_coupons")],
         [InlineKeyboardButton("🤖 Auto Marketing", callback_data="admin_auto_marketing")],
+        [InlineKeyboardButton("🎨 Customize Bot", callback_data="admin_customize")],
         [InlineKeyboardButton("◀️ Back", callback_data="home")],
     ])
 

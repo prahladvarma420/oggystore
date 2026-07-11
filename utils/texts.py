@@ -2,6 +2,17 @@ from config import STORE_NAME, OWNER_USERNAME, GROUP_LINK, CHANNEL_LINK
 
 
 def welcome_text(name):
+    try:
+        from database.db import get_setting
+        custom = (get_setting("welcome_message", "") or "").strip()
+    except Exception:
+        custom = ""
+    if custom:
+        return (custom.replace("{name}", str(name))
+                      .replace("{store}", STORE_NAME)
+                      .replace("{owner}", OWNER_USERNAME)
+                      .replace("{group}", GROUP_LINK)
+                      .replace("{channel}", CHANNEL_LINK))
     return f"""🙏 <b>Jai Shree Ram {name}</b>
 
 Welcome to <b>{STORE_NAME}</b>

@@ -212,6 +212,14 @@ def colorful_stock_badge(stock: int):
     return f"🟢 Stock: {stock}"
 
 
+def name_header(name, icon="📦"):
+    """Product name headline. Skips the normal-emoji prefix when the name
+    already contains a premium emoji so the emoji is not shown twice."""
+    if "<tg-emoji" in str(name):
+        return f"<b>{name}</b>"
+    return f"{icon} <b>{name}</b>"
+
+
 def colorful_product_icon(name: str):
     name = (name or "").lower()
     if "youtube" in name:
@@ -337,7 +345,7 @@ async def show_quantity_menu(q, uid: int, product_id: int):
 
     await edit_or_send(
         q,
-        f"""📦 <b>{name}</b>
+        f"""{name_header(name)}
 
 🧾 <b>Choose Offer</b>
 
@@ -396,7 +404,7 @@ async def show_order_preview(q, uid: int, product_id: int, quantity: int):
     unit_price = total_price / quantity if quantity else float(price)
     need = max(0, total_price - balance)
 
-    text = f"""📦 <b>{name}</b>
+    text = f"""{name_header(name)}
 
 🛒 <b>Checkout Preview</b>
 
@@ -527,7 +535,7 @@ async def show_product(q, pid: int):
     if warranty and warranty != "No warranty":
         detail_quote += f"\n🛡 {warranty}"
 
-    text = f"""{colorful_product_icon(name)} <b>{name}</b>
+    text = f"""{name_header(name, colorful_product_icon(name))}
 
 Price: <b>{format_price(display_price)} / code</b>{sale_text}
 
@@ -624,7 +632,7 @@ async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1):
         f"""💳 <b>Checkout</b>
 ━━━━━━━━━━━━━━━━━━━━
 
-📦 <b>{name}</b>
+{name_header(name)}
 🔢 <b>Total Codes:</b> <code>{quantity}</code>
 💰 <b>Total:</b> <code>${total_price:.2f}</code>
 

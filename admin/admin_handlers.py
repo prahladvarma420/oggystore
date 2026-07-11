@@ -13,6 +13,7 @@ from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_or
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
 from utils.premium_emoji import premium_html, strip_premium, first_premium_id, sanitize_premium_name, button_premium
+from keyboards.menus import MAIN_MENU_BUTTONS
 from utils.states import user_state
 from utils.timezone import now, now_text, today_prefix, month_prefix
 
@@ -1011,6 +1012,66 @@ async def handle_admin_callback(q, uid, data, context):
 
     if data in ("admin_dashboard", "admin_menu", "admin_panel"):
         await show_admin_panel(q, uid)
+        return True
+
+    if data == "admin_customize":
+        kb = [[InlineKeyboardButton("✏️ Edit Welcome Message", callback_data="admin_edit_welcome")]]
+        for key, default, _cb in MAIN_MENU_BUTTONS:
+            current = (get_setting(key, "") or "").strip() or default
+            kb.append([InlineKeyboardButton(f"🔘 {strip_premium(current)[:30]}", callback_data=f"admin_btn_edit:{key}")])
+        kb.append([InlineKeyboardButton("♻️ Reset All Buttons", callback_data="admin_btn_reset")])
+        kb.append([InlineKeyboardButton("⬅️ Admin Home", callback_data="admin_panel")])
+        await edit_or_send(
+            q,
+            "🎨 <b>Customize Bot</b>\n\n"
+            "Edit the welcome message, or tap a main-menu button below to rename it.\n\n"
+            "💎 Premium emoji supported — the first premium emoji in a button label becomes the button icon.",
+            InlineKeyboardMarkup(kb)
+        )
+        return True
+
+    if data == "admin_edit_welcome":
+        user_state[uid] = "admin_set_welcome"
+        await edit_or_send(
+            q,
+            "✏️ <b>Edit Welcome Message</b>\n\n"
+            "Send the new welcome message now. Premium emoji are supported.\n\n"
+            "<b>Placeholders:</b>\n"
+            "<code>{name}</code> — user's first name\n"
+            "<code>{store}</code> — store name\n"
+            "<code>{owner}</code>, <code>{group}</code>, <code>{channel}</code>\n\n"
+            "Send <code>reset</code> to restore the default message.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Cancel", callback_data="admin_customize")]])
+        )
+        return True
+
+    if data.startswith("admin_btn_edit:"):
+        key = data.split(":", 1)[1]
+        defaults = {k: d for k, d, _ in MAIN_MENU_BUTTONS}
+        if key in defaults:
+            user_state[uid] = f"admin_set_btn:{key}"
+            current = (get_setting(key, "") or "").strip() or defaults[key]
+            await edit_or_send(
+                q,
+                f"🔘 <b>Edit Button</b>\n\n"
+                f"Current: <b>{strip_premium(current)}</b>\n"
+                f"Default: {defaults[key]}\n\n"
+                "Send the new button label now (emoji + text). "
+                "A premium emoji becomes the button icon.\n\n"
+                "Send <code>reset</code> to restore the default.",
+                InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Cancel", callback_data="admin_customize")]])
+            )
+        return True
+
+    if data == "admin_btn_reset":
+        for key, _default, _cb in MAIN_MENU_BUTTONS:
+            try:
+                cur.execute("DELETE FROM settings WHERE key=?", (key,))
+            except Exception:
+                pass
+        conn.commit()
+        log_admin_action(uid, "RESET_BUTTONS", "Main menu buttons reset")
+        await edit_or_send(q, "♻️ <b>All main menu buttons reset to defaults.</b>", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_customize")]]))
         return True
 
     if data == "admin_bundles":
@@ -3368,6 +3429,43 @@ You must include the confirmation word <code>DELETE</code>.""",
             )
             return True
 
+        return True
+
+    if state == "admin_set_welcome" and is_admin(uid):
+        value = premium_html(update, text).strip()
+        user_state.pop(uid, None)
+        if value.lower() == "reset":
+            cur.execute("DELETE FROM settings WHERE key=?", ("welcome_message",))
+            conn.commit()
+            await update.message.reply_text("♻️ <b>Welcome message reset to default.</b>", parse_mode="HTML")
+        else:
+            set_setting("welcome_message", value)
+            log_admin_action(uid, "EDIT_WELCOME", "Welcome message updated")
+            await update.message.reply_text("✅ <b>Welcome message updated.</b>\n\nSend /start to preview it.", parse_mode="HTML")
+        return True
+
+    if state and state.startswith("admin_set_btn:") and is_admin(uid):
+        key = state.split(":", 1)[1]
+        user_state.pop(uid, None)
+        raw = premium_html(update, text).strip()
+        if raw.lower() == "reset":
+            cur.execute("DELETE FROM settings WHERE key=?", (key,))
+            conn.commit()
+            await update.message.reply_text("♻️ <b>Button reset to default.</b>", parse_mode="HTML")
+        else:
+            value = sanitize_premium_name(raw)
+            set_setting(key, value)
+            log_admin_action(uid, "EDIT_BUTTON", f"{key} -> {strip_premium(value)[:40]}")
+            await update.message.reply_text("✅ <b>Button updated.</b>\n\nOpen the main menu to see it.", parse_mode="HTML")
+        return True
+
+    if state and state.startswith("admin_edit_template:") and is_admin(uid):
+        key = state.split(":", 1)[1]
+        user_state.pop(uid, None)
+        body = premium_html(update, text).strip()
+        set_message_template(key, body)
+        log_admin_action(uid, "EDIT_TEMPLATE", key)
+        await update.message.reply_text("✅ <b>Template saved.</b>", parse_mode="HTML")
         return True
 
     if state and state.startswith("admin_easy_edit:") and is_admin(uid):
