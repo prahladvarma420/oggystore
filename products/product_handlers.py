@@ -6,6 +6,7 @@ import random
 import time
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
+from utils.premium_emoji import strip_premium, first_premium_id
 from database.db import render_message_template,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items
 from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
 from utils.crypto import encrypt_text
@@ -330,7 +331,7 @@ async def show_quantity_menu(q, uid: int, product_id: int):
         return
 
     name, price, old_stock = product
-    name = html.escape(str(name), quote=False)
+    name = str(name) if "<tg-emoji" in str(name) else html.escape(str(name), quote=False)
     stock = get_available_stock_count(product_id) or old_stock
     balance = get_balance(uid)
 
@@ -356,7 +357,7 @@ async def show_order_preview(q, uid: int, product_id: int, quantity: int):
         return
 
     name, price, old_stock = product
-    name = html.escape(str(name), quote=False)
+    name = str(name) if "<tg-emoji" in str(name) else html.escape(str(name), quote=False)
     stock = get_available_stock_count(product_id) or old_stock
     quantity = int(quantity)
 
@@ -442,9 +443,10 @@ async def show_shop(q):
         visible_count += 1
         kb.append([
             InlineKeyboardButton(
-                f"{'⭐ ' if featured else ''}{name} — {format_price(price)} (Stock: {stock})",
+                f"{'⭐ ' if featured else ''}{strip_premium(name)} — {format_price(price)} (Stock: {stock})",
                 callback_data=f"product_{pid}",
-                style="danger" if int(stock or 0) <= 0 else "primary"
+                style="danger" if int(stock or 0) <= 0 else "primary",
+                icon_custom_emoji_id=first_premium_id(name)
             )
         ])
 
@@ -491,7 +493,7 @@ async def show_product(q, pid: int):
         return
 
     _, name, price, old_stock, description, validity, warranty, rules, redeem_link, max_per_order, image_file_id, featured, flash_price, flash_ends_at = p
-    name = html.escape(str(name), quote=False)
+    name = str(name) if "<tg-emoji" in str(name) else html.escape(str(name), quote=False)
 
     description = clean(description, "No description added.")
     validity = clean(validity)
@@ -577,7 +579,7 @@ async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1):
         return
 
     name, price, old_stock = product
-    name = html.escape(str(name), quote=False)
+    name = str(name) if "<tg-emoji" in str(name) else html.escape(str(name), quote=False)
     stock = get_available_stock_count(pid) or old_stock
     quantity = int(quantity)
 

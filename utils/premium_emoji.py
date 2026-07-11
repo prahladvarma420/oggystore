@@ -41,3 +41,28 @@ def premium_html(update, fallback_text):
         return (html_text or fallback_text).strip()
     except Exception:
         return fallback_text
+
+
+import re
+
+_TG_EMOJI_RE = re.compile(r'<tg-emoji emoji-id="(\d+)">(.*?)</tg-emoji>', re.S)
+
+
+def strip_premium(text):
+    """Plain text with <tg-emoji> tags replaced by their fallback emoji.
+
+    Use for inline keyboard button texts: Telegram never renders HTML or
+    premium emoji inside button text.
+    """
+    return _TG_EMOJI_RE.sub(r"\2", str(text or ""))
+
+
+def first_premium_id(text):
+    """Custom-emoji id of the first premium emoji in the text, or None.
+
+    Use with InlineKeyboardButton(icon_custom_emoji_id=...) to show one
+    premium emoji as the button icon (works when the bot owner has
+    Telegram Premium or the bot has a Fragment username).
+    """
+    m = _TG_EMOJI_RE.search(str(text or ""))
+    return m.group(1) if m else None

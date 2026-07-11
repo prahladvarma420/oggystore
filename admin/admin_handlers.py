@@ -12,7 +12,7 @@ from utils.crypto import decrypt_text
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
-from utils.premium_emoji import premium_html
+from utils.premium_emoji import premium_html, strip_premium, first_premium_id
 from utils.states import user_state
 from utils.timezone import now, now_text, today_prefix, month_prefix
 
@@ -377,7 +377,7 @@ async def broadcast_flash_sale(context, product_id: int, name: str, old_price: f
         )
 
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"🛒 Buy {name[:28]}", callback_data=f"product_{product_id}")]
+            [InlineKeyboardButton(f"🛒 Buy {strip_premium(name)[:28]}", callback_data=f"product_{product_id}", icon_custom_emoji_id=first_premium_id(name))]
         ])
 
         sent = 0
@@ -701,7 +701,7 @@ def products_select_keyboard(prefix: str, back_callback: str = "admin_section_pr
     kb = []
     for pid, name, price, stock, active in rows:
         status = "🟢" if active else "🔴"
-        kb.append([InlineKeyboardButton(f"{status} #{pid} • {name[:35]}", callback_data=f"{prefix}_{pid}")])
+        kb.append([InlineKeyboardButton(f"{status} #{pid} • {strip_premium(name)[:35]}", callback_data=f"{prefix}_{pid}")])
     kb.append([InlineKeyboardButton("⬅️ Back", callback_data=back_callback)])
     return InlineKeyboardMarkup(kb)
 
@@ -3375,7 +3375,7 @@ You must include the confirmation word <code>DELETE</code>.""",
             _, product_id_text, field = state.split(":", 2)
             product_id = int(product_id_text)
             value = text.strip()
-            if field in ("description", "validity", "warranty", "rules"):
+            if field in ("name", "description", "validity", "warranty", "rules"):
                 # Preserve Telegram premium emojis as <tg-emoji> HTML tags.
                 value = premium_html(update, text).strip()
             cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
