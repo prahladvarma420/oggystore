@@ -1943,7 +1943,7 @@ def api_deposits():
 def api_restock():
     rows = q("SELECT r.product_id, COUNT(*) requests, p.name "
              "FROM restock_notifications r LEFT JOIN products p ON r.product_id=p.id "
-             "WHERE COALESCE(r.notified,0)=0 GROUP BY r.product_id "
+             "WHERE COALESCE(r.notified,0)=0 GROUP BY r.product_id, p.name "
              "ORDER BY requests DESC")
     out = []
     for r in rows:

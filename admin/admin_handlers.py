@@ -267,7 +267,7 @@ def product_analytics_text(product_id: int):
 🛒 Orders: <code>{orders}</code>
 💵 Revenue: <code>${float(revenue or 0):.2f}</code>
 📤 Delivered/Sold Stock: <code>{sold_stock}</code>
-📊 Available Stock: <code>{available or live_stock or stock}</code>"""
+�� Available Stock: <code>{available or live_stock or stock}</code>"""
 
 
 def top_sellers_text():
@@ -1404,7 +1404,7 @@ Example:
             SELECT u.user_id, u.first_name, u.username, COUNT(o.id) c, COALESCE(SUM(o.price),0) s
             FROM orders o
             LEFT JOIN users u ON o.user_id=u.user_id
-            GROUP BY o.user_id
+            GROUP BY o.user_id, u.user_id, u.first_name, u.username
             ORDER BY s DESC
             LIMIT 5
         """)
