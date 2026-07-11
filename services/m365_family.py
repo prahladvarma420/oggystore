@@ -33,6 +33,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
@@ -139,6 +140,9 @@ def send_family_invite_sync(email: str):
     screenshot = None
     global _LAST_PHASE
     _LAST_PHASE = "launching browser"
+    # Internal deadline: return a real result + screenshot BEFORE the async
+    # wrapper's hard 150s timeout kills this thread (which would give no info).
+    _deadline = time.monotonic() + 115
 
     try:
         with sync_playwright() as p:
@@ -202,32 +206,69 @@ def send_family_invite_sync(email: str):
             # Wait for the sharing UI (it's a slow single-page app): poll for up
             # to ~18s until a Share/invite control or a login redirect appears.
             _LAST_PHASE = "waiting for the subscription page to render"
-            for _ in range(12):
-                if "login.live.com" in page.url or "login.microsoftonline" in page.url:
+            # Let the heavy single-page app settle before probing.
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:
+                pass
+            # is_visible() returns immediately (no waiting), so this poll is
+            # fast and bounded: ~10 x 1.5s = 15s max, capped by the deadline.
+            sharing_ui_found = False
+            for _ in range(10):
+                if time.monotonic() > _deadline:
                     break
-                found_ui = False
+                try:
+                    cur_url = page.url
+                except Exception:
+                    cur_url = ""
+                if "login.live.com" in cur_url or "login.microsoftonline" in cur_url:
+                    break
                 for probe in ("Share", "Start sharing", "Invite", "Manage sharing"):
                     try:
-                        if page.get_by_role("button", name=probe, exact=False).first.is_visible(timeout=700):
-                            found_ui = True
+                        if page.get_by_role("button", name=probe, exact=False).first.is_visible():
+                            sharing_ui_found = True
                             break
-                        if page.get_by_role("link", name=probe, exact=False).first.is_visible(timeout=300):
-                            found_ui = True
+                        if page.get_by_role("link", name=probe, exact=False).first.is_visible():
+                            sharing_ui_found = True
                             break
                     except Exception:
                         continue
-                if found_ui:
+                if sharing_ui_found:
                     break
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(1500)
+
+            # From here on we ALWAYS keep a screenshot so any failure is
+            # diagnosable instead of returning a blind timeout.
+            try:
+                screenshot = page.screenshot(full_page=True)
+            except Exception:
+                pass
+            try:
+                cur_url = page.url
+            except Exception:
+                cur_url = ""
 
             # Session expired -> Microsoft redirects to the login page.
-            if "login.live.com" in page.url or "login.microsoftonline" in page.url:
+            if "login.live.com" in cur_url or "login.microsoftonline" in cur_url:
+                browser.close()
+                return False, "Microsoft session EXPIRED — run tools/m365_login.py again and upload a fresh session.", screenshot
+
+            # The Share/Manage control never appeared: return the screenshot +
+            # URL + on-page text so we can see EXACTLY what the page shows
+            # (consent wall, error, empty page, different button label, etc.).
+            if not sharing_ui_found:
+                snippet = ""
                 try:
-                    screenshot = page.screenshot()
+                    snippet = page.inner_text("body", timeout=4000)[:300].replace("\n", " ").strip()
                 except Exception:
                     pass
                 browser.close()
-                return False, "Microsoft session EXPIRED — run tools/m365_login.py again and upload a fresh session.", screenshot
+                return (
+                    False,
+                    "Loaded the account page but the Share/Manage button never appeared. "
+                    f"URL: {cur_url or 'unknown'} | Page text: {snippet or '(empty)'}",
+                    screenshot,
+                )
 
             # 1) Open the invite dialog (several possible button labels).
             _LAST_PHASE = "clicking the blue Share button"
