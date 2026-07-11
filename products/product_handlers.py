@@ -7,11 +7,12 @@ import time
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 from utils.premium_emoji import strip_premium, first_premium_id, button_premium
-from database.db import render_message_template,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items
+from database.db import render_message_template,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items, is_m365_product
 from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
 from utils.crypto import encrypt_text
 from utils.ui import edit_or_send
 from utils.error_logger import log_error
+from utils.states import user_state
 
 try:
     from utils.timezone import now
@@ -785,6 +786,97 @@ Deposit exactly what's missing with one tap below.""",
                     [InlineKeyboardButton("⬅️ Back To Products", callback_data="shop")],
                 ]),
             )
+            return
+
+        # ---------- Microsoft 365 Family auto-invite product ----------
+        # No stock codes are delivered. After payment the bot asks the
+        # customer's email and sends the M365 Family invite automatically.
+        if is_m365_product(pid):
+            if quantity != 1:
+                await edit_or_send(
+                    q,
+                    "❌ <b>This plan can only be purchased 1 at a time.</b>\n\nPlease buy quantity 1.",
+                    product_buy_menu(pid, price, available_stock, max_per_order)
+                )
+                return
+
+            cur.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND balance>=?", (total_price, uid, total_price))
+
+            if cur.rowcount == 0:
+                conn.rollback()
+                await edit_or_send(
+                    q,
+                    "❌ <b>Purchase Failed</b>\n\nYour balance changed while processing this order.\n\nPlease refresh and try again.",
+                    main_menu(uid)
+                )
+                return
+
+            cur.execute("UPDATE products SET stock=stock-1 WHERE id=? AND stock > 0", (pid,))
+
+            cur.execute(
+                "INSERT INTO orders(user_id, product_name, price, delivery) VALUES(?,?,?,?)",
+                (uid, f"{raw_name} x1", total_price, encrypt_text("Microsoft 365 Family invite — waiting for customer email"))
+            )
+            conn.commit()
+            order_id = cur.lastrowid
+
+            if discount > 0 and coupon_code:
+                mark_coupon_used(coupon_code)
+                clear_user_coupon(uid)
+
+            add_loyalty_points(uid, total_price)
+
+            referral_earning, referrer_id = add_referral_earning(uid, total_price)
+            if referral_earning and referrer_id:
+                try:
+                    await q.message.get_bot().send_message(
+                        chat_id=referrer_id,
+                        text=(
+                            "🎁 <b>Referral Earning Added</b>\n\n"
+                            f"👤 Referred user bought: <b>{name}</b>\n"
+                            f"💰 Earning: <b>{referral_earning:.6f} USDT</b>\n\n"
+                            "Use Profile → Referrals to view earnings."
+                        ),
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
+            new_balance = get_balance(uid)
+
+            cur.execute("SELECT stock FROM products WHERE id=?", (pid,))
+            stock_row = cur.fetchone()
+            remaining_slots = stock_row[0] if stock_row else 0
+
+            await notify_admin_order(
+                q.message.get_bot(),
+                uid,
+                pid,
+                name,
+                total_price,
+                1,
+                remaining_slots,
+            )
+
+            user_state[uid] = f"m365_email:{order_id}"
+
+            invite_prompt = (
+                "✅ <b>Payment Successful!</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🧾 <b>Order ID:</b> <b>#{order_id}</b>\n"
+                f"📦 <b>{name}</b>\n\n"
+                f"💰 <b>Paid:</b> <b>${total_price:.2f}</b>\n"
+                f"💼 <b>Remaining Balance:</b> <b>${new_balance:.2f}</b>\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "📧 <b>Now send the email address</b> where you want your Microsoft 365 invite.\n\n"
+                "Example: <code>yourname@gmail.com</code>\n\n"
+                "📨 The invite will be sent to that inbox automatically — open it and tap <b>Accept</b>."
+            )
+
+            try:
+                await q.edit_message_text(invite_prompt, parse_mode="HTML", disable_web_page_preview=True)
+            except Exception:
+                await q.message.reply_text(invite_prompt, parse_mode="HTML", disable_web_page_preview=True)
             return
 
         deliveries = reserve_stock_items(pid, uid, quantity)

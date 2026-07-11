@@ -720,6 +720,49 @@ async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
 
     state = user_state.get(uid)
 
+    if state and state.startswith("m365_email:"):
+        try:
+            m365_order_id = int(state.split(":")[1])
+        except Exception:
+            m365_order_id = 0
+
+        email = text.strip()
+
+        if not re.fullmatch(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", email):
+            await update.message.reply_text(
+                "❌ <b>That doesn't look like a valid email.</b>\n\nPlease send only your email address.\n\nExample: <code>yourname@gmail.com</code>",
+                parse_mode="HTML"
+            )
+            return
+
+        user_state.pop(uid, None)
+
+        from database.db import create_m365_invite
+        from utils.crypto import encrypt_text
+
+        invite_id = create_m365_invite(uid, m365_order_id, email)
+
+        try:
+            cur.execute(
+                "UPDATE orders SET delivery=? WHERE id=?",
+                (encrypt_text(f"Microsoft 365 Family invite → {email}"), m365_order_id)
+            )
+            conn.commit()
+        except Exception:
+            pass
+
+        await update.message.reply_text(
+            "📨 <b>Sending your Microsoft 365 invite...</b>\n\n"
+            f"📧 <b>Email:</b> <code>{html.escape(email, quote=False)}</code>\n\n"
+            "⏳ This usually takes under a minute. You will get a confirmation message here.",
+            parse_mode="HTML"
+        )
+
+        import asyncio
+        from services.m365_family import process_invite
+        asyncio.create_task(process_invite(context.bot, invite_id))
+        return
+
     if state and state.startswith("checkout_coupon_code:"):
         try:
             state_parts = state.split(":")
@@ -1301,6 +1344,36 @@ async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     uid = user.id
     state = user_state.get(uid)
+
+    if state == "admin_upload_m365_session" and is_admin(uid):
+        try:
+            doc = update.message.document
+            if not doc.file_name.lower().endswith(".json"):
+                await update.message.reply_text("❌ Please send the <code>m365_session.json</code> file.", parse_mode="HTML")
+                return
+
+            file = await context.bot.get_file(doc.file_id)
+            data = bytes(await file.download_as_bytearray())
+
+            from services.m365_family import save_session
+            save_session(data.decode("utf-8"))
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                "✅ <b>Microsoft session saved (encrypted).</b>\n\n"
+                "🧪 Now use Admin Panel → 📩 M365 Auto-Invite → Test Invite to verify it works.\n\n"
+                "💡 For safety, delete <code>m365_session.json</code> from your PC after this.",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+            return
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Session save failed.</b>\n\n<code>{exc}</code>\n\nMake sure you sent the unmodified <code>m365_session.json</code> file.",
+                parse_mode="HTML"
+            )
+            return
 
     if state == "admin_restore_backup" and is_admin(uid):
         try:

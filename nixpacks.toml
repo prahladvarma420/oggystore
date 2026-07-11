@@ -1,0 +1,7 @@
+# Railway (Nixpacks) build config.
+# Installs the headless Chromium browser that Playwright needs for the
+# Microsoft 365 Family auto-invite automation (services/m365_family.py).
+
+[phases.playwright]
+dependsOn = ["install"]
+cmds = ["python -m playwright install --with-deps chromium"]
