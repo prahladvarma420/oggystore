@@ -73,8 +73,13 @@ def load_session():
 
 # ---------------------------------------------------------------- browser
 
-def _install_chromium():
-    """Last-resort runtime install if the build step did not install Chromium."""
+def _install_chromium(with_deps: bool = False):
+    """Last-resort runtime install if the build step did not install Chromium.
+
+    with_deps=True also installs the system libraries Chromium needs
+    (libnss3, libatk, libgbm, ...) — required when the browser binary exists
+    but crashes instantly on launch because the runtime image lacks them.
+    """
     try:
         subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium"],
@@ -82,6 +87,13 @@ def _install_chromium():
             timeout=900,
             capture_output=True,
         )
+        if with_deps:
+            subprocess.run(
+                [sys.executable, "-m", "playwright", "install-deps", "chromium"],
+                check=False,
+                timeout=900,
+                capture_output=True,
+            )
     except Exception as exc:
         log_error("Playwright chromium install failed", exc)
 
@@ -117,11 +129,19 @@ def send_family_invite_sync(email: str):
                     args=["--no-sandbox", "--disable-dev-shm-usage"],
                 )
             except Exception as launch_exc:
-                if "Executable doesn't exist" in str(launch_exc):
-                    _install_chromium()
+                err_text = str(launch_exc)
+                if (
+                    "Executable doesn't exist" in err_text
+                    or "has been closed" in err_text
+                    or "Failed to launch" in err_text
+                    or "error while loading shared libraries" in err_text
+                ):
+                    # Browser missing OR it crashed on startup (usually missing
+                    # system libraries). Install browser + system deps, retry once.
+                    _install_chromium(with_deps=True)
                     browser = p.chromium.launch(
                         headless=True,
-                        args=["--no-sandbox", "--disable-dev-shm-usage"],
+                        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
                     )
                 else:
                     raise
