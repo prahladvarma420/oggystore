@@ -7,6 +7,8 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const stripTg = (s) => String(s == null ? "" : s).replace(/<tg-emoji emoji-id="\d+">([\s\S]*?)<\/tg-emoji>/g, "$1");
+const escName = (s) => esc(stripTg(s));
 const money = (n) => "$" + Number(n || 0).toFixed(2);
 const fmtDate = (d) => d ? String(d).replace("T", " ").slice(0, 16) : "";
 
@@ -116,9 +118,9 @@ async function viewDashboard() {
   const card = (cls, ic, label, value) =>
     `<div class="stat-card glass ${cls}"><div class="ic">${ic}</div><div class="label">${label}</div><div class="value">${value}</div></div>`;
   const top = d.top.length ? d.top.map(r =>
-    `<div class="kv"><span>${esc(r.product_name || "-")}</span><b>${r.sold} sold \u00b7 ${money(r.revenue)}</b></div>`).join("") : empty("No sales yet");
+    `<div class="kv"><span>${escName(r.product_name || "-")}</span><b>${r.sold} sold \u00b7 ${money(r.revenue)}</b></div>`).join("") : empty("No sales yet");
   const recent = d.recent.length ? `<div class="tbl-wrap"><table><thead><tr><th>#</th><th>Product</th><th>User</th><th>Price</th><th>When</th></tr></thead><tbody>${
-    d.recent.map(o => `<tr><td>#${o.id}</td><td>${esc(o.product_name)}</td><td>${esc(o.first_name || o.user_id)}</td><td>${money(o.price)}</td><td class="muted">${fmtDate(o.created)}</td></tr>`).join("")
+    d.recent.map(o => `<tr><td>#${o.id}</td><td>${escName(o.product_name)}</td><td>${esc(o.first_name || o.user_id)}</td><td>${money(o.price)}</td><td class="muted">${fmtDate(o.created)}</td></tr>`).join("")
   }</tbody></table></div>` : empty("No recent orders");
 
   $("#content").innerHTML = `
@@ -201,7 +203,7 @@ async function loadDashCharts() {
     options: { plugins: { legend: { display: false } }, scales: { x: AX, y: AX }, maintainAspectRatio: false } });
   const lp = $("#lowStockPanel");
   if (lp) lp.innerHTML = `<h3>\u26a0\ufe0f Low Stock (\u2264 ${a.low_threshold})</h3>` + (a.low_stock.length
-    ? `<div class="tbl-wrap"><table><thead><tr><th>Product</th><th>Available</th></tr></thead><tbody>${a.low_stock.map(p => `<tr><td>${esc(p.name)}</td><td><span class="badge ${p.available === 0 ? "off" : "warn"}">${p.available}</span></td></tr>`).join("")}</tbody></table></div>`
+    ? `<div class="tbl-wrap"><table><thead><tr><th>Product</th><th>Available</th></tr></thead><tbody>${a.low_stock.map(p => `<tr><td>${escName(p.name)}</td><td><span class="badge ${p.available === 0 ? "off" : "warn"}">${p.available}</span></td></tr>`).join("")}</tbody></table></div>`
     : empty("All products well stocked \ud83c\udf89"));
 }
 
@@ -214,7 +216,7 @@ async function viewProducts() {
     const flash = p.flash_price ? `<span class="badge warn">\u26a1${money(p.flash_price)}</span>` : "";
     return `<tr>
       <td>#${p.id}</td>
-      <td><b>${esc(p.name)}</b> ${p.featured ? '<span class="badge purple">\u2b50</span>' : ""} ${flash}</td>
+      <td><b>${escName(p.name)}</b> ${p.featured ? '<span class="badge purple">\u2b50</span>' : ""} ${flash}</td>
       <td>${p.flash_price ? `<s class="muted">${money(p.price)}</s> <b style="color:#ff5db1">${money(p.flash_price)}</b>` : money(p.price)}</td>
       <td>${p.available_stock} <span class="muted">avail</span> \u00b7 ${p.sold_count} sold</td>
       <td>${p.active ? '<span class="badge on">Active</span>' : '<span class="badge off">Hidden</span>'}</td>
@@ -225,7 +227,7 @@ async function viewProducts() {
         <button class="btn btn-sm btn-orange" onclick="flashSale(${p.id})"><span>Flash</span></button>
         <button class="btn btn-sm btn-ghost" onclick="toggleProduct(${p.id},'active')">${p.active ? "Hide" : "Show"}</button>
         <button class="btn btn-sm btn-ghost" onclick="toggleProduct(${p.id},'featured')">${p.featured ? "Unfeature" : "Feature"}</button>
-        <button class="btn btn-sm btn-red" onclick="delProduct(${p.id},'${esc(p.name)}')"><span>Del</span></button>
+        <button class="btn btn-sm btn-red" onclick="delProduct(${p.id},'${escName(p.name)}')"><span>Del</span></button>
       </div></td></tr>`;
   }).join("");
   $("#content").innerHTML = `
@@ -276,7 +278,7 @@ function addProduct() {
 }
 function editProduct(id) {
   const p = cache.products.find(x => x.id === id);
-  openModal("\u270f\ufe0f Edit " + p.name, productForm(p));
+  openModal("\u270f\ufe0f Edit " + stripTg(p.name), productForm(p));
   $("#saveProductBtn").onclick = async () => {
     const r = await post(`/api/products/${id}/update`, collectProduct());
     if (r.ok) { toast("Saved"); closeModal(); render(); } else toast(r.error || "Failed", "err");
@@ -293,7 +295,7 @@ async function delProduct(id, name) {
 }
 function flashSale(id) {
   const p = cache.products.find(x => x.id === id);
-  openModal("\u26a1 Flash Sale \u2014 " + p.name, `
+  openModal("\u26a1 Flash Sale \u2014 " + stripTg(p.name), `
     <div class="form-grid">
       <label><span>Current price (USDT)</span><input value="${p.price ?? ""}" disabled></label>
       <label><span>Flash price (USDT)</span><input id="fl_price" type="number" step="0.01" value="${p.flash_price ?? ""}"></label>
@@ -327,7 +329,7 @@ async function manageStock(id) {
     `<tr><td>#${i.id}</td><td class="mono" style="word-break:break-all;white-space:normal;max-width:340px">${esc(i.code)}</td><td>${i.sold ? '<span class="badge off">Sold</span>' : '<span class="badge on">Available</span>'}</td>
      <td class="muted">${i.sold_to || ""}</td>
      <td>${i.sold ? "" : `<button class="btn btn-sm btn-red" onclick="delStock(${i.id},${id},this)"><span>Del</span></button>`}</td></tr>`).join("");
-  openModal("\ud83e\uddfe Stock \u2014 " + p.name, `
+  openModal("\ud83e\uddfe Stock \u2014 " + stripTg(p.name), `
     <label class="field" style="margin-bottom:14px"><span>Add stock codes (one per line)</span>
       <textarea id="st_codes" placeholder="NEW-CODE-1\nNEW-CODE-2"></textarea></label>
     <div class="toolbar"><div class="grow"></div><button class="btn btn-glow" id="stAdd"><span>\u2795 Add Stock</span></button></div>
@@ -351,7 +353,7 @@ async function manageTiers(id) {
   const p = cache.products.find(x => x.id === id);
   const tiers = (p.tiers || []).map(t =>
     `<tr><td>${t.quantity}</td><td>${money(t.price)}</td><td><button class="btn btn-sm btn-red" onclick="delTier(${id},${t.quantity})"><span>Del</span></button></td></tr>`).join("");
-  openModal("\ud83c\udff7\ufe0f Price Offers \u2014 " + p.name, `
+  openModal("\ud83c\udff7\ufe0f Price Offers \u2014 " + stripTg(p.name), `
     <p class="muted" style="margin-bottom:12px">Bulk price tiers shown as buy buttons in the bot (e.g. 5 for $20).</p>
     <div class="form-grid">
       <label><span>Quantity</span><input id="ti_qty" type="number"></label>
@@ -394,7 +396,7 @@ async function viewOrders() {
   const search = $("#searchInput").value.trim();
   const d = await api("/api/orders?search=" + encodeURIComponent(search));
   const rows = (d.orders || []).map(o => `<tr>
-    <td>#${o.id}</td><td>${esc(o.product_name)}</td>
+    <td>#${o.id}</td><td>${escName(o.product_name)}</td>
     <td>${esc(o.first_name || "")} <span class="muted">${o.user_id}</span></td>
     <td>${money(o.price)}</td><td class="muted">${fmtDate(o.created)}</td>
     <td><div class="row-actions">
@@ -450,7 +452,7 @@ async function blockUser(uid, block) {
 async function userDetail(uid) {
   const d = await api(`/api/users/${uid}`);
   const u = d.user || {};
-  const orders = (d.orders || []).map(o => `<div class="kv"><span>#${o.id} ${esc(o.product_name)}</span><b>${money(o.price)}</b></div>`).join("") || '<p class="muted">No orders</p>';
+  const orders = (d.orders || []).map(o => `<div class="kv"><span>#${o.id} ${escName(o.product_name)}</span><b>${money(o.price)}</b></div>`).join("") || '<p class="muted">No orders</p>';
   const deps = (d.deposits || []).map(o => `<div class="kv"><span>${fmtDate(o.created)} \u00b7 ${esc(o.status)}</span><b>${money(o.amount)}</b></div>`).join("") || '<p class="muted">No deposits</p>';
   openModal("\ud83d\udc64 " + (u.first_name || uid), `
     <div class="kv"><span>User ID</span><b class="mono">${u.user_id}</b></div>
@@ -735,7 +737,7 @@ function depositFilter(v) { depFilter = v; render(); }
 async function viewRestock() {
   const d = await api("/api/restock");
   if (!d.ok) return $("#content").innerHTML = empty("No data");
-  const rows = (d.restock || []).map(x => `<tr><td>${esc(x.name)}</td><td><span class="badge info">${x.requests} waiting</span></td><td><span class="badge ${x.available === 0 ? "off" : "on"}">${x.available} in stock</span></td></tr>`).join("");
+  const rows = (d.restock || []).map(x => `<tr><td>${escName(x.name)}</td><td><span class="badge info">${x.requests} waiting</span></td><td><span class="badge ${x.available === 0 ? "off" : "on"}">${x.available} in stock</span></td></tr>`).join("");
   $("#content").innerHTML = `<div class="panel glass"><h3>\ud83d\udce5 Customers waiting for restock</h3><p class="muted">People who asked to be notified when a sold-out product is back. Add stock and the bot alerts them.</p>${rows ? `<div class="tbl-wrap"><table><thead><tr><th>Product</th><th>Requests</th><th>Stock</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No pending restock requests \ud83c\udf89")}</div>`;
 }
 
@@ -744,7 +746,7 @@ async function viewProfit() {
   const d = await api("/api/profit");
   if (!d.ok) return $("#content").innerHTML = empty("No data");
   const t = d.totals;
-  const rows = (d.rows || []).map(r => `<tr><td>${esc(r.name)}</td><td>${r.units}</td><td>${money(r.cost)}</td><td>${money(r.revenue)}</td><td>${money(r.cost_total)}</td><td class="${r.profit >= 0 ? "pos" : "neg"}"><b>${money(r.profit)}</b></td><td><span class="badge ${r.margin >= 0 ? "on" : "off"}">${r.margin}%</span></td></tr>`).join("");
+  const rows = (d.rows || []).map(r => `<tr><td>${escName(r.name)}</td><td>${r.units}</td><td>${money(r.cost)}</td><td>${money(r.revenue)}</td><td>${money(r.cost_total)}</td><td class="${r.profit >= 0 ? "pos" : "neg"}"><b>${money(r.profit)}</b></td><td><span class="badge ${r.margin >= 0 ? "on" : "off"}">${r.margin}%</span></td></tr>`).join("");
   $("#content").innerHTML = `
     <div class="stat-grid">
       <div class="stat-card glass c2"><div class="ic">\ud83d\udcb5</div><div class="label">Revenue</div><div class="value">${money(t.revenue)}</div></div>

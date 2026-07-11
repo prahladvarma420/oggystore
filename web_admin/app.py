@@ -9,6 +9,7 @@ Run from the project root:  python web_admin/app.py
 """
 
 import os
+import re as _re
 import sys
 import csv
 import io
@@ -122,6 +123,26 @@ def log_action(action, details=""):
            (admin_id, "[WEB] " + action, detail))
     except Exception:
         pass
+
+
+TG_EMOJI_RE = _re.compile(r'<tg-emoji emoji-id="(\d+)">(.*?)</tg-emoji>', _re.S)
+
+
+def strip_tg_emoji(text):
+    """Replace <tg-emoji> tags with their plain fallback emoji."""
+    return TG_EMOJI_RE.sub(lambda m: m.group(2), str(text or ""))
+
+
+def button_name_icon(name):
+    """Button-safe product name. First premium emoji becomes the button icon,
+    remaining tags collapse to their fallback emoji (buttons cannot render HTML)."""
+    s = str(name or "")
+    m = TG_EMOJI_RE.search(s)
+    icon = m.group(1) if m else None
+    if m:
+        s = s[:m.start()] + s[m.end():]
+    s = TG_EMOJI_RE.sub(lambda mm: mm.group(2), s)
+    return " ".join(s.split()), icon
 
 
 def tg_send(chat_id, text, reply_markup=None):
@@ -1225,9 +1246,13 @@ def api_product_flash(pid):
             discount_percent=("-{}".format(discount) if discount else "SALE"),
             validity=ends_text,
         )
-        kb = {"inline_keyboard": [[{"text": "\U0001f6d2 Buy " + str(prod["name"])[:28],
-                                    "callback_data": "product_{}".format(pid),
-                                    "style": "primary"}]]}
+        btn_text, btn_icon = button_name_icon(prod["name"])
+        flash_btn = {"text": "\U0001f6d2 Buy " + btn_text[:28],
+                     "callback_data": "product_{}".format(pid),
+                     "style": "primary"}
+        if btn_icon:
+            flash_btn["icon_custom_emoji_id"] = btn_icon
+        kb = {"inline_keyboard": [[flash_btn]]}
         users = q("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
         sent = failed = 0
         for u in users:
