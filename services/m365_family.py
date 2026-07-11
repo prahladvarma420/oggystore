@@ -80,6 +80,10 @@ _RUNTIME_INSTALL_DONE = False
 # wrapper can still report WHERE the flow got stuck (the worker thread cannot
 # return a value once it is killed by asyncio.wait_for).
 _LAST_PHASE = "not started"
+# Last screenshot captured during a run. Stored at module level so the async
+# timeout handler can still attach an image even if the worker thread is killed
+# mid-run (e.g. browser.close() or a screenshot call hangs).
+_LAST_SCREENSHOT = None
 
 
 def _install_chromium(with_deps: bool = False):
@@ -138,11 +142,12 @@ def send_family_invite_sync(email: str):
     tmp.close()
 
     screenshot = None
-    global _LAST_PHASE
+    global _LAST_PHASE, _LAST_SCREENSHOT
     _LAST_PHASE = "launching browser"
+    _LAST_SCREENSHOT = None
     # Internal deadline: return a real result + screenshot BEFORE the async
-    # wrapper's hard 150s timeout kills this thread (which would give no info).
-    _deadline = time.monotonic() + 115
+    # wrapper's hard timeout kills this thread (which would give no info).
+    _deadline = time.monotonic() + 100
 
     try:
         with sync_playwright() as p:
@@ -208,9 +213,23 @@ def send_family_invite_sync(email: str):
             _LAST_PHASE = "waiting for the subscription page to render"
             # Let the heavy single-page app settle before probing.
             try:
-                page.wait_for_load_state("domcontentloaded", timeout=15000)
+                page.wait_for_load_state("domcontentloaded", timeout=12000)
             except Exception:
                 pass
+
+            # Capture a viewport screenshot and stash it at module level so even
+            # a hard timeout later can still attach an image. Viewport (NOT
+            # full_page) screenshots are fast and never hang on tall pages.
+            def _snap():
+                global _LAST_SCREENSHOT
+                try:
+                    shot = page.screenshot(timeout=8000)
+                    _LAST_SCREENSHOT = shot
+                    return shot
+                except Exception:
+                    return _LAST_SCREENSHOT
+            screenshot = _snap()
+
             # is_visible() returns immediately (no waiting), so this poll is
             # fast and bounded: ~10 x 1.5s = 15s max, capped by the deadline.
             sharing_ui_found = False
@@ -237,12 +256,8 @@ def send_family_invite_sync(email: str):
                     break
                 page.wait_for_timeout(1500)
 
-            # From here on we ALWAYS keep a screenshot so any failure is
-            # diagnosable instead of returning a blind timeout.
-            try:
-                screenshot = page.screenshot(full_page=True)
-            except Exception:
-                pass
+            # Refresh the screenshot with the final page state.
+            screenshot = _snap()
             try:
                 cur_url = page.url
             except Exception:
@@ -338,10 +353,7 @@ def send_family_invite_sync(email: str):
                     continue
 
             if not filled:
-                try:
-                    screenshot = page.screenshot(full_page=True)
-                except Exception:
-                    pass
+                screenshot = _snap()
                 browser.close()
                 return False, "Could not find the email box in the Microsoft invite dialog (layout may have changed).", screenshot
 
@@ -400,10 +412,7 @@ def send_family_invite_sync(email: str):
             )
             ok = any(marker in body_text for marker in success_markers)
 
-            try:
-                screenshot = page.screenshot(full_page=True)
-            except Exception:
-                pass
+            screenshot = _snap()
 
             # Persist refreshed cookies so the session lives longer.
             try:
@@ -437,16 +446,14 @@ async def send_family_invite(email: str):
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(send_family_invite_sync, email),
-            timeout=150,
+            timeout=120,
         )
     except asyncio.TimeoutError:
         return (
             False,
-            f"Timed out after 150s. Last step reached: {_LAST_PHASE}. "
-            "(If this is 'navigating' or 'waiting for the subscription page', "
-            "the page load or session is the problem; otherwise it stalled "
-            "inside the invite dialog.)",
-            None,
+            f"Timed out. Last step reached: {_LAST_PHASE}. "
+            "(A screenshot of where it stalled is attached if one was captured.)",
+            _LAST_SCREENSHOT,
         )
 
 
