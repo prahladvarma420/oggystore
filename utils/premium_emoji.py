@@ -43,18 +43,40 @@ def premium_html(update, fallback_text):
         return fallback_text
 
 
+import html as _html
 import re
 
 _TG_EMOJI_RE = re.compile(r'<tg-emoji emoji-id="(\d+)">(.*?)</tg-emoji>', re.S)
 
 
-def strip_premium(text):
-    """Plain text with <tg-emoji> tags replaced by their fallback emoji.
+_OTHER_TAG_RE = re.compile(r"</?(?!tg-emoji\b)[a-zA-Z][^>]*>")
 
-    Use for inline keyboard button texts: Telegram never renders HTML or
-    premium emoji inside button text.
-    """
-    return _TG_EMOJI_RE.sub(r"\2", str(text or ""))
+
+def strip_premium(text):
+    """Plain text for buttons: premium tags -> fallback emoji, all other
+    HTML tags removed, HTML entities unescaped. Telegram never renders
+    HTML or premium emoji inside button text."""
+    s = _TG_EMOJI_RE.sub(r"\2", str(text or ""))
+    s = _OTHER_TAG_RE.sub("", s)
+    return _html.unescape(s).strip()
+
+
+def sanitize_premium_name(text):
+    """Sanitize a product name captured via premium_html: keep only
+    <tg-emoji> tags, drop every other HTML tag (<b>, <i>, ...) that
+    Telegram adds when the user copies formatted text."""
+    return _OTHER_TAG_RE.sub("", str(text or "")).strip()
+
+
+def button_premium(text):
+    """Return (button_text, icon_id) for a name that may contain premium
+    emoji. The FIRST premium emoji becomes the button icon and its fallback
+    is removed from the text so it is not shown twice."""
+    s = str(text or "")
+    m = _TG_EMOJI_RE.search(s)
+    if not m:
+        return strip_premium(s), None
+    return strip_premium(s[:m.start()] + s[m.end():]), m.group(1)
 
 
 def first_premium_id(text):

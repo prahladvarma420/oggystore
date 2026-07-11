@@ -12,7 +12,7 @@ from utils.crypto import decrypt_text
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
-from utils.premium_emoji import premium_html, strip_premium, first_premium_id
+from utils.premium_emoji import premium_html, strip_premium, first_premium_id, sanitize_premium_name, button_premium
 from utils.states import user_state
 from utils.timezone import now, now_text, today_prefix, month_prefix
 
@@ -377,7 +377,7 @@ async def broadcast_flash_sale(context, product_id: int, name: str, old_price: f
         )
 
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"🛒 Buy {strip_premium(name)[:28]}", callback_data=f"product_{product_id}", icon_custom_emoji_id=first_premium_id(name))]
+            [InlineKeyboardButton(f"🛒 Buy {button_premium(name)[0][:28]}", callback_data=f"product_{product_id}", icon_custom_emoji_id=button_premium(name)[1])]
         ])
 
         sent = 0
@@ -3378,6 +3378,9 @@ You must include the confirmation word <code>DELETE</code>.""",
             if field in ("name", "description", "validity", "warranty", "rules"):
                 # Preserve Telegram premium emojis as <tg-emoji> HTML tags.
                 value = premium_html(update, text).strip()
+                if field == "name":
+                    # Names keep only premium-emoji tags; bold/italic etc. are dropped.
+                    value = sanitize_premium_name(value)
             cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
             product = cur.fetchone()
             if not product:

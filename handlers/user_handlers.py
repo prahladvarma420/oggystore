@@ -910,13 +910,13 @@ It will be used on your next wallet purchase.""",
 
             from telegram import InlineKeyboardMarkup
             from utils.button_styles import AutoStyledButton as InlineKeyboardButton
-            from utils.premium_emoji import strip_premium, first_premium_id
+            from utils.premium_emoji import strip_premium, first_premium_id, button_premium
             buttons = []
             msg = f"🔍 <b>Search Results for:</b> <code>{html.escape(str(keyword), quote=False)}</code>\n\n"
             for pid, name, price, stock in rows:
                 name_html = str(name) if "<tg-emoji" in str(name) else html.escape(str(name), quote=False)
                 msg += f"• <b>{name_html}</b> — <code>${float(price):.2f}</code> | Stock: <code>{stock}</code>\n"
-                buttons.append([InlineKeyboardButton(f"🛍 {strip_premium(name)[:35]}", callback_data=f"product_{pid}", icon_custom_emoji_id=first_premium_id(name))])
+                buttons.append([InlineKeyboardButton(f"🛍 {button_premium(name)[0][:35]}", callback_data=f"product_{pid}", icon_custom_emoji_id=button_premium(name)[1])])
             buttons.append([InlineKeyboardButton("◀️ Back", callback_data="home")])
 
             await update.message.reply_text(

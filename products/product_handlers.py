@@ -6,7 +6,7 @@ import random
 import time
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
-from utils.premium_emoji import strip_premium, first_premium_id
+from utils.premium_emoji import strip_premium, first_premium_id, button_premium
 from database.db import render_message_template,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items
 from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
 from utils.crypto import encrypt_text
@@ -443,10 +443,10 @@ async def show_shop(q):
         visible_count += 1
         kb.append([
             InlineKeyboardButton(
-                f"{'⭐ ' if featured else ''}{strip_premium(name)} — {format_price(price)} (Stock: {stock})",
+                f"{'⭐ ' if featured else ''}{button_premium(name)[0]} — {format_price(price)} (Stock: {stock})",
                 callback_data=f"product_{pid}",
                 style="danger" if int(stock or 0) <= 0 else "primary",
-                icon_custom_emoji_id=first_premium_id(name)
+                icon_custom_emoji_id=button_premium(name)[1]
             )
         ])
 
