@@ -73,25 +73,37 @@ def load_session():
 
 # ---------------------------------------------------------------- browser
 
+_RUNTIME_INSTALL_DONE = False
+
+
 def _install_chromium(with_deps: bool = False):
     """Last-resort runtime install if the build step did not install Chromium.
 
     with_deps=True also installs the system libraries Chromium needs
     (libnss3, libatk, libgbm, ...) — required when the browser binary exists
     but crashes instantly on launch because the runtime image lacks them.
+
+    Guarded so it runs AT MOST ONCE per process and with tight timeouts —
+    `playwright install-deps` shells out to apt-get, which can hang for many
+    minutes on some hosts. The real install happens at build time via
+    nixpacks.toml; this is only an emergency fallback.
     """
+    global _RUNTIME_INSTALL_DONE
+    if _RUNTIME_INSTALL_DONE:
+        return
+    _RUNTIME_INSTALL_DONE = True
     try:
         subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium"],
             check=False,
-            timeout=900,
+            timeout=180,
             capture_output=True,
         )
         if with_deps:
             subprocess.run(
                 [sys.executable, "-m", "playwright", "install-deps", "chromium"],
                 check=False,
-                timeout=900,
+                timeout=180,
                 capture_output=True,
             )
     except Exception as exc:
@@ -156,6 +168,9 @@ def send_family_invite_sync(email: str):
                 locale="en-US",
             )
             page = context.new_page()
+            # Cap every individual page operation so nothing can hang forever.
+            page.set_default_timeout(20000)
+            page.set_default_navigation_timeout(45000)
 
             # Microsoft's account portal keeps background connections open, so
             # goto() can time out even though the page rendered fine. Navigate
@@ -354,8 +369,22 @@ def send_family_invite_sync(email: str):
 
 
 async def send_family_invite(email: str):
-    """Async wrapper — runs the blocking Playwright flow in a worker thread."""
-    return await asyncio.to_thread(send_family_invite_sync, email)
+    """Async wrapper — runs the blocking Playwright flow in a worker thread.
+
+    Wrapped in an overall timeout so the caller (and the Telegram UI) can never
+    hang indefinitely, even if the browser or a page operation stalls.
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(send_family_invite_sync, email),
+            timeout=150,
+        )
+    except asyncio.TimeoutError:
+        return (
+            False,
+            "Timed out after 150s (server may still be installing the browser — wait 2 min and retry).",
+            None,
+        )
 
 
 # ---------------------------------------------------------------- orchestration
