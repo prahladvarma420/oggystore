@@ -1334,3 +1334,91 @@ def restore_backup_zip(zip_path: str):
                 pass
     return True, "Backup restored. Restart the bot."
 
+
+
+# ---------------- Microsoft 365 Family auto-invite ----------------
+
+_M365_TABLE_READY = False
+
+
+def ensure_m365_table():
+    global _M365_TABLE_READY
+    if _M365_TABLE_READY:
+        return
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS m365_invites(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        order_id INTEGER,
+        email TEXT,
+        status TEXT DEFAULT 'pending',
+        error TEXT,
+        created TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    conn.commit()
+    _M365_TABLE_READY = True
+
+
+def create_m365_invite(user_id: int, order_id: int, email: str) -> int:
+    ensure_m365_table()
+    cur.execute(
+        "INSERT INTO m365_invites(user_id, order_id, email, status) VALUES(?,?,?,'pending')",
+        (user_id, order_id, email),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def set_m365_invite_status(invite_id: int, status: str, error=None):
+    ensure_m365_table()
+    cur.execute("UPDATE m365_invites SET status=?, error=? WHERE id=?", (status, error, invite_id))
+    conn.commit()
+
+
+def get_m365_invite(invite_id: int):
+    ensure_m365_table()
+    cur.execute(
+        "SELECT id, user_id, order_id, email, status, error, created FROM m365_invites WHERE id=?",
+        (invite_id,),
+    )
+    return cur.fetchone()
+
+
+def list_m365_invites(limit: int = 10):
+    ensure_m365_table()
+    cur.execute(
+        "SELECT id, user_id, order_id, email, status, error, created FROM m365_invites ORDER BY id DESC LIMIT ?",
+        (limit,),
+    )
+    return cur.fetchall()
+
+
+def get_m365_product_ids():
+    raw = get_setting("m365_invite_products", "") or ""
+    ids = set()
+    for part in str(raw).split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.add(int(part))
+    return ids
+
+
+def is_m365_product(product_id) -> bool:
+    try:
+        return int(product_id) in get_m365_product_ids()
+    except Exception:
+        return False
+
+
+def toggle_m365_product(product_id: int) -> bool:
+    ids = get_m365_product_ids()
+    pid = int(product_id)
+    if pid in ids:
+        ids.discard(pid)
+        enabled = False
+    else:
+        ids.add(pid)
+        enabled = True
+    set_setting("m365_invite_products", ",".join(str(x) for x in sorted(ids)))
+    return enabled
