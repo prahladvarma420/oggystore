@@ -70,7 +70,7 @@ async def get_unjoined_channels(bot, uid):
             continue
 
     if not missing:
-        _join_cache[uid] = now_ts + 300  # re-check at most every 5 min
+        _join_cache[uid] = now_ts + 30  # re-check at most every 30 seconnds
     return missing
 
 
