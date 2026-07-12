@@ -247,6 +247,13 @@ def send_canva_invite_sync(email: str):
                 ),
                 locale="en-US",
             )
+            # Hide the navigator.webdriver automation flag from Cloudflare.
+            try:
+                context.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                )
+            except Exception:
+                pass
             try:
                 context.route("**/*", _block_heavy_resources)
             except Exception:
