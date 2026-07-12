@@ -287,7 +287,9 @@ def init_db():
 
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('referral_percent', '5')")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('low_stock_alert_threshold', '3')")
-    cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('low_stock_alert_levels', '10,5,1')")
+    cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('low_stock_alert_levels', '5,1')")
+    # Migration: drop the old level-10 alert (only 5 and 1 remain)
+    cur.execute("UPDATE settings SET value='5,1' WHERE key='low_stock_alert_levels' AND value='10,5,1'")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('min_withdrawal', '1')")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('loyalty_percent', '2')")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('first_purchase_discount_percent', '0')")

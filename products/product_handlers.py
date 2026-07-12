@@ -81,12 +81,12 @@ def _admin_name(value):
 
 
 async def notify_low_stock(context_bot, product_id: int, product_name: str, remaining_stock: int):
-    """Smart low-stock alert: only alert at configured levels like 10,5,1."""
+    """Smart low-stock alert: only alert at configured levels like 5,1."""
     try:
-        raw_levels = get_setting_value("low_stock_alert_levels", "10,5,1")
+        raw_levels = get_setting_value("low_stock_alert_levels", "5,1")
         levels = sorted([int(x.strip()) for x in raw_levels.split(",") if x.strip().isdigit()], reverse=True)
         if not levels:
-            levels = [10, 5, 1]
+            levels = [5, 1]
 
         cur.execute("SELECT low_stock_notified FROM products WHERE id=?", (product_id,))
         row = cur.fetchone()
@@ -459,7 +459,7 @@ async def show_shop(q):
         visible_count += 1
         kb.append([
             InlineKeyboardButton(
-                f"{'⭐ ' if featured else ''}{button_premium(name)[0]} — {format_price(price)} (Stock: {stock})",
+                f"{'���� ' if featured else ''}{button_premium(name)[0]} — {format_price(price)} (Stock: {stock})",
                 callback_data=f"product_{pid}",
                 style="danger" if int(stock or 0) <= 0 else "primary",
                 icon_custom_emoji_id=button_premium(name)[1]
