@@ -1672,6 +1672,21 @@ Example:
         if not product:
             await edit_or_send(q, "❌ <b>Product not found.</b>", products_select_keyboard("admin_stock_select"))
             return True
+        if product_id in get_m365_product_ids():
+            user_state[uid] = f"admin_m365_set_slots:{product_id}"
+            await edit_or_send(q, f"""🎟 <b>Set Family Slots</b>
+
+📦 Product: <b>{product[0]}</b>
+🆔 ID: <code>{product_id}</code>
+📊 Current Stock: <code>{product[1]}</code>
+
+This is a <b>Microsoft 365 auto-invite</b> product — it does <b>NOT</b> use email:pass codes.
+The invite is sent automatically from your saved Microsoft session.
+
+Just send the <b>number of free family slots</b> to make available (a Family plan allows up to 5 extra people).
+
+Example: <code>5</code>""", products_select_keyboard("admin_stock_select"))
+            return True
         user_state[uid] = f"admin_easy_add_stock:{product_id}"
         await edit_or_send(q, f"""➕ <b>Add Stock</b>
 
@@ -3774,6 +3789,39 @@ You must include the confirmation word <code>DELETE</code>.""",
             await update.message.reply_text(f"✅ <b>Product Updated</b>\n\n🆔 Product ID: <code>{product_id}</code>\n✏️ Field: <code>{field}</code>{broadcast_note}", reply_markup=product_edit_options_keyboard(product_id), parse_mode="HTML")
         except Exception as exc:
             await update.message.reply_text(f"❌ <b>Update failed.</b>\n\n<code>{exc}</code>", parse_mode="HTML")
+            return True
+        return True
+
+    if state and state.startswith("admin_m365_set_slots:") and is_admin(uid):
+        try:
+            product_id = int(state.split(":")[1])
+            cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+            product = cur.fetchone()
+            if not product:
+                await update.message.reply_text("❌ <b>Product not found.</b>", parse_mode="HTML")
+                user_state.pop(uid, None)
+                return True
+            raw = text.strip()
+            if not raw.isdigit():
+                await update.message.reply_text("❌ <b>Send a whole number</b> of slots.\n\nExample: <code>5</code>", parse_mode="HTML")
+                return True
+            slots = int(raw)
+            # Auto-invite products deliver no codes: clear any code rows so the
+            # numeric stock column gates purchases, then set it directly.
+            cur.execute("DELETE FROM product_stock WHERE product_id=?", (product_id,))
+            cur.execute("UPDATE products SET stock=? WHERE id=?", (slots, product_id))
+            conn.commit()
+            user_state.pop(uid, None)
+            log_admin_action(uid, "M365_SET_SLOTS", f"Product ID {product_id} | slots {slots}")
+            await update.message.reply_text(f"""✅ <b>Family Slots Set</b>
+
+📦 Product: <b>{product[0]}</b>
+🆔 ID: <code>{product_id}</code>
+🎟 Available Slots: <code>{slots}</code>
+
+Customers can now buy this plan. After payment the bot asks their email and sends the Microsoft 365 Family invite automatically.""", reply_markup=products_select_keyboard("admin_stock_select"), parse_mode="HTML")
+        except Exception as exc:
+            await update.message.reply_text(f"❌ <b>Could not set slots.</b>\n\n<code>{exc}</code>", parse_mode="HTML")
             return True
         return True
 
