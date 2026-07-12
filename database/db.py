@@ -293,6 +293,8 @@ def init_db():
     cur.execute("UPDATE settings SET value='5,1' WHERE key='low_stock_alert_levels' AND value='10,5,1'")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('min_withdrawal', '1')")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('loyalty_percent', '2')")
+    cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('force_join_enabled', '1')")
+    cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('force_join_channels', '@oggypremiumstore,@oggypremiumchat')")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('first_purchase_discount_percent', '0')")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('buy_x_qty', '0')")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('buy_x_free', '0')")
