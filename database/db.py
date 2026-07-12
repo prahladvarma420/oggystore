@@ -1094,7 +1094,11 @@ def get_buy_x_get_y():
 
 
 
-_TG_EMOJI_TAG_RE = _re.compile(r'<tg-emoji emoji-id="(\d+)">(.*?)</tg-emoji>', _re.S)
+# Matches raw AND html-escaped tg-emoji tags (<tg-emoji ...> / &lt;tg-emoji ...&gt;).
+_TG_EMOJI_TAG_RE = _re.compile(
+    r'(?:<|&lt;)tg-emoji\s+emoji-id=(?:"|&quot;)(\d+)(?:"|&quot;)(?:>|&gt;)(.*?)(?:<|&lt;)/tg-emoji(?:>|&gt;)',
+    _re.S,
+)
 
 
 def get_message_template(key: str, default: str = ""):

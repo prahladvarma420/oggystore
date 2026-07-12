@@ -53,12 +53,22 @@ _OTHER_TAG_RE = re.compile(r"</?(?!tg-emoji\b)[a-zA-Z][^>]*>")
 
 
 def strip_premium(text):
-    """Plain text for buttons: premium tags -> fallback emoji, all other
-    HTML tags removed, HTML entities unescaped. Telegram never renders
-    HTML or premium emoji inside button text."""
-    s = _TG_EMOJI_RE.sub(r"\2", str(text or ""))
-    s = _OTHER_TAG_RE.sub("", s)
-    return _html.unescape(s).strip()
+    """Plain text for buttons/messages: premium tags -> fallback emoji, all
+    other HTML tags removed, HTML entities unescaped.
+
+    Handles names that were HTML-escaped one or more times before reaching
+    here (e.g. &lt;tg-emoji ...&gt; forms): it unescapes first, then strips,
+    and repeats until the text is stable so escaped tags can never survive
+    and re-materialize as literal tag text."""
+    s = str(text or "")
+    for _ in range(4):
+        prev = s
+        s = _html.unescape(s)
+        s = _TG_EMOJI_RE.sub(r"\2", s)
+        s = _OTHER_TAG_RE.sub("", s)
+        if s == prev:
+            break
+    return s.strip()
 
 
 def sanitize_premium_name(text):
