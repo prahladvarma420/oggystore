@@ -92,6 +92,7 @@ _CHROMIUM_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
+    "--disable-quic",
     "--disable-setuid-sandbox",
     "--disable-extensions",
     "--disable-background-networking",
@@ -194,6 +195,28 @@ def send_family_invite_sync(email: str):
     _deadline = time.monotonic() + 100
 
     _log(f"invite start -> {email}")
+
+    # --- Network preflight: can this container even reach Microsoft? ---
+    _LAST_PHASE = "checking network connectivity to Microsoft"
+    try:
+        import socket as _socket
+        infos = _socket.getaddrinfo("account.microsoft.com", 443)
+        addrs = sorted({i[4][0] for i in infos})
+        _log(f"preflight DNS -> {addrs[:6]}")
+    except Exception as dns_exc:
+        _log(f"preflight DNS FAILED: {repr(dns_exc)[:200]}")
+    try:
+        import urllib.request as _urlreq
+        _req = _urlreq.Request(
+            "https://account.microsoft.com",
+            method="HEAD",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        with _urlreq.urlopen(_req, timeout=12) as _resp:
+            _log(f"preflight HTTPS from python: status {_resp.status}")
+    except Exception as pf_exc:
+        _log(f"preflight HTTPS from python FAILED: {repr(pf_exc)[:200]}")
+
     try:
         with sync_playwright() as p:
             _log("playwright started, launching chromium")
@@ -247,12 +270,23 @@ def send_family_invite_sync(email: str):
             page.set_default_timeout(15000)
             page.set_default_navigation_timeout(30000)
 
+            # Canary navigation: proves whether Chromium's networking works at
+            # all in this container (separates "network broken" from
+            # "Microsoft blocking us").
+            try:
+                _log("canary goto: https://example.com")
+                page.goto("https://example.com", wait_until="commit", timeout=10000)
+                _log(f"canary OK: {page.url[:80]}")
+            except Exception as can_exc:
+                _log(f"canary goto FAILED: {repr(can_exc)[:200]}")
+
             # Microsoft's account portal keeps background connections open, so
             # goto() can time out even though the page rendered fine. Navigate
             # with a tolerant strategy ("commit" = don't wait for full load),
             # then give the app time to render and verify content ourselves.
             # The /sharing URL redirects to /details, so try /details first.
             _LAST_PHASE = "navigating to subscription page"
+            nav_ok = False
             for nav_url in (
                 "https://account.microsoft.com/services/microsoft365/details",
                 SHARING_URL,
@@ -261,10 +295,33 @@ def send_family_invite_sync(email: str):
                     _log(f"goto start: {nav_url}")
                     page.goto(nav_url, wait_until="commit", timeout=25000)
                     _log(f"goto committed: {page.url[:120]}")
+                    nav_ok = True
                     break
                 except Exception as nav_exc:
                     _log(f"goto failed: {repr(nav_exc)[:300]}")
                     continue
+
+            if not nav_ok:
+                # The site never started responding. Do NOT touch the page
+                # object again: with a hung pending navigation, page/locator
+                # calls block forever (this caused the silent 120s timeouts).
+                # Return a clear error immediately instead.
+                _log("navigation never committed; returning early (site unreachable/blocked)")
+                _LAST_PHASE = "Microsoft's site did not respond (network blocked?)"
+                try:
+                    browser.close()
+                    _log("browser closed (unreachable path)")
+                except Exception as close_exc:
+                    _log(f"browser close failed: {repr(close_exc)[:120]}")
+                return (
+                    False,
+                    "Could not reach account.microsoft.com from the server — the page never "
+                    "started responding (both URLs timed out at the network level). Chromium "
+                    "itself is working fine. This usually means Microsoft is blocking the "
+                    "datacenter IP. Check Deploy Logs (filter 'M365') for preflight + canary "
+                    "results.",
+                    None,
+                )
 
             # Wait for the sharing UI (it's a slow single-page app): poll for up
             # to ~18s until a Share/invite control or a login redirect appears.
