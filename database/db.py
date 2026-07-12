@@ -302,10 +302,10 @@ def init_db():
         cur.execute(
             "UPDATE message_templates SET body=? WHERE key='deposit_success' AND body IN (?,?,?,?)",
             ('✅ <b>DEPOSIT CONFIRMED</b>\n\n🧾 <b>Invoice:</b> <code>#{invoice_id}</code>\n💵 <b>Paid:</b> <code>{paid} USDT</code>\n💰 <b>Balance Added:</b> <code>{amount} USDT</code>\n💼 <b>New Balance:</b> <code>{balance} USDT</code>\n🔗 <b>TX:</b> {tx}\n\n🛍 <i>You can now buy products from Shop.</i>',
-             '✅ <b>Deposit Confirmed</b>\\n\\n💵 Amount: <code>{amount} USDT</code>\\n\\nYour wallet balance has been updated.',
+             '✅ <b>Deposit Confirmed</b>\n\n💵 Amount: <code>{amount} USDT</code>\n\nYour wallet balance has been updated.',
              '✅ <b>Deposit Confirmed</b>\n\n💵 Amount: <code>{amount} USDT</code>\n\nYour wallet balance has been updated.',
              '✅ Deposit Confirmed\n\n💵 Amount: {amount} USDT\n\nYour wallet balance has been updated.',
-             '✅ Deposit Confirmed\\n\\n💵 Amount: {amount} USDT\\n\\nYour wallet balance has been updated.'),
+             '✅ Deposit Confirmed\n\n💵 Amount: {amount} USDT\n\nYour wallet balance has been updated.'),
         )
         conn.commit()
     except Exception:
@@ -314,23 +314,23 @@ def init_db():
     default_templates = {
         "welcome": (
             "Welcome Message",
-            "👋 <b>Welcome to {store_name}</b>\\n\\nChoose an option below to continue."
+            "👋 <b>Welcome to {store_name}</b>\n\nChoose an option below to continue."
         ),
         "delivery_success": (
             "Delivery Success Message",
-            "✅ <b>Payment Successful!</b>\\n━━━━━━━━━━━━━━━━━━━━\\n\\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\\n\\n📦 <b>{product_name}</b>\\n\\n🔑 <b>Code(s):</b>\\n<code>{delivery}</code>\\n\\n━━━━━━━━━━━━━━━━━━━━\\n\\n💰 <b>Paid:</b> <b>${paid}</b>\\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\\n\\n━━━━━━━━━━━━━━━━━━━━\\nThank you for your purchase! 🎉\\n\\nUse /orders to view your order history."
+            "✅ <b>Payment Successful!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\n\n📦 <b>{product_name}</b>\n\n🔑 <b>Code(s):</b>\n<code>{delivery}</code>\n\n━━━━━━━━━━━━━━━━━━━━\n\n💰 <b>Paid:</b> <b>${paid}</b>\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\n\n━━━━━━━━━━━━━━━━━━━━\nThank you for your purchase! 🎉\n\nUse /orders to view your order history."
         ),
         "coupon_broadcast": (
             "Coupon Broadcast Message",
-            "🎟 <b>NEW COUPON AVAILABLE!</b>\\n\\n💝 <b>Discount:</b> <code>{discount}</code>\\n🎫 <b>Coupon Code:</b> <code>{code}</code>\\n⏳ <b>Validity:</b> <code>{validity}</code>\\n🔥 <b>Limit:</b> <code>{limit}</code>\\n\\nApply this coupon before checkout and save on your next purchase 👇"
+            "🎟 <b>NEW COUPON AVAILABLE!</b>\n\n💝 <b>Discount:</b> <code>{discount}</code>\n🎫 <b>Coupon Code:</b> <code>{code}</code>\n⏳ <b>Validity:</b> <code>{validity}</code>\n🔥 <b>Limit:</b> <code>{limit}</code>\n\nApply this coupon before checkout and save on your next purchase 👇"
         ),
         "flash_sale_broadcast": (
             "Flash Sale Broadcast Message",
-            "🧨 <b>FLASH SALE — LIMITED TIME!</b>\\n\\n📦 <b>{product_name}</b>\\n\\n💵 <b>Was:</b> <s>${old_price}</s>\\n⚡ <b>Now:</b> <code>${new_price} USDT</code> <b>({discount_percent}% OFF)</b>\\n\\n🏃 <b>Hurry — {validity}</b>\\nGrab it before the timer runs out 👇"
+            "🧨 <b>FLASH SALE — LIMITED TIME!</b>\n\n📦 <b>{product_name}</b>\n\n💵 <b>Was:</b> <s>${old_price}</s>\n⚡ <b>Now:</b> <code>${new_price} USDT</code> <b>({discount_percent}% OFF)</b>\n\n🏃 <b>Hurry — {validity}</b>\nGrab it before the timer runs out 👇"
         ),
         "restock_alert": (
             "Restock Alert Message",
-            "🔔 <b>Back In Stock!</b>\\n\\n📦 <b>{product_name}</b>\\n📊 Available: <code>{stock}</code>\\n\\nTap below to buy now 👇"
+            "🔔 <b>Back In Stock!</b>\n\n📦 <b>{product_name}</b>\n📊 Available: <code>{stock}</code>\n\nTap below to buy now 👇"
         ),
         "new_product_broadcast": (
             "New Product Broadcast Message",
@@ -386,23 +386,23 @@ def ensure_user(user):
     default_templates = {
         "welcome": (
             "Welcome Message",
-            "👋 <b>Welcome to {store_name}</b>\\n\\nChoose an option below to continue."
+            "👋 <b>Welcome to {store_name}</b>\n\nChoose an option below to continue."
         ),
         "delivery_success": (
             "Delivery Success Message",
-            "✅ <b>Payment Successful!</b>\\n━━━━━━━━━━━━━━━━━━━━\\n\\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\\n\\n📦 <b>{product_name}</b>\\n\\n🔑 <b>Code(s):</b>\\n<code>{delivery}</code>\\n\\n━━━━━━━━━━━━━━━━━━━━\\n\\n💰 <b>Paid:</b> <b>${paid}</b>\\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\\n\\n━━━━━━━━━━━━━━━━━━━━\\nThank you for your purchase! 🎉\\n\\nUse /orders to view your order history."
+            "✅ <b>Payment Successful!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\n\n📦 <b>{product_name}</b>\n\n🔑 <b>Code(s):</b>\n<code>{delivery}</code>\n\n━━━━━━━━━━━━━━━━━━━━\n\n💰 <b>Paid:</b> <b>${paid}</b>\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\n\n━━━━━━━━━━━━━━━━━━━━\nThank you for your purchase! 🎉\n\nUse /orders to view your order history."
         ),
         "coupon_broadcast": (
             "Coupon Broadcast Message",
-            "🎟 <b>NEW COUPON AVAILABLE!</b>\\n\\n💝 <b>Discount:</b> <code>{discount}</code>\\n🎫 <b>Coupon Code:</b> <code>{code}</code>\\n⏳ <b>Validity:</b> <code>{validity}</code>\\n🔥 <b>Limit:</b> <code>{limit}</code>\\n\\nApply this coupon before checkout and save on your next purchase 👇"
+            "🎟 <b>NEW COUPON AVAILABLE!</b>\n\n💝 <b>Discount:</b> <code>{discount}</code>\n🎫 <b>Coupon Code:</b> <code>{code}</code>\n⏳ <b>Validity:</b> <code>{validity}</code>\n🔥 <b>Limit:</b> <code>{limit}</code>\n\nApply this coupon before checkout and save on your next purchase 👇"
         ),
         "flash_sale_broadcast": (
             "Flash Sale Broadcast Message",
-            "🧨 <b>FLASH SALE — LIMITED TIME!</b>\\n\\n📦 <b>{product_name}</b>\\n\\n💵 <b>Was:</b> <s>${old_price}</s>\\n⚡ <b>Now:</b> <code>${new_price} USDT</code> <b>({discount_percent}% OFF)</b>\\n\\n🏃 <b>Hurry — {validity}</b>\\nGrab it before the timer runs out 👇"
+            "🧨 <b>FLASH SALE — LIMITED TIME!</b>\n\n📦 <b>{product_name}</b>\n\n💵 <b>Was:</b> <s>${old_price}</s>\n⚡ <b>Now:</b> <code>${new_price} USDT</code> <b>({discount_percent}% OFF)</b>\n\n🏃 <b>Hurry — {validity}</b>\nGrab it before the timer runs out 👇"
         ),
         "restock_alert": (
             "Restock Alert Message",
-            "🔔 <b>Back In Stock!</b>\\n\\n📦 <b>{product_name}</b>\\n📊 Available: <code>{stock}</code>\\n\\nTap below to buy now 👇"
+            "🔔 <b>Back In Stock!</b>\n\n📦 <b>{product_name}</b>\n📊 Available: <code>{stock}</code>\n\nTap below to buy now 👇"
         ),
         "new_product_broadcast": (
             "New Product Broadcast Message",

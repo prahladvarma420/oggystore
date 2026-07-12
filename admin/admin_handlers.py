@@ -14,6 +14,11 @@ from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_or
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
 from utils.premium_emoji import premium_html, strip_premium, first_premium_id, sanitize_premium_name, button_premium
+
+
+def _admin_name(value):
+    """Strip premium/custom emoji tags and HTML-escape a product name for safe display."""
+    return html.escape(strip_premium(str(value)), quote=False)
 from keyboards.menus import MAIN_MENU_BUTTONS
 from utils.states import user_state
 from utils.timezone import now, now_text, today_prefix, month_prefix
@@ -277,7 +282,7 @@ def product_analytics_text(product_id: int):
 
     return f"""📈 <b>Product Analytics</b>
 
-📦 <b>{name}</b>
+📦 <b>{_admin_name(name)}</b>
 🆔 Product ID: <code>{product_id}</code>
 💰 Price: <code>${float(price):.2f}</code>
 
@@ -385,7 +390,7 @@ async def broadcast_flash_sale(context, product_id: int, name: str, old_price: f
         msg = render_message_template(
             "flash_sale_broadcast",
             "🧨 <b>FLASH SALE — LIMITED TIME!</b>\n\n📦 <b>{product_name}</b>\n\n💵 <b>Was:</b> <s>${old_price}</s>\n⚡ <b>Now:</b> <code>${new_price} USDT</code> <b>({discount_percent}% OFF)</b>\n\n🏃 <b>Hurry — {validity}</b>\nGrab it before the timer runs out 👇",
-            product_name=name,
+            product_name=_admin_name(name),
             old_price=f"${old_price:.2f}",
             new_price=f"${new_price:.2f}",
             discount_text=f"{discount}% OFF" if discount else "SALE",
@@ -527,7 +532,7 @@ def get_order_detail_text(order_id: int):
     text = f"""🧾 <b>Order Detail</b>
 
 🆔 <b>Order ID:</b> <code>#{oid}</code>
-📦 <b>Product:</b> {product_name}
+📦 <b>Product:</b> {_admin_name(product_name)}
 🔢 <b>Quantity:</b> <code>{qty}</code>
 💰 <b>Paid:</b> <code>${price:.2f}</code>
 🕒 <b>Date:</b> <code>{created}</code>
@@ -683,7 +688,7 @@ def get_product_codes_text(product_id: int, limit: int = 80):
 
     msg = f"""🧾 <b>Product Codes Manager</b>
 
-📦 <b>Product:</b> {product_name}
+📦 <b>Product:</b> {_admin_name(product_name)}
 🆔 <b>Product ID:</b> <code>{product_id}</code>
 
 ✅ <b>Available:</b> <code>{available}</code>
@@ -775,7 +780,7 @@ async def broadcast_product_update(context, product_id: int, product_name: str, 
         msg = render_message_template(
             tpl_key,
             default_msg,
-            product_name=product_name,
+            product_name=html.escape(strip_premium(product_name), quote=False),
             added=added,
             available=available,
             price=f"${float(price or 0):.2f}",
@@ -832,7 +837,7 @@ async def broadcast_new_offer(context, product_id: int):
 
         msg = f"""🔥 <b>NEW OFFER ALERT!</b>
 
-📦 <b>{product_name}</b>
+📦 <b>{_admin_name(product_name)}</b>
 💰 <b>Price:</b> <code>${float(price or 0):.2f}</code> / code
 ✅ <b>Available:</b> <code>{available}</code>
 
@@ -888,7 +893,7 @@ async def broadcast_price_change(context, product_id: int, product_name: str, ol
 
         bar = "\u2501" * 18
         msg = (f"{title}\n{bar}\n\n"
-               f"\U0001f4e6 <b>{product_name}</b>\n\n"
+               f"\U0001f4e6 <b>{_admin_name(product_name)}</b>\n\n"
                f"\U0001f4b0 <b>Old Price:</b> <s>${old_price:.2f}</s>\n"
                f"\u2728 <b>New Price:</b> <b>${new_price:.2f}</b>\n"
                f"{change_line}\n"
@@ -1259,7 +1264,7 @@ Example:
                 active_text = "ON" if active else "HIDDEN"
                 text += (
                     f"{status} | <b>ID:</b> <code>{pid}</code>\n"
-                    f"📦 <b>{name}</b>\n"
+                    f"📦 <b>{_admin_name(name)}</b>\n"
                     f"💰 <code>{price:.2f} USDT</code> | 📊 Stock: <code>{stock}</code> | {active_text}\n\n"
                 )
 
@@ -2020,7 +2025,7 @@ Send:
                 chat_id=target_id,
                 text=("🔄 <b>Delivery Resent By Admin</b>\n\n"
                       f"🧾 <b>Order:</b> <code>#{order_id}</code>\n"
-                      f"📦 <b>Product:</b> {product_name}\n"
+                      f"📦 <b>Product:</b> {_admin_name(product_name)}\n"
                       f"💰 <b>Paid:</b> <code>${price:.2f}</code>\n\n"
                       f"���� <b>Your Delivery</b>\n<code>{delivery}</code>"),
                 parse_mode="HTML"
@@ -3304,7 +3309,7 @@ async def handle_admin_message(update, context, uid, text, state):
                 f"""✅ <b>Flash Sale Set</b>
 
 🆔 Product: <code>{product_id}</code>
-📦 Name: <b>{product_name}</b>
+📦 Name: <b>{_admin_name(product_name)}</b>
 💵 Old Price: <code>${old_price:.2f}</code>
 🔥 Sale Price: <code>${flash_price:.2f}</code>
 ⏳ Ends: <code>{ends}</code>
@@ -3389,10 +3394,10 @@ async def handle_admin_message(update, context, uid, text, state):
 
 🧾 <b>Order:</b> <code>#{order_id}</code>
 👤 <b>User:</b> <code>{target_id}</code>
-📦 <b>Product:</b> {product_name}
+📦 <b>Product:</b> {_admin_name(product_name)}
 💰 <b>Refunded:</b> <code>${price:.2f}</code>""", reply_markup=admin_order_detail_keyboard(order_id, target_id), parse_mode="HTML")
             try:
-                await context.bot.send_message(chat_id=target_id, text=f"💸 <b>Your order was refunded</b>\n\n🧾 <b>Order:</b> <code>#{order_id}</code>\n📦 <b>Product:</b> {product_name}\n💰 <b>Refund:</b> <code>${price:.2f}</code>", parse_mode="HTML")
+                await context.bot.send_message(chat_id=target_id, text=f"💸 <b>Your order was refunded</b>\n\n🧾 <b>Order:</b> <code>#{order_id}</code>\n📦 <b>Product:</b> {_admin_name(product_name)}\n💰 <b>Refund:</b> <code>${price:.2f}</code>", parse_mode="HTML")
             except Exception:
                 pass
         except Exception:
@@ -3620,7 +3625,7 @@ async def handle_admin_message(update, context, uid, text, state):
             await update.message.reply_text(
                 f"""✅ <b>Codes Added</b>
 
-📦 Product: <b>{product_name}</b>
+📦 Product: <b>{_admin_name(product_name)}</b>
 ➕ Added: <code>{added}</code>
 📊 Available Now: <code>{available}</code>
 📢 Broadcast: sent to <code>{sent}</code> users""",
@@ -3848,7 +3853,7 @@ Customers can now buy this plan. After payment the bot asks their email and send
             user_state.pop(uid, None)
             await update.message.reply_text(f"""✅ <b>Stock Added</b>
 
-📦 Product: <b>{product_name}</b>
+📦 Product: <b>{_admin_name(product_name)}</b>
 🆔 ID: <code>{product_id}</code>
 ➕ Added: <code>{added}</code>
 📊 Available Now: <code>{available}</code>
@@ -4107,7 +4112,7 @@ Now send the image/photo.""",
                     msg += (
                         f"🧾 <b>Order:</b> <code>#{order_id}</code>\n"
                         f"👤 <b>User:</b> <code>{user_id}</code>\n"
-                        f"📦 <b>Product:</b> {product_name}\n"
+                        f"📦 <b>Product:</b> {_admin_name(product_name)}\n"
                         f"💰 <b>Price:</b> <code>{price:.2f} USDT</code>\n"
                         f"🕒 <code>{created}</code>\n"
                         f"🔄 Resend: <code>{order_id}</code>\n"
@@ -4228,7 +4233,7 @@ Now send the image/photo.""",
                 text=(
                     "🔄 <b>Delivery Resent By Admin</b>\n\n"
                     f"🧾 <b>Order:</b> <code>#{order_id}</code>\n"
-                    f"📦 <b>Product:</b> {product_name}\n"
+                    f"📦 <b>Product:</b> {_admin_name(product_name)}\n"
                     f"💰 <b>Paid:</b> <code>{price:.2f} USDT</code>\n\n"
                     f"🔑 <b>Your Delivery</b>\n<code>{delivery}</code>"
                 ),
@@ -4286,7 +4291,7 @@ Now send the image/photo.""",
 
 🧾 <b>Order:</b> <code>#{order_id}</code>
 👤 <b>User:</b> <code>{target_id}</code>
-📦 <b>Product:</b> {product_name}
+📦 <b>Product:</b> {_admin_name(product_name)}
 💰 <b>Refunded:</b> <code>{price:.2f} USDT</code>""",
                 reply_markup=admin_menu(),
                 parse_mode="HTML"
@@ -4298,7 +4303,7 @@ Now send the image/photo.""",
                     text=(
                         "💸 <b>Your order was refunded</b>\n\n"
                         f"🧾 <b>Order:</b> <code>#{order_id}</code>\n"
-                        f"📦 <b>Product:</b> {product_name}\n"
+                        f"📦 <b>Product:</b> {_admin_name(product_name)}\n"
                         f"💰 <b>Refund:</b> <code>{price:.2f} USDT</code>\n\n"
                         "Amount was added back to your wallet balance."
                     ),
@@ -4836,7 +4841,7 @@ Use:
                     stock_status = "🔴 OUT" if stock <= 0 else ("🟡 LOW" if stock <= 5 else "🟢 OK")
                     msg += (
                         f"🆔 <code>{pid}</code> | {status} | {stock_status}\n"
-                        f"📦 <b>{name}</b>\n"
+                        f"📦 <b>{_admin_name(name)}</b>\n"
                         f"💰 <code>{price:.2f} USDT</code> | 📊 <code>{stock}</code> | Max <code>{max_per_order}</code>\n"
                         f"📌 {validity}\n"
                         f"🛡 {warranty}\n\n"

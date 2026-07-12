@@ -11,6 +11,7 @@ from utils.error_logger import log_error
 from utils.timezone import now, now_text
 
 from utils.crypto import encrypt_text
+from utils.premium_emoji import strip_premium
 from database.db import cur, conn, add_balance, reserve_stock_items, get_available_stock_count, get_setting, set_setting, get_balance, render_message_template
 from config import (
     ADMIN_ID,
@@ -265,7 +266,7 @@ async def _maybe_low_stock_alert(context, product_id: int):
                 chat_id=ADMIN_ID,
                 text=f"""⚠️ <b>Low Stock Alert</b>
 
-📦 <b>{name}</b>
+📦 <b>{html.escape(strip_premium(name), quote=False)}</b>
 🆔 Product ID: <code>{product_id}</code>
 📊 Remaining: <code>{stock}</code>
 
@@ -410,7 +411,7 @@ async def check_payments(context):
                                     "✅ <b>Payment Successful!</b>\n"
                                     "━━━━━━━━━━━━━━━━━━━━\n\n"
                                     f"🧾 <b>Order ID:</b> <code>#{order_id}</code>\n\n"
-                                    f"📦 <b>{product_name}</b>\n"
+                                    f"📦 <b>{html.escape(strip_premium(product_name), quote=False)}</b>\n"
                                     f"🔢 <b>Quantity:</b> <code>{quantity}</code>\n"
                                     f"💰 <b>Paid:</b> <code>${float(base_amount):.2f}</code>\n"
                                     f"🔗 <b>TX:</b> <a href='{tx_link}'>{short_tx}</a>\n\n"
@@ -432,7 +433,7 @@ async def check_payments(context):
                                     "🛒 <b>DIRECT CHECKOUT CONFIRMED</b>\n\n"
                                     f"👤 User: <code>{user_id}</code>\n"
                                     f"🧾 Invoice: <code>#{deposit_id}</code>\n"
-                                    f"📦 Product: <b>{product_name}</b>\n"
+                                    f"📦 Product: <b>{html.escape(strip_premium(product_name), quote=False)}</b>\n"
                                     f"🔢 Quantity: <code>{quantity}</code>\n"
                                     f"💰 Paid: <code>{float(base_amount):.2f} USDT</code>\n"
                                     f"🔗 TX: <a href='{tx_link}'>{short_tx}</a>"

@@ -47,7 +47,7 @@ async def notify_restock_users(context_bot, product_id: int, product_name: str, 
                     text=render_message_template(
                         "restock_alert",
                         "🔔 <b>Back In Stock!</b>\n\n📦 <b>{product_name}</b>\n📊 Available: <code>{stock}</code>\n\nTap below to buy now 👇",
-                        product_name=product_name,
+                        product_name=_admin_name(product_name),
                         stock=available_stock,
                     ),
                     reply_markup=InlineKeyboardMarkup([
@@ -63,7 +63,7 @@ async def notify_restock_users(context_bot, product_id: int, product_name: str, 
         try:
             await context_bot.send_message(
                 chat_id=ADMIN_ID,
-                text=f"🔔 <b>Restock notifications sent</b>\n\n📦 {product_name}\n👥 Sent: <code>{sent}</code>",
+                text=f"🔔 <b>Restock notifications sent</b>\n\n📦 {_admin_name(product_name)}\n👥 Sent: <code>{sent}</code>",
                 parse_mode="HTML"
             )
         except Exception:
@@ -840,7 +840,7 @@ Deposit exactly what's missing with one tap below.""",
                         chat_id=referrer_id,
                         text=(
                             "🎁 <b>Referral Earning Added</b>\n\n"
-                            f"👤 Referred user bought: <b>{name}</b>\n"
+                            f"👤 Referred user bought: <b>{_admin_name(name)}</b>\n"
                             f"💰 Earning: <b>{referral_earning:.6f} USDT</b>\n\n"
                             "Use Profile → Referrals to view earnings."
                         ),
@@ -939,7 +939,7 @@ Deposit exactly what's missing with one tap below.""",
                     chat_id=referrer_id,
                     text=(
                         "🎁 <b>Referral Earning Added</b>\n\n"
-                        f"👤 Referred user bought: <b>{name}</b>\n"
+                        f"👤 Referred user bought: <b>{_admin_name(name)}</b>\n"
                         f"💰 Earning: <b>{referral_earning:.6f} USDT</b>\n\n"
                         "Use Profile → Referrals to view earnings."
                     ),

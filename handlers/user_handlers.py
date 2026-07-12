@@ -5,6 +5,7 @@ import time
 from telegram.ext import ContextTypes
 from database.db import get_setting, set_user_coupon, render_message_template, cur, conn, ensure_user, get_balance, is_blocked, is_admin, create_ticket, get_user_tickets, add_referral, get_referral_stats, create_withdrawal_request, get_user_withdrawals, get_user_coupon, validate_coupon, clear_user_coupon, restore_backup_zip, add_restock_notification
 from utils.crypto import decrypt_text
+from utils.premium_emoji import strip_premium
 from keyboards.menus import main_menu, profile_menu, back_home, support_menu
 from utils.texts import welcome_text
 from utils.ui import edit_or_send
@@ -502,7 +503,7 @@ Thank you for using our store.""",
         else:
             shown = 0
             for order_id, name, price, delivery, created in rows:
-                name = str(name) if "<tg-emoji" in str(name) else html.escape(str(name), quote=False)
+                name = html.escape(strip_premium(str(name)), quote=False)
                 delivery = html.escape(str(decrypt_text(delivery) or ""), quote=False)
                 if len(delivery) > 700:
                     delivery = delivery[:700] + "..."
@@ -965,7 +966,7 @@ It will be used on your next wallet purchase.""",
             buttons = []
             msg = f"🔍 <b>Search Results for:</b> <code>{html.escape(str(keyword), quote=False)}</code>\n\n"
             for pid, name, price, stock in rows:
-                name_html = str(name) if "<tg-emoji" in str(name) else html.escape(str(name), quote=False)
+                name_html = html.escape(strip_premium(str(name)), quote=False)
                 msg += f"• <b>{name_html}</b> — <code>${float(price):.2f}</code> | Stock: <code>{stock}</code>\n"
                 buttons.append([InlineKeyboardButton(f"🛍 {button_premium(name)[0][:35]}", callback_data=f"product_{pid}", icon_custom_emoji_id=button_premium(name)[1])])
             buttons.append([InlineKeyboardButton("◀️ Back", callback_data="home")])
