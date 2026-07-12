@@ -93,6 +93,7 @@ _CHROMIUM_ARGS = [
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--disable-quic",
+    "--disable-blink-features=AutomationControlled",
     "--disable-setuid-sandbox",
     "--disable-extensions",
     "--disable-background-networking",
@@ -221,11 +222,24 @@ def send_family_invite_sync(email: str):
         with sync_playwright() as p:
             _log("playwright started, launching chromium")
             try:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=_CHROMIUM_ARGS,
-                )
-                _log("chromium launched OK")
+                try:
+                    # New headless mode (full Chromium binary): a much closer
+                    # fingerprint to real Chrome than the default headless
+                    # shell, which Microsoft/Akamai bot detection tarpits
+                    # (accepts the connection but never responds).
+                    browser = p.chromium.launch(
+                        headless=True,
+                        channel="chromium",
+                        args=_CHROMIUM_ARGS,
+                    )
+                    _log("chromium launched OK (new headless mode)")
+                except Exception as ch_exc:
+                    _log(f"new-headless launch failed: {repr(ch_exc)[:200]}; falling back to headless shell")
+                    browser = p.chromium.launch(
+                        headless=True,
+                        args=_CHROMIUM_ARGS,
+                    )
+                    _log("chromium launched OK (headless shell)")
             except Exception as launch_exc:
                 err_text = str(launch_exc)
                 _log(f"launch failed: {err_text[:300]}")
@@ -255,7 +269,7 @@ def send_family_invite_sync(email: str):
                 viewport={"width": 1280, "height": 800},
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                    "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
                 ),
                 locale="en-US",
             )
@@ -279,6 +293,15 @@ def send_family_invite_sync(email: str):
                 _log(f"canary OK: {page.url[:80]}")
             except Exception as can_exc:
                 _log(f"canary goto FAILED: {repr(can_exc)[:200]}")
+            # Second canary: does Microsoft's MAIN site answer this browser?
+            # Separates "all of Microsoft blocks us" from "only the account
+            # portal blocks us".
+            try:
+                _log("canary2 goto: https://www.microsoft.com")
+                page.goto("https://www.microsoft.com", wait_until="commit", timeout=12000)
+                _log(f"canary2 OK: {page.url[:80]}")
+            except Exception as can2_exc:
+                _log(f"canary2 goto FAILED: {repr(can2_exc)[:200]}")
 
             # Microsoft's account portal keeps background connections open, so
             # goto() can time out even though the page rendered fine. Navigate
