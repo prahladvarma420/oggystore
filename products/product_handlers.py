@@ -92,13 +92,14 @@ async def notify_low_stock(context_bot, product_id: int, product_name: str, rema
         row = cur.fetchone()
         last_notified = int(row[0] or 0) if row else 0
 
-        alert_level = None
-        for level in levels:
-            if remaining_stock <= level and last_notified != level:
-                alert_level = level
-                break
+        # Pick the TIGHTEST matching level (stock=1 -> alert level 1, not 5).
+        matching = [level for level in levels if remaining_stock <= level]
+        if not matching:
+            return
+        alert_level = min(matching)
 
-        if alert_level is None:
+        # Already alerted at this level or a tighter one -> never send a duplicate.
+        if last_notified and last_notified <= alert_level:
             return
 
         cur.execute("UPDATE products SET low_stock_notified=? WHERE id=?", (alert_level, product_id))
@@ -459,7 +460,7 @@ async def show_shop(q):
         visible_count += 1
         kb.append([
             InlineKeyboardButton(
-                f"{'���� ' if featured else ''}{button_premium(name)[0]} — {format_price(price)} (Stock: {stock})",
+                f"{'����� ' if featured else ''}{button_premium(name)[0]} — {format_price(price)} (Stock: {stock})",
                 callback_data=f"product_{pid}",
                 style="danger" if int(stock or 0) <= 0 else "primary",
                 icon_custom_emoji_id=button_premium(name)[1]

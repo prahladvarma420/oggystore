@@ -1,4 +1,5 @@
 from datetime import datetime
+import re as _re
 import sqlite3
 from config import DB_PATH, ADMIN_ID
 import os
@@ -552,6 +553,8 @@ def add_stock_items(product_id: int, delivery_text: str):
         )
 
     cur.execute("UPDATE products SET stock=? WHERE id=?", (len(items), product_id))
+    # Re-arm low-stock alerts after restock so the next drop alerts again.
+    cur.execute("UPDATE products SET low_stock_notified=0 WHERE id=?", (product_id,))
     conn.commit()
     return len(items)
 
@@ -1091,6 +1094,9 @@ def get_buy_x_get_y():
 
 
 
+_TG_EMOJI_TAG_RE = _re.compile(r'<tg-emoji emoji-id="(\d+)">(.*?)</tg-emoji>', _re.S)
+
+
 def get_message_template(key: str, default: str = ""):
     cur.execute("SELECT body FROM message_templates WHERE key=?", (key,))
     row = cur.fetchone()
@@ -1150,9 +1156,13 @@ def render_message_template(key: str, default: str = "", **kwargs):
     }
     body = get_message_template(key, default)
     try:
-        return body.format(**{**kwargs, **aliases})
+        rendered = body.format(**{**kwargs, **aliases})
     except Exception:
-        return body
+        rendered = body
+    # Defense-in-depth: never let a raw <tg-emoji> tag reach users via a
+    # stored/edited template. Replaces the tag with its fallback emoji and
+    # keeps all other HTML (<b>, <code>, ...) intact.
+    return _TG_EMOJI_TAG_RE.sub(r"\2", rendered)
 
 
 def simplify_default_message_templates():
