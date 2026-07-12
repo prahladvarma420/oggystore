@@ -550,7 +550,9 @@ Price: <b>{format_price(display_price)} / code</b>{sale_text}
 
 🔥 <b>{sold_count}</b> sold
 """
-
+    if stock > 0:
+        text += f"📦 <b>{stock}</b> in stock\n"
+        
     if stock <= 0:
         text += "\n🔴 <b>Out of stock</b>\n"
 
