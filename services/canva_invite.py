@@ -101,6 +101,93 @@ _CHROMIUM_ARGS = [
     "--no-first-run",
 ]
 
+
+def _proxy_config():
+    """Optional proxy for when Cloudflare blocks the server's datacenter IP.
+
+    Set the CANVA_PROXY environment variable on the worker, e.g.:
+        http://user:pass@host:port    or    http://host:port
+    A residential/ISP proxy works best against Cloudflare.
+    """
+    raw = os.environ.get("CANVA_PROXY", "").strip()
+    if not raw:
+        return None
+    try:
+        from urllib.parse import urlparse
+        u = urlparse(raw if "://" in raw else "http://" + raw)
+        cfg = {"server": f"{u.scheme}://{u.hostname}:{u.port}"}
+        if u.username:
+            cfg["username"] = u.username
+        if u.password:
+            cfg["password"] = u.password
+        return cfg
+    except Exception:
+        return {"server": raw}
+
+
+# Text markers of Cloudflare's challenge / block pages.
+_CF_MARKERS = (
+    "verify you are human",
+    "just a moment",
+    "designing again soon",
+    "needs to review the security",
+)
+
+
+def _looks_like_cloudflare(page) -> bool:
+    try:
+        body = page.inner_text("body", timeout=3000).lower()
+    except Exception:
+        return False
+    return any(m in body for m in _CF_MARKERS)
+
+
+def _try_cloudflare_challenge(page) -> bool:
+    """Try to pass Cloudflare's 'Verify you are human' checkbox.
+
+    Returns True when the challenge page is no longer visible.
+    """
+    for round_i in range(6):
+        if not _looks_like_cloudflare(page):
+            return True
+        _log(f"cloudflare challenge visible (round {round_i + 1}) — trying checkbox")
+
+        # The Turnstile checkbox lives in a cross-origin iframe.
+        try:
+            for frame in page.frames:
+                if "challenges.cloudflare.com" in (frame.url or ""):
+                    for sel in ("input[type='checkbox']", "label", "#challenge-stage", "body"):
+                        try:
+                            frame.click(sel, timeout=2000)
+                            _log(f"clicked challenge frame '{sel}'")
+                            break
+                        except Exception:
+                            continue
+                    break
+        except Exception as fr_exc:
+            _log(f"challenge frame click failed: {repr(fr_exc)[:150]}")
+
+        # Also try clicking where the widget renders on the main page.
+        try:
+            page.mouse.click(640, 320)
+        except Exception:
+            pass
+
+        page.wait_for_timeout(5000)
+        if not _looks_like_cloudflare(page):
+            _log("cloudflare challenge cleared")
+            return True
+
+        # Halfway through, try a fresh load — sometimes it passes silently.
+        if round_i == 2:
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=20000)
+                _log("reloaded page during challenge")
+            except Exception:
+                pass
+
+    return not _looks_like_cloudflare(page)
+
 # Block heavy resources (images/media/fonts) to slash memory + load time.
 # CSS/stylesheets are kept so element visibility checks stay accurate.
 _BLOCK_RESOURCE_TYPES = ("image", "media", "font")
@@ -205,12 +292,16 @@ def send_canva_invite_sync(email: str):
     try:
         with sync_playwright() as p:
             _log("playwright started, launching chromium")
+            _proxy = _proxy_config()
+            if _proxy:
+                _log(f"using proxy {_proxy.get('server')}")
             try:
                 try:
                     browser = p.chromium.launch(
                         headless=True,
                         channel="chromium",
                         args=_CHROMIUM_ARGS,
+                        proxy=_proxy,
                     )
                     _log("chromium launched OK (new headless mode)")
                 except Exception as ch_exc:
@@ -218,6 +309,7 @@ def send_canva_invite_sync(email: str):
                     browser = p.chromium.launch(
                         headless=True,
                         args=_CHROMIUM_ARGS,
+                        proxy=_proxy,
                     )
                     _log("chromium launched OK (headless shell)")
             except Exception as launch_exc:
@@ -233,6 +325,7 @@ def send_canva_invite_sync(email: str):
                     browser = p.chromium.launch(
                         headless=True,
                         args=_CHROMIUM_ARGS,
+                        proxy=_proxy,
                     )
                     _log("chromium launched OK after reinstall")
                 else:
@@ -299,6 +392,13 @@ def send_canva_invite_sync(email: str):
             except Exception as ls_exc:
                 _log(f"load_state timeout/error: {repr(ls_exc)[:200]}")
 
+            # Cloudflare sometimes challenges datacenter IPs with a
+            # "Verify you are human" checkbox — try to pass it.
+            if _looks_like_cloudflare(page):
+                _LAST_PHASE = "passing the Cloudflare human check"
+                _log("cloudflare challenge detected after load")
+                _try_cloudflare_challenge(page)
+
             def _snap():
                 global _LAST_SCREENSHOT
                 try:
@@ -358,6 +458,16 @@ def send_canva_invite_sync(email: str):
                     pass
                 _log(f"invite button not found; url={cur_url[:120]} | text={snippet[:150]}")
                 browser.close()
+                if any(m in snippet.lower() for m in _CF_MARKERS):
+                    return (
+                        False,
+                        "Cloudflare is blocking the server's IP with a 'Verify you are human' "
+                        "check, and the automatic pass attempt failed. Your Canva session is fine — "
+                        "the server's datacenter IP is the problem. Fix: set the CANVA_PROXY "
+                        "environment variable on the Railway worker to a residential proxy "
+                        "(format: http://user:pass@host:port), redeploy, then Retry.",
+                        screenshot,
+                    )
                 return (
                     False,
                     "Loaded the Canva People page but the 'Invite people' button never appeared. "
