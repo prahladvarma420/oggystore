@@ -14,26 +14,26 @@ from products.product_handlers import show_shop, show_product, buy_product, show
 from payments.deposit_handlers import start_deposit, handle_deposit_amount, deposit_shortfall
 from admin.admin_handlers import show_admin_panel, handle_admin_callback, handle_admin_message
 from config import ADMIN_USERNAME, ADMIN_ID
-​
-​
+
+
 # Security anti-spam settings.
 RATE_LIMIT_SECONDS = 1.5
 SPAM_WARN_LIMIT = 6
 SPAM_LOCK_SECONDS = 30
-​
+
 user_last_action = {}
 user_warn_count = {}
 user_locked_until = {}
-​
+
 # ---------------- Force-join gate ----------------
 # Users must join the official channels before using the bot.
 # Controlled by settings: force_join_enabled ('1'/'0') and
 # force_join_channels (comma-separated @usernames).
 # NOTE: the bot must be an ADMIN in each channel/group to check membership.
-​
+
 _join_cache = {}  # uid -> cache expiry timestamp (positive results only)
-​
-​
+
+
 def _force_join_channels():
     raw = get_setting("force_join_channels", "@oggypremiumstore,@oggypremiumchat") or ""
     out = []
@@ -46,8 +46,8 @@ def _force_join_channels():
         if part and part != "@":
             out.append(part)
     return out
-​
-​
+
+
 async def get_unjoined_channels(bot, uid):
     """Return the list of required channels this user has NOT joined."""
     if str(get_setting("force_join_enabled", "1")).strip() != "1":
@@ -57,7 +57,7 @@ async def get_unjoined_channels(bot, uid):
     now_ts = time.time()
     if _join_cache.get(uid, 0) > now_ts:
         return []
-​
+
     missing = []
     for ch in _force_join_channels():
         try:
@@ -68,12 +68,12 @@ async def get_unjoined_channels(bot, uid):
             # Bot not admin in that channel / wrong username -> don't lock
             # everyone out. Fix the channel setup and the gate resumes.
             continue
-​
+
     if not missing:
         _join_cache[uid] = now_ts + 300  # re-check at most every 5 min
     return missing
-​
-​
+
+
 def force_join_text():
     return (
         "🔐 <b>Join Our Channels To Continue</b>\n"
@@ -84,8 +84,8 @@ def force_join_text():
         "1️⃣ Tap the buttons below to join\n"
         "2️⃣ Then tap <b>✅ I Joined</b>"
     )
-​
-​
+
+
 def force_join_markup(missing):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     rows = []
@@ -94,8 +94,8 @@ def force_join_markup(missing):
         rows.append([InlineKeyboardButton(f"➕ Join @{uname}", url=f"https://t.me/{uname}")])
     rows.append([InlineKeyboardButton("✅ I Joined", callback_data="check_join")])
     return InlineKeyboardMarkup(rows)
-​
-​
+
+
 PROFILE_MSG_DEFAULT = (
     "👤 <b>My Profile</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💼 <b>Wallet Balance:</b> <b>{balance} USDT</b>\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💰 <b>Total Spent:</b> <b>${spent}</b>\n\n💳 <b>Paid Deposits:</b> <b>{deposits}</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n\n🎁 <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n\n🎟 <b>Coupon:</b> {coupon}\n🔔 <b>Notifications:</b> {notifications}"
 )
@@ -105,54 +105,54 @@ WALLET_MSG_DEFAULT = (
 SUPPORT_PROMPT_DEFAULT = (
     "🎫 <b>Create Support Ticket</b>\n\nSend your issue/message now.\n\nExample:\nPayment done but balance not added."
 )
-​
-​
+
+
 def is_rate_limited(user_id: int) -> bool:
     if is_admin(user_id):
         return False
-​
+
     now = time.time()
     locked_until = user_locked_until.get(user_id, 0)
-​
+
     if locked_until and now < locked_until:
         return True
-​
+
     last = user_last_action.get(user_id, 0)
-​
+
     if now - last < RATE_LIMIT_SECONDS:
         user_warn_count[user_id] = user_warn_count.get(user_id, 0) + 1
-​
+
         if user_warn_count[user_id] >= SPAM_WARN_LIMIT:
             user_locked_until[user_id] = now + SPAM_LOCK_SECONDS
             user_warn_count[user_id] = 0
-​
+
         return True
-​
+
     user_last_action[user_id] = now
     user_warn_count[user_id] = 0
     return False
-​
-​
+
+
 def get_lock_seconds(user_id: int) -> int:
     now = time.time()
     locked_until = user_locked_until.get(user_id, 0)
     if locked_until and now < locked_until:
         return int(locked_until - now)
     return 0
-​
-​
+
+
 async def send_rate_limit_message(obj):
     text = f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(user.id) or 2} seconds before using the bot again."
     try:
         await edit_or_send(obj, text)
     except Exception:
         await obj.message.reply_text(text, parse_mode="HTML")
-​
-​
+
+
 async def start(update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     ensure_user(user)
-​
+
     try:
         welcome_coupon = get_setting("auto_welcome_coupon", "")
         if welcome_coupon:
@@ -162,7 +162,7 @@ async def start(update, context: ContextTypes.DEFAULT_TYPE):
                 set_user_coupon(uid, welcome_coupon)
     except Exception:
         pass
-​
+
     try:
         if context.args:
             ref_arg = context.args[0]
@@ -183,21 +183,21 @@ async def start(update, context: ContextTypes.DEFAULT_TYPE):
                         pass
     except Exception:
         pass
-​
+
     if is_blocked(user.id):
         await update.message.reply_text(
             "🚫 <b>Access Denied</b>\n\nYour account is blocked from using this bot.",
             parse_mode="HTML"
         )
         return
-​
+
     if is_rate_limited(user.id):
         await update.message.reply_text(
             f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(user.id) or 2} seconds before using the bot again.",
             parse_mode="HTML"
         )
         return
-​
+
     if not is_admin(user.id):
         missing = await get_unjoined_channels(context.bot, user.id)
         if missing:
@@ -208,19 +208,19 @@ async def start(update, context: ContextTypes.DEFAULT_TYPE):
                 disable_web_page_preview=True,
             )
             return
-​
+
     await update.message.reply_text(
         welcome_text(user.first_name),
         reply_markup=main_menu(user.id),
         disable_web_page_preview=True,
         parse_mode="HTML",
     )
-​
-​
+
+
 async def admin(update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     ensure_user(user)
-​
+
     try:
         welcome_coupon = get_setting("auto_welcome_coupon", "")
         if welcome_coupon:
@@ -230,40 +230,40 @@ async def admin(update, context: ContextTypes.DEFAULT_TYPE):
                 set_user_coupon(user.id, welcome_coupon)
     except Exception:
         pass
-​
+
     if user.id is None:
         return
-​
+
     if not is_admin(user.id):
         await update.message.reply_text("❌ <b>Admin only.</b>", parse_mode="HTML")
         return
-​
+
     from keyboards.menus import admin_menu
     await update.message.reply_text(
         "👑 <b>Admin Panel</b>\n\n<i>Manage your shop from here.</i>",
         reply_markup=admin_menu(),
         parse_mode="HTML"
     )
-​
-​
+
+
 async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-​
+
     try:
         await q.answer()
     except Exception:
         pass
-​
+
     user = q.from_user
     uid = user.id
     ensure_user(user)
     data = q.data or ""
-​
+
     # Basic callback safety: ignore malformed/oversized callback data.
     if len(data) > 80:
         await edit_or_send(q, "❌ <b>Invalid request.</b>", back_home())
         return
-​
+
     if is_blocked(uid) and not data.startswith("admin_"):
         await edit_or_send(
             q,
@@ -271,7 +271,7 @@ async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
             back_home()
         )
         return
-​
+
     if is_rate_limited(uid) and not data.startswith("admin_"):
         await edit_or_send(
             q,
@@ -279,12 +279,12 @@ async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
             back_home()
         )
         return
-​
+
     try:
         _gate_bot = q.message.get_bot()
     except Exception:
         _gate_bot = None
-​
+
     if data == "check_join":
         _join_cache.pop(uid, None)
         missing = await get_unjoined_channels(_gate_bot, uid)
@@ -301,70 +301,70 @@ async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await edit_or_send(q, welcome_text(user.first_name), main_menu(uid))
         return
-​
+
     if not is_admin(uid) and not data.startswith("admin_"):
         missing = await get_unjoined_channels(_gate_bot, uid)
         if missing:
             await edit_or_send(q, force_join_text(), force_join_markup(missing))
             return
-​
+
     if data == "home":
         await edit_or_send(q, welcome_text(user.first_name), main_menu(uid))
         return
-​
+
     if data == "shop":
         await show_shop(q)
         return
-​
+
     if data.startswith("product_"):
         await show_product(q, int(data.split("_")[1]))
         return
-​
+
     if data.startswith("qtymenu_"):
         pid = int(data.split("_")[1])
         await show_quantity_menu(q, uid, pid)
         return
-​
+
     if data.startswith("previewbuy_"):
         parts = data.split("_")
         pid = int(parts[1])
         qty = int(parts[2])
         await show_order_preview(q, uid, pid, qty)
         return
-​
+
     if data.startswith("customqty_"):
         pid = int(data.split("_")[1])
         user_state[uid] = f"custom_buy_qty:{pid}"
         await edit_or_send(
             q,
             """✨ <b>Custom Quantity</b>
-​
+
 Send the quantity you want to buy.
-​
+
 Example:
 <code>13</code>""",
             back_home()
         )
         return
-​
+
     if data.startswith("directpay_"):
         parts = data.split("_")
         pid = int(parts[1])
         qty = int(parts[2]) if len(parts) > 2 else 1
         await start_direct_checkout(q, uid, pid, qty)
         return
-​
+
     if data.startswith("buy_"):
         parts = data.split("_")
         pid = int(parts[1])
         qty = int(parts[2]) if len(parts) > 2 else 1
         await buy_product(q, uid, pid, qty)
         return
-​
+
     if data == "deposit":
         await start_deposit(q, uid)
         return
-​
+
     if data.startswith("depneed_"):
         try:
             need_amount = float(data.split("_", 1)[1])
@@ -372,7 +372,7 @@ Example:
             need_amount = 0.0
         await deposit_shortfall(q, uid, need_amount)
         return
-​
+
     if data.startswith("canceldep_"):
         try:
             invoice_id = int(data.split("_", 1)[1])
@@ -389,24 +389,24 @@ Example:
             main_menu(uid)
         )
         return
-​
+
     if data == "bundles":
         await show_bundles(q)
         return
-​
+
     if data.startswith("buybundle_"):
         await buy_bundle(q, uid, int(data.split("_")[1]))
         return
-​
+
     if data.startswith("bundle_"):
         await show_bundle_details(q, uid, int(data.split("_")[1]))
         return
-​
+
     if data == "deposit_history":
         from payments.deposit_handlers import show_deposit_history
         await show_deposit_history(q, uid)
         return
-​
+
     if data == "wallet":
         cur.execute(
             "SELECT first_name, username, balance, referral_earnings, referral_pending, loyalty_points, vip_rank FROM users WHERE user_id=?",
@@ -417,15 +417,15 @@ Example:
             first_name, username, balance, ref_earn, ref_pending, loyalty_points, vip_rank = row
         else:
             first_name, username, balance, ref_earn, ref_pending, loyalty_points, vip_rank = (user.first_name or "User", None, 0, 0, 0, 0, "Bronze")
-​
+
         cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM deposits WHERE user_id=? AND status='paid'", (uid,))
         dep_count, dep_total = cur.fetchone()
-​
+
         cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (uid,))
         order_count, total_spent = cur.fetchone()
-​
+
         uname = f"@{username}" if username else "No username"
-​
+
         await edit_or_send(
             q,
             render_message_template(
@@ -447,7 +447,7 @@ Example:
             profile_menu()
         )
         return
-​
+
     if data.startswith("checkout_coupon_remove_"):
         parts = data.split("_")
         pid = int(parts[3])
@@ -455,7 +455,7 @@ Example:
         clear_user_coupon(uid)
         await show_order_preview(q, uid, pid, qty)
         return
-​
+
     if data.startswith("checkout_coupon_"):
         parts = data.split("_")
         pid = int(parts[2])
@@ -464,34 +464,34 @@ Example:
         await edit_or_send(
             q,
             """🎟 <b>Enter Coupon Code</b>
-​
+
 Send your coupon code now.
-​
+
 Example:
 <code>WELCOME10</code>""",
             back_home()
         )
         return
-​
+
     if data == "apply_coupon":
         user_state[uid] = "apply_coupon_code"
         await edit_or_send(
             q,
             """🎟 <b>Apply Coupon</b>
-​
+
 Send your coupon code.
-​
+
 Example:
 <code>WELCOME10</code>""",
             back_home()
         )
         return
-​
+
     if data == "remove_coupon":
         clear_user_coupon(uid)
         await edit_or_send(q, "🗑 <b>Coupon removed.</b>", main_menu(uid))
         return
-​
+
     if data.startswith("notify_stock_"):
         product_id = int(data.split("_")[-1])
         add_restock_notification(uid, product_id)
@@ -501,7 +501,7 @@ Example:
             back_home()
         )
         return
-​
+
     if data == "search":
         user_state[uid] = "user_search_product"
         await edit_or_send(
@@ -510,7 +510,7 @@ Example:
             back_home()
         )
         return
-​
+
     if data == "support_ticket":
         user_state[uid] = "support_ticket_message"
         await edit_or_send(
@@ -523,7 +523,7 @@ Example:
             back_home()
         )
         return
-​
+
     if data == "profile":
         cur.execute(
             "SELECT first_name, username, balance, notifications, joined, referral_earnings, referral_pending, loyalty_points, vip_rank FROM users WHERE user_id=?",
@@ -534,15 +534,15 @@ Example:
             first_name, username, bal, notifications, joined, ref_earn, ref_pending, loyalty_points, vip_rank = row
         else:
             first_name, username, bal, notifications, joined, ref_earn, ref_pending, loyalty_points, vip_rank = ("User", "No username", 0, 1, "Unknown", 0, 0, 0, "Bronze")
-​
+
         cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (uid,))
         order_count, total_spent = cur.fetchone()
-​
+
         cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM deposits WHERE user_id=? AND status='paid'", (uid,))
         dep_count, dep_total = cur.fetchone()
-​
+
         uname = f"@{username}" if username and username != "No username" else "No username"
-​
+
         await edit_or_send(
             q,
             render_message_template(
@@ -564,50 +564,50 @@ Example:
             profile_menu()
         )
         return
-​
+
     if data == "my_stats":
         cur.execute(
             "SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?",
             (uid,)
         )
         total_orders, total_spent = cur.fetchone()
-​
+
         await edit_or_send(
             q,
             f"""📊 <b>My Stats</b>
-​
+
 📦 <b>Total Orders:</b> {total_orders}
 💸 <b>Total Spent:</b> <code>{total_spent:.2f} USDT</code>
 💰 <b>Current Balance:</b> <code>{get_balance(uid):.2f} USDT</code>
-​
+
 Thank you for using our store.""",
             profile_menu()
         )
         return
-​
+
     if data == "toggle_notifications":
         cur.execute(
             "UPDATE users SET notifications = CASE notifications WHEN 1 THEN 0 ELSE 1 END WHERE user_id=?",
             (uid,)
         )
         conn.commit()
-​
+
         await edit_or_send(
             q,
             "🔔 <b>Notification setting updated.</b>\n\nYour preference has been saved.",
             profile_menu()
         )
         return
-​
+
     if data == "orders":
         cur.execute(
             "SELECT id, product_name, price, delivery, created FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 10",
             (uid,)
         )
         rows = cur.fetchall()
-​
+
         text = "📦 <b>My Orders</b>\n\n"
-​
+
         if not rows:
             text += "No orders found yet."
         else:
@@ -628,66 +628,66 @@ Thank you for using our store.""",
                     break
                 text += entry
                 shown += 1
-​
+
         await edit_or_send(q, text, profile_menu())
         return
-​
+
     if data == "referrals":
         ref_count, total_earned, pending = get_referral_stats(uid)
         bot_username = (await context.bot.get_me()).username
         ref_link = f"https://t.me/{bot_username}?start=ref_{uid}"
         percent = float(get_setting("referral_percent", "5") or 5)
-​
+
         await edit_or_send(
             q,
             f"""🎁 <b>Referral Program</b>
-​
+
 🔗 <b>Your Referral Link:</b>
 <code>{ref_link}</code>
-​
+
 👥 <b>Total Referrals:</b> <code>{ref_count}</code>
 💰 <b>Total Earned:</b> <code>{total_earned:.6f} USDT</code>
 💸 <b>Available To Withdraw:</b> <code>{pending:.6f} USDT</code>
 📊 <b>Commission:</b> <code>{percent:.2f}%</code> of referred purchases
-​
+
 Share your link and earn automatically when your referrals buy products.""",
             profile_menu()
         )
         return
-​
+
     if data == "withdraw_referral":
         ref_count, total_earned, pending = get_referral_stats(uid)
         minimum = float(get_setting("min_withdrawal", "1") or 1)
-​
+
         if pending < minimum:
             await edit_or_send(
                 q,
                 f"""💸 <b>Withdraw Referral Earnings</b>
-​
+
 ❌ Minimum withdrawal not reached.
-​
+
 💰 <b>Available:</b> <code>{pending:.6f} USDT</code>
 📌 <b>Minimum:</b> <code>{minimum:.6f} USDT</code>""",
                 profile_menu()
             )
             return
-​
+
         user_state[uid] = "withdraw_referral"
         await edit_or_send(
             q,
             f"""💸 <b>Withdraw Referral Earnings</b>
-​
+
 💰 <b>Available:</b> <code>{pending:.6f} USDT</code>
-​
+
 Send in this format:
 <code>AMOUNT | WALLET_ADDRESS</code>
-​
+
 Example:
 <code>1.5 | 0xYourBEP20Wallet</code>""",
             profile_menu()
         )
         return
-​
+
     if data == "withdraw_history":
         rows = get_user_withdrawals(uid, 10)
         text = "📂 <b>Withdrawal History</b>\\n\\n"
@@ -705,52 +705,52 @@ Example:
                 if note:
                     text += f"📝 Note: {note}\\n"
                 text += f"🕒 <code>{created}</code>\\n\\n"
-​
+
         if len(text) > 3900:
             text = text[:3900] + "\\n..."
-​
+
         await edit_or_send(q, text, profile_menu())
         return
-​
+
     if data == "support":
         await edit_or_send(
             q,
             f"""🎫 <b>Support Ticket</b>
-​
+
 Need help with payment, order, or product?
-​
+
 Create a ticket and admin will reply inside the bot.
-​
+
 For faster help, include:
 • Order ID
 • Payment TXID if payment issue
 • Screenshot/video proof if needed
-​
+
 👑 Admin: {ADMIN_USERNAME}""",
             support_menu()
         )
         return
-​
+
     if data == "create_ticket":
         user_state[uid] = "create_ticket"
         await edit_or_send(
             q,
             """🎫 <b>Create Support Ticket</b>
-​
+
 Send your issue in this format:
-​
+
 <code>Subject | Your message</code>
-​
+
 Example:
 <code>Payment issue | I paid but balance not added. TXID: ...</code>""",
             support_menu()
         )
         return
-​
+
     if data == "my_tickets":
         rows = get_user_tickets(uid, 10)
         text = "📂 <b>My Tickets</b>\n\n"
-​
+
         if not rows:
             text += "No tickets found."
         else:
@@ -767,19 +767,19 @@ Example:
                     f"📍 <b>Status:</b> {status_icon}\n"
                     f"📝 <b>Message:</b> {short_msg}\n"
                 )
-​
+
                 if admin_reply:
                     text += f"👑 <b>Admin Reply:</b> {admin_reply}\n"
-​
+
                 text += "\n"
-​
-​
+
+
         if len(text) > 3900:
             text = text[:3900] + "\n..."
-​
+
         await edit_or_send(q, text, support_menu())
         return
-​
+
     if data == "clear_chat":
         await edit_or_send(
             q,
@@ -787,24 +787,24 @@ Example:
             back_home()
         )
         return
-​
+
     if data == "admin_panel":
         await show_admin_panel(q, uid)
         return
-​
+
     if data.startswith("admin_"):
         handled = await handle_admin_callback(q, uid, data, context)
         if handled:
             return
-​
-​
+
+
 async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     uid = user.id
     text = update.message.text.strip()
-​
+
     ensure_user(user)
-​
+
     try:
         welcome_coupon = get_setting("auto_welcome_coupon", "")
         if welcome_coupon:
@@ -814,45 +814,45 @@ async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
                 set_user_coupon(uid, welcome_coupon)
     except Exception:
         pass
-​
+
     if is_blocked(uid):
         await update.message.reply_text(
             "🚫 <b>Access Denied</b>\n\nYour account is blocked from using this bot.",
             parse_mode="HTML"
         )
         return
-​
+
     if is_rate_limited(uid):
         await update.message.reply_text(
             f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(uid) or 2} seconds before sending another message.",
             parse_mode="HTML"
         )
         return
-​
+
     state = user_state.get(uid)
-​
+
     if state and state.startswith("m365_email:"):
         try:
             m365_order_id = int(state.split(":")[1])
         except Exception:
             m365_order_id = 0
-​
+
         email = text.strip()
-​
+
         if not re.fullmatch(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", email):
             await update.message.reply_text(
                 "❌ <b>That doesn't look like a valid email.</b>\n\nPlease send only your email address.\n\nExample: <code>yourname@gmail.com</code>",
                 parse_mode="HTML"
             )
             return
-​
+
         user_state.pop(uid, None)
-​
+
         from database.db import create_m365_invite
         from utils.crypto import encrypt_text
-​
+
         invite_id = create_m365_invite(uid, m365_order_id, email)
-​
+
         try:
             cur.execute(
                 "UPDATE orders SET delivery=? WHERE id=?",
@@ -861,41 +861,41 @@ async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
         except Exception:
             pass
-​
+
         await update.message.reply_text(
             "📨 <b>Sending your Microsoft 365 invite...</b>\n\n"
             f"📧 <b>Email:</b> <code>{html.escape(email, quote=False)}</code>\n\n"
             "⏳ This usually takes under a minute. You will get a confirmation message here.",
             parse_mode="HTML"
         )
-​
+
         import asyncio
         from services.m365_family import process_invite
         asyncio.create_task(process_invite(context.bot, invite_id))
         return
-​
+
     if state and state.startswith("canva_email:"):
         try:
             canva_order_id = int(state.split(":")[1])
         except Exception:
             canva_order_id = 0
-​
+
         email = text.strip()
-​
+
         if not re.fullmatch(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", email):
             await update.message.reply_text(
                 "❌ <b>That doesn't look like a valid email.</b>\n\nPlease send only your email address.\n\nExample: <code>yourname@gmail.com</code>",
                 parse_mode="HTML"
             )
             return
-​
+
         user_state.pop(uid, None)
-​
+
         from database.db import create_canva_invite
         from utils.crypto import encrypt_text
-​
+
         invite_id = create_canva_invite(uid, canva_order_id, email)
-​
+
         try:
             cur.execute(
                 "UPDATE orders SET delivery=? WHERE id=?",
@@ -904,26 +904,26 @@ async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
         except Exception:
             pass
-​
+
         await update.message.reply_text(
             "📨 <b>Sending your Canva invite...</b>\n\n"
             f"📧 <b>Email:</b> <code>{html.escape(email, quote=False)}</code>\n\n"
             "⏳ This usually takes under a minute. You will get a confirmation message here.",
             parse_mode="HTML"
         )
-​
+
         import asyncio
         from services.canva_invite import process_invite
         asyncio.create_task(process_invite(context.bot, invite_id))
         return
-​
+
     if state and state.startswith("checkout_coupon_code:"):
         try:
             state_parts = state.split(":")
             pid = int(state_parts[1])
             qty = int(state_parts[2])
             code = text.strip().upper()
-​
+
             coupon, error = validate_coupon(code)
             if not coupon:
                 await update.message.reply_text(
@@ -931,26 +931,26 @@ async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="HTML"
                 )
                 return
-​
+
             set_user_coupon(uid, code)
             user_state.pop(uid, None)
-​
+
             await update.message.reply_text(
                 f"""✅ <b>Coupon Applied</b>
-​
+
 🎟 Code: <code>{code}</code>
 💝 Discount: <code>{coupon['value']}{'%' if coupon['discount_type'] == 'percent' else ' USDT'}</code>
-​
+
 Now open checkout again to see the updated final price.""",
                 parse_mode="HTML"
             )
-​
+
             class MessageQuery:
                 def __init__(self, message, from_user):
                     self.message = message
                     self.from_user = from_user
                     self.data = ""
-​
+
                 async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
                     await self.message.reply_text(
                         text,
@@ -958,27 +958,27 @@ Now open checkout again to see the updated final price.""",
                         reply_markup=reply_markup,
                         disable_web_page_preview=disable_web_page_preview,
                     )
-​
+
             fake_q = MessageQuery(update.message, user)
             await show_order_preview(fake_q, uid, pid, qty)
             return
-​
+
         except Exception as exc:
             await update.message.reply_text(
                 f"❌ <b>Could not apply coupon.</b>\n\n<code>{exc}</code>",
                 parse_mode="HTML"
             )
             return
-​
+
             set_user_coupon(uid, code)
             user_state.pop(uid, None)
-​
+
             class MessageQuery:
                 def __init__(self, message, from_user):
                     self.message = message
                     self.from_user = from_user
                     self.data = ""
-​
+
                 async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
                     await self.message.reply_text(
                         text,
@@ -986,86 +986,86 @@ Now open checkout again to see the updated final price.""",
                         reply_markup=reply_markup,
                         disable_web_page_preview=disable_web_page_preview,
                     )
-​
+
             fake_q = MessageQuery(update.message, user)
             await show_order_preview(fake_q, uid, pid, qty)
             return
-​
+
         except Exception:
             await update.message.reply_text(
                 "❌ <b>Could not apply coupon.</b>",
                 parse_mode="HTML"
             )
             return
-​
+
     if state == "apply_coupon_code":
         try:
             code = text.strip().upper()
             coupon, error = validate_coupon(code)
-​
+
             if not coupon:
                 await update.message.reply_text(
                     f"❌ <b>Invalid Coupon</b>\n\n{error}",
                     parse_mode="HTML"
                 )
                 return
-​
+
             set_user_coupon(uid, code)
             user_state.pop(uid, None)
-​
+
             dtype = "%" if coupon["discount_type"] == "percent" else "USDT"
             await update.message.reply_text(
                 f"""✅ <b>Coupon Applied</b>
-​
+
 🎟 Code: <code>{code}</code>
 💰 Discount: <code>{coupon['value']}{dtype}</code>
-​
+
 It will be used on your next checkout.""",
                 reply_markup=main_menu(uid),
                 parse_mode="HTML"
             )
             return
-​
+
         except Exception as exc:
             await update.message.reply_text(
                 f"❌ <b>Could not apply coupon.</b>\n\n<code>{exc}</code>",
                 parse_mode="HTML"
             )
             return
-​
+
         set_user_coupon(uid, code)
         user_state.pop(uid, None)
-​
+
         dtype = "%" if coupon["discount_type"] == "percent" else "USDT"
         await update.message.reply_text(
             f"""✅ <b>Coupon Applied</b>
-​
+
 🎟 Code: <code>{code}</code>
 💰 Discount: <code>{coupon['value']}{dtype}</code>
-​
+
 It will be used on your next wallet purchase.""",
             reply_markup=main_menu(uid),
             parse_mode="HTML"
         )
         return
-​
+
     if state and state.startswith("custom_buy_qty:"):
         try:
             pid = int(state.split(":")[1])
             qty = int(text.strip())
-​
+
             if qty <= 0:
                 await update.message.reply_text("❌ Quantity must be more than 0.", parse_mode="HTML")
                 return
-​
+
             user_state.pop(uid, None)
-​
+
             class MessageQuery:
                 def __init__(self, message, from_user):
                     self.message = message
                     self.from_user = from_user
                     self.data = ""
-​
+
                 async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
                     await self.message.reply_text(
                         text,
@@ -1073,25 +1073,25 @@ It will be used on your next wallet purchase.""",
                         reply_markup=reply_markup,
                         disable_web_page_preview=disable_web_page_preview,
                     )
-​
+
             fake_q = MessageQuery(update.message, user)
             await show_order_preview(fake_q, uid, pid, qty)
             return
-​
+
         except Exception:
             await update.message.reply_text(
                 "❌ <b>Invalid quantity.</b>\n\nSend only a number, example: <code>13</code>",
                 parse_mode="HTML"
             )
             return
-​
+
     if state == "user_search_product":
         try:
             keyword = text.strip()
             if not keyword:
                 await update.message.reply_text("❌ Please send a search keyword.", parse_mode="HTML")
                 return
-​
+
             cur.execute(
                 """
                 SELECT id, name, price, stock
@@ -1104,7 +1104,7 @@ It will be used on your next wallet purchase.""",
             )
             rows = cur.fetchall()
             user_state.pop(uid, None)
-​
+
             if not rows:
                 await update.message.reply_text(
                     f"🔍 <b>No products found for:</b> <code>{html.escape(str(keyword), quote=False)}</code>",
@@ -1112,7 +1112,7 @@ It will be used on your next wallet purchase.""",
                     parse_mode="HTML"
                 )
                 return
-​
+
             from telegram import InlineKeyboardMarkup
             from utils.button_styles import AutoStyledButton as InlineKeyboardButton
             from utils.premium_emoji import strip_premium, first_premium_id, button_premium
@@ -1123,14 +1123,14 @@ It will be used on your next wallet purchase.""",
                 msg += f"• <b>{name_html}</b> — <code>${float(price):.2f}</code> | Stock: <code>{stock}</code>\n"
                 buttons.append([InlineKeyboardButton(f"🛍 {button_premium(name)[0][:35]}", callback_data=f"product_{pid}", icon_custom_emoji_id=button_premium(name)[1])])
             buttons.append([InlineKeyboardButton("◀️ Back", callback_data="home")])
-​
+
             await update.message.reply_text(
                 msg,
                 reply_markup=InlineKeyboardMarkup(buttons),
                 parse_mode="HTML"
             )
             return
-​
+
         except Exception as exc:
             user_state.pop(uid, None)
             await update.message.reply_text(
@@ -1139,27 +1139,27 @@ It will be used on your next wallet purchase.""",
                 parse_mode="HTML"
             )
             return
-​
+
     if state == "deposit_amount":
         await handle_deposit_amount(update, uid, text)
         return
-​
+
     if state == "withdraw_referral":
         try:
             amount_text, wallet = [x.strip() for x in text.split("|", 1)]
             amount = float(amount_text)
             minimum = float(get_setting("min_withdrawal", "1") or 1)
-​
+
             if amount < minimum:
                 await update.message.reply_text(
                     f"❌ <b>Minimum withdrawal is {minimum:.6f} USDT.</b>",
                     parse_mode="HTML"
                 )
                 return
-​
+
             request_id = create_withdrawal_request(uid, amount, wallet)
             user_state.pop(uid, None)
-​
+
             if not request_id:
                 await update.message.reply_text(
                     "❌ <b>Withdrawal failed.</b>\\n\\nCheck your available referral balance.",
@@ -1167,19 +1167,19 @@ It will be used on your next wallet purchase.""",
                     parse_mode="HTML"
                 )
                 return
-​
+
             await update.message.reply_text(
                 f"""✅ <b>Withdrawal Request Created</b>
-​
+
 🧾 <b>Request ID:</b> <code>#{request_id}</code>
 💰 <b>Amount:</b> <code>{amount:.6f} USDT</code>
 👛 <b>Wallet:</b> <code>{wallet}</code>
-​
+
 Admin will review your request.""",
                 reply_markup=profile_menu(),
                 parse_mode="HTML"
             )
-​
+
             try:
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
@@ -1195,37 +1195,37 @@ Admin will review your request.""",
                 )
             except Exception:
                 pass
-​
+
             return
-​
+
         except Exception:
             await update.message.reply_text(
                 "❌ <b>Wrong Format</b>\\n\\nUse: <code>AMOUNT | WALLET_ADDRESS</code>",
                 parse_mode="HTML"
             )
             return
-​
+
     if state == "support_ticket_message":
         try:
             subject = "Support Ticket"
             message = text.strip()
-​
+
             if not message:
                 raise ValueError("empty")
-​
+
             ticket_id = create_ticket(uid, subject, message)
             user_state.pop(uid, None)
-​
+
             await update.message.reply_text(
                 f"""✅ <b>Ticket Created</b>
-​
+
 🎫 <b>Ticket ID:</b> <code>#{ticket_id}</code>
-​
+
 Admin will reply soon.""",
                 reply_markup=support_menu(),
                 parse_mode="HTML"
             )
-​
+
             try:
                 from config import ADMIN_ID
                 await context.bot.send_message(
@@ -1242,37 +1242,37 @@ Admin will reply soon.""",
                 )
             except Exception:
                 pass
-​
+
             return
-​
+
         except Exception:
             await update.message.reply_text(
                 "❌ <b>Please send your issue/message.</b>",
                 parse_mode="HTML"
             )
             return
-​
+
     if state == "create_ticket":
         try:
             subject, message = [x.strip() for x in text.split("|", 1)]
-​
+
             if not subject or not message:
                 raise ValueError("empty")
-​
+
             ticket_id = create_ticket(uid, subject, message)
             user_state.pop(uid, None)
-​
+
             await update.message.reply_text(
                 f"""✅ <b>Ticket Created</b>
-​
+
 🎫 <b>Ticket ID:</b> <code>#{ticket_id}</code>
 📌 <b>Subject:</b> {html.escape(str(subject), quote=False)}
-​
+
 Admin will reply soon.""",
                 reply_markup=support_menu(),
                 parse_mode="HTML"
             )
-​
+
             try:
                 from config import ADMIN_ID
                 await context.bot.send_message(
@@ -1289,32 +1289,32 @@ Admin will reply soon.""",
                 )
             except Exception:
                 pass
-​
+
             return
-​
+
         except Exception:
             await update.message.reply_text(
                 "❌ <b>Wrong Format</b>\n\nUse: <code>Subject | Your message</code>",
                 parse_mode="HTML"
             )
             return
-​
+
     if state and state.startswith("admin_"):
         handled = await handle_admin_message(update, context, uid, text, state)
         if handled:
             return
-​
+
     await update.message.reply_text(
         "ℹ️ Use <code>/start</code> to open the menu.",
         parse_mode="HTML"
     )
-​
-​
+
+
 async def photo_handler(update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     uid = user.id
     ensure_user(user)
-​
+
     try:
         welcome_coupon = get_setting("auto_welcome_coupon", "")
         if welcome_coupon:
@@ -1324,19 +1324,19 @@ async def photo_handler(update, context: ContextTypes.DEFAULT_TYPE):
                 set_user_coupon(uid, welcome_coupon)
     except Exception:
         pass
-​
+
     if not is_admin(uid):
         return
-​
+
     state = user_state.get(uid)
-​
+
     if state and state.startswith("checkout_coupon_code:"):
         try:
             _, pid_text, qty_text = state.split(":")
             pid = int(pid_text)
             qty = int(qty_text)
             code = text.strip().upper()
-​
+
             coupon, error = validate_coupon(code)
             if not coupon:
                 await update.message.reply_text(
@@ -1344,16 +1344,16 @@ async def photo_handler(update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="HTML"
                 )
                 return
-​
+
             set_user_coupon(uid, code)
             user_state.pop(uid, None)
-​
+
             class MessageQuery:
                 def __init__(self, message, from_user):
                     self.message = message
                     self.from_user = from_user
                     self.data = ""
-​
+
                 async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
                     await self.message.reply_text(
                         text,
@@ -1361,62 +1361,62 @@ async def photo_handler(update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=reply_markup,
                         disable_web_page_preview=disable_web_page_preview,
                     )
-​
+
             fake_q = MessageQuery(update.message, user)
             await show_order_preview(fake_q, uid, pid, qty)
             return
-​
+
         except Exception:
             await update.message.reply_text(
                 "❌ <b>Could not apply coupon.</b>",
                 parse_mode="HTML"
             )
             return
-​
+
     if state == "apply_coupon_code":
         code = text.strip().upper()
         coupon, error = validate_coupon(code)
-​
+
         if not coupon:
             await update.message.reply_text(
                 f"❌ <b>Invalid Coupon</b>\n\n{error}",
                 parse_mode="HTML"
             )
             return
-​
+
         set_user_coupon(uid, code)
         user_state.pop(uid, None)
-​
+
         dtype = "%" if coupon["discount_type"] == "percent" else "USDT"
         await update.message.reply_text(
             f"""✅ <b>Coupon Applied</b>
-​
+
 🎟 Code: <code>{code}</code>
 💰 Discount: <code>{coupon['value']}{dtype}</code>
-​
+
 It will be used on your next wallet purchase.""",
             reply_markup=main_menu(uid),
             parse_mode="HTML"
         )
         return
-​
+
     if state and state.startswith("custom_buy_qty:"):
         try:
             pid = int(state.split(":")[1])
             qty = int(text.strip())
-​
+
             if qty <= 0:
                 await update.message.reply_text("❌ Quantity must be more than 0.", parse_mode="HTML")
                 return
-​
+
             user_state.pop(uid, None)
-​
+
             class MessageQuery:
                 def __init__(self, message, from_user):
                     self.message = message
                     self.from_user = from_user
                     self.data = ""
-​
+
                 async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
                     await self.message.reply_text(
                         text,
@@ -1424,18 +1424,18 @@ It will be used on your next wallet purchase.""",
                         reply_markup=reply_markup,
                         disable_web_page_preview=disable_web_page_preview,
                     )
-​
+
             fake_q = MessageQuery(update.message, user)
             await show_order_preview(fake_q, uid, pid, qty)
             return
-​
+
         except Exception:
             await update.message.reply_text(
                 "❌ <b>Invalid quantity.</b>\n\nSend only a number, example: <code>13</code>",
                 parse_mode="HTML"
             )
             return
-​
+
     if state == "admin_add_product_photo":
         try:
             admin_temp_data = None
@@ -1450,7 +1450,7 @@ It will be used on your next wallet purchase.""",
         except Exception as exc:
             await update.message.reply_text(f"❌ <b>Photo save failed.</b>\n\n<code>{exc}</code>", parse_mode="HTML")
         return
-​
+
     if state and state.startswith("admin_easy_edit:") and state.endswith(":photo"):
         try:
             from database.db import get_setting, set_user_coupon,  render_message_template,  set_product_image
@@ -1466,7 +1466,7 @@ It will be used on your next wallet purchase.""",
         except Exception as exc:
             await update.message.reply_text(f"❌ <b>Image save failed.</b>\n\n<code>{exc}</code>", parse_mode="HTML")
         return
-​
+
     if state == "admin_wait_product_image":
         try:
             from database.db import get_setting, set_user_coupon,  render_message_template,  set_product_image
@@ -1475,12 +1475,12 @@ It will be used on your next wallet purchase.""",
                 await update.message.reply_text("❌ Product ID missing. Start again from Admin Panel.", parse_mode="HTML")
                 user_state.pop(uid, None)
                 return
-​
+
             file_id = update.message.photo[-1].file_id
             set_product_image(int(product_id), file_id)
             user_state.pop(uid, None)
             context.user_data.pop("image_product_id", None)
-​
+
             await update.message.reply_text(
                 f"✅ <b>Product image saved.</b>\\n\\n🆔 Product ID: <code>{product_id}</code>",
                 reply_markup=main_menu(uid),
@@ -1491,28 +1491,28 @@ It will be used on your next wallet purchase.""",
                 f"❌ <b>Image save failed.</b>\\n\\n<code>{exc}</code>",
                 parse_mode="HTML"
             )
-​
-​
-​
+
+
+
 async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     uid = user.id
     state = user_state.get(uid)
-​
+
     if state == "admin_upload_m365_session" and is_admin(uid):
         try:
             doc = update.message.document
             if not doc.file_name.lower().endswith(".json"):
                 await update.message.reply_text("❌ Please send the <code>m365_session.json</code> file.", parse_mode="HTML")
                 return
-​
+
             file = await context.bot.get_file(doc.file_id)
             data = bytes(await file.download_as_bytearray())
-​
+
             from services.m365_family import save_session
             save_session(data.decode("utf-8"))
             user_state.pop(uid, None)
-​
+
             await update.message.reply_text(
                 "✅ <b>Microsoft session saved (encrypted).</b>\n\n"
                 "🧪 Now use Admin Panel → 📩 M365 Auto-Invite → Test Invite to verify it works.\n\n"
@@ -1521,28 +1521,28 @@ async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
             return
-​
+
         except Exception as exc:
             await update.message.reply_text(
                 f"❌ <b>Session save failed.</b>\n\n<code>{exc}</code>\n\nMake sure you sent the unmodified <code>m365_session.json</code> file.",
                 parse_mode="HTML"
             )
             return
-​
+
     if state == "admin_upload_canva_session" and is_admin(uid):
         try:
             doc = update.message.document
             if not doc.file_name.lower().endswith(".json"):
                 await update.message.reply_text("❌ Please send the <code>canva_session.json</code> file.", parse_mode="HTML")
                 return
-​
+
             file = await context.bot.get_file(doc.file_id)
             data = bytes(await file.download_as_bytearray())
-​
+
             from services.canva_invite import save_session
             save_session(data.decode("utf-8"))
             user_state.pop(uid, None)
-​
+
             await update.message.reply_text(
                 "✅ <b>Canva session saved (encrypted).</b>\n\n"
                 "🧪 Now use Admin Panel → 🎨 Canva Auto-Invite → Test Invite to verify it works.\n\n"
@@ -1551,42 +1551,42 @@ async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
             return
-​
+
         except Exception as exc:
             await update.message.reply_text(
                 f"❌ <b>Session save failed.</b>\n\n<code>{exc}</code>\n\nMake sure you sent the unmodified <code>canva_session.json</code> file.",
                 parse_mode="HTML"
             )
             return
-​
+
     if state == "admin_restore_backup" and is_admin(uid):
         try:
             doc = update.message.document
             if not doc.file_name.lower().endswith(".zip"):
                 await update.message.reply_text("❌ Please send a .zip backup file.", parse_mode="HTML")
                 return
-​
+
             file = await context.bot.get_file(doc.file_id)
             restore_dir = Path("restore_uploads")
             restore_dir.mkdir(exist_ok=True)
             file_path = restore_dir / doc.file_name
             await file.download_to_drive(str(file_path))
-​
+
             ok, msg = restore_backup_zip(str(file_path))
             user_state.pop(uid, None)
-​
+
             await update.message.reply_text(
                 ("✅ " if ok else "❌ ") + f"<b>{msg}</b>",
                 reply_markup=main_menu(uid),
                 parse_mode="HTML"
             )
             return
-​
+
         except Exception as exc:
             await update.message.reply_text(
                 f"❌ <b>Restore failed.</b>\n\n<code>{exc}</code>",
                 parse_mode="HTML"
             )
             return
-​
+
     await update.message.reply_text("ℹ️ Document received, but no document action is active.", parse_mode="HTML")
