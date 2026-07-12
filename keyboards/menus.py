@@ -102,6 +102,7 @@ def admin_menu():
         [InlineKeyboardButton("🤖 Auto Marketing", callback_data="admin_auto_marketing")],
         [InlineKeyboardButton("🎨 Customize Bot", callback_data="admin_customize")],
         [InlineKeyboardButton("📩 M365 Auto-Invite", callback_data="admin_m365")],
+        [InlineKeyboardButton("🎨 Canva Auto-Invite", callback_data="admin_canva")],
         [InlineKeyboardButton("◀️ Back", callback_data="home")],
     ])
 

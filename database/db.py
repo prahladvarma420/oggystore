@@ -1177,7 +1177,7 @@ def simplify_default_message_templates():
         "coupon_broadcast": "🎟 New Coupon Available!\n\n💝 Discount: {discount}\n🎫 Code: {code}\n⏳ Validity: {validity}\n🔥 Limit: {limit}\n\nUse it before checkout 👇",
         "flash_sale_broadcast": "🔥 FLASH SALE!\n\n📦 {product}\n\n💰 Was: {old_price}\n⚡ Now: {new_price}\n🎁 Discount: {discount}\n\n⏳ {validity}\n\nBuy before it ends 👇",
         "restock_alert": "🔔 Back In Stock!\n\n📦 {product}\n📊 Available: {stock}\n\nTap below to buy now 👇",
-        "deposit_success": "✅ Deposit Confirmed\n\n💵 Amount: {amount} USDT\n\nYour wallet balance has been updated."
+        "deposit_success": "✅ Deposit Confirmed\n\n��� Amount: {amount} USDT\n\nYour wallet balance has been updated."
     }
     for key, body in simple_templates.items():
         cur.execute("UPDATE message_templates SET body=? WHERE key=?", (body, key))
@@ -1439,4 +1439,92 @@ def toggle_m365_product(product_id: int) -> bool:
         ids.add(pid)
         enabled = True
     set_setting("m365_invite_products", ",".join(str(x) for x in sorted(ids)))
+    return enabled
+
+
+# ---------------- Canva team auto-invite ----------------
+
+_CANVA_TABLE_READY = False
+
+
+def ensure_canva_table():
+    global _CANVA_TABLE_READY
+    if _CANVA_TABLE_READY:
+        return
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS canva_invites(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        order_id INTEGER,
+        email TEXT,
+        status TEXT DEFAULT 'pending',
+        error TEXT,
+        created TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    conn.commit()
+    _CANVA_TABLE_READY = True
+
+
+def create_canva_invite(user_id: int, order_id: int, email: str) -> int:
+    ensure_canva_table()
+    cur.execute(
+        "INSERT INTO canva_invites(user_id, order_id, email, status) VALUES(?,?,?,'pending')",
+        (user_id, order_id, email),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def set_canva_invite_status(invite_id: int, status: str, error=None):
+    ensure_canva_table()
+    cur.execute("UPDATE canva_invites SET status=?, error=? WHERE id=?", (status, error, invite_id))
+    conn.commit()
+
+
+def get_canva_invite(invite_id: int):
+    ensure_canva_table()
+    cur.execute(
+        "SELECT id, user_id, order_id, email, status, error, created FROM canva_invites WHERE id=?",
+        (invite_id,),
+    )
+    return cur.fetchone()
+
+
+def list_canva_invites(limit: int = 10):
+    ensure_canva_table()
+    cur.execute(
+        "SELECT id, user_id, order_id, email, status, error, created FROM canva_invites ORDER BY id DESC LIMIT ?",
+        (limit,),
+    )
+    return cur.fetchall()
+
+
+def get_canva_product_ids():
+    raw = get_setting("canva_invite_products", "") or ""
+    ids = set()
+    for part in str(raw).split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.add(int(part))
+    return ids
+
+
+def is_canva_product(product_id) -> bool:
+    try:
+        return int(product_id) in get_canva_product_ids()
+    except Exception:
+        return False
+
+
+def toggle_canva_product(product_id: int) -> bool:
+    ids = get_canva_product_ids()
+    pid = int(product_id)
+    if pid in ids:
+        ids.discard(pid)
+        enabled = False
+    else:
+        ids.add(pid)
+        enabled = True
+    set_setting("canva_invite_products", ",".join(str(x) for x in sorted(ids)))
     return enabled

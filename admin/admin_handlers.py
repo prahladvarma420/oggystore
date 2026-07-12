@@ -8,7 +8,7 @@ import os
 import shutil
 from datetime import datetime, timedelta
 
-from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, render_message_template, cur, conn, is_admin, is_owner, add_admin, remove_admin, get_admins, add_balance, add_stock_items, get_available_stock_count, get_sold_stock_count, get_total_stock_count, restock_product, block_user, unblock_user, log_admin_action, get_admin_logs, update_product_details, get_open_tickets, get_ticket, reply_ticket, close_ticket, get_pending_withdrawals, update_withdrawal_status, set_setting, get_setting, set_product_featured, remove_product_image, get_product_price_tiers, set_product_price_tier, delete_product_price_tier, clear_product_price_tiers, validate_coupon, list_message_templates, get_message_template, set_message_template, smart_dashboard_stats, clear_admin_logs, create_backup_zip, restore_backup_zip, create_bundle, get_all_bundles, get_bundle_items, delete_bundle, get_m365_product_ids, toggle_m365_product, list_m365_invites, get_m365_invite, set_m365_invite_status
+from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, render_message_template, cur, conn, is_admin, is_owner, add_admin, remove_admin, get_admins, add_balance, add_stock_items, get_available_stock_count, get_sold_stock_count, get_total_stock_count, restock_product, block_user, unblock_user, log_admin_action, get_admin_logs, update_product_details, get_open_tickets, get_ticket, reply_ticket, close_ticket, get_pending_withdrawals, update_withdrawal_status, set_setting, get_setting, set_product_featured, remove_product_image, get_product_price_tiers, set_product_price_tier, delete_product_price_tier, clear_product_price_tiers, validate_coupon, list_message_templates, get_message_template, set_message_template, smart_dashboard_stats, clear_admin_logs, create_backup_zip, restore_backup_zip, create_bundle, get_all_bundles, get_bundle_items, delete_bundle, get_m365_product_ids, toggle_m365_product, list_m365_invites, get_m365_invite, set_m365_invite_status, get_canva_product_ids, toggle_canva_product, list_canva_invites, get_canva_invite, set_canva_invite_status
 from utils.crypto import decrypt_text
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
 from config import DB_PATH, ADMIN_ID
@@ -2947,6 +2947,142 @@ Choose an order to view details:""",
         )
         return True
 
+    if data == "admin_canva":
+        try:
+            from services.canva_invite import has_session as canva_has_session
+            session_line = "✅ Uploaded" if canva_has_session() else "❌ Not uploaded yet"
+        except Exception:
+            session_line = "❌ Not uploaded yet"
+
+        enabled_ids = get_canva_product_ids()
+        products_line = ", ".join(f"#{p}" for p in sorted(enabled_ids)) if enabled_ids else "None yet"
+
+        invite_lines = ""
+        for inv in list_canva_invites(5):
+            inv_id, inv_uid, inv_order_id, inv_email, inv_status, inv_error, inv_created = inv
+            icon = "✅" if inv_status == "sent" else ("❌" if inv_status == "failed" else "⏳")
+            invite_lines += f"\n{icon} <code>{html.escape(str(inv_email), quote=False)}</code> — {inv_status}"
+        if not invite_lines:
+            invite_lines = "\nNo invites yet."
+
+        await edit_or_send(
+            q,
+            "🎨 <b>Canva Auto-Invite</b>\n\n"
+            f"🔑 <b>Canva session:</b> {session_line}\n"
+            f"📦 <b>Auto-invite products:</b> {products_line}\n"
+            f"\n🧾 <b>Recent invites:</b>{invite_lines}\n\n"
+            "⚙️ How it works: customer buys an enabled product → bot asks their email → "
+            "bot opens your Canva team (saved session), clicks Invite people, enters the email and sends the invitation automatically.",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 Choose Products", callback_data="admin_canva_products")],
+                [InlineKeyboardButton("🔑 Upload Session", callback_data="admin_canva_upload"), InlineKeyboardButton("🧪 Test Invite", callback_data="admin_canva_test")],
+                [InlineKeyboardButton("🧾 All Invites", callback_data="admin_canva_invites")],
+                [InlineKeyboardButton("⬅️ Admin Home", callback_data="admin_panel")],
+            ])
+        )
+        return True
+
+    if data == "admin_canva_upload":
+        user_state[uid] = "admin_upload_canva_session"
+        await edit_or_send(
+            q,
+            "🔑 <b>Upload Canva Session</b>\n\n"
+            "Do this ONCE on your own PC:\n\n"
+            "1️⃣ <code>pip install playwright</code>\n"
+            "2️⃣ <code>python -m playwright install chromium</code>\n"
+            "3️⃣ <code>python tools/canva_login.py</code>\n"
+            "4️⃣ Log in to your Canva account in the browser that opens and wait for the People page\n"
+            "5️⃣ Press ENTER in the terminal → it saves <code>canva_session.json</code>\n"
+            "6️⃣ Send that file here as a document 📎\n\n"
+            "⚠️ Keep that file private — it gives access to your Canva account. It is stored encrypted.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_canva")]])
+        )
+        return True
+
+    if data == "admin_canva_test":
+        user_state[uid] = "admin_canva_test_email"
+        await edit_or_send(
+            q,
+            "🧪 <b>Test Invite</b>\n\n"
+            "Send an email address — a REAL Canva team invitation will be sent to it.\n\n"
+            "⚠️ If accepted it joins your team, so test with your own second email.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_canva")]])
+        )
+        return True
+
+    if data == "admin_canva_products" or data.startswith("admin_canva_toggle_"):
+        if data.startswith("admin_canva_toggle_"):
+            try:
+                toggle_canva_product(int(data.replace("admin_canva_toggle_", "")))
+            except Exception:
+                pass
+
+        enabled_ids = get_canva_product_ids()
+        cur.execute("SELECT id, name FROM products WHERE active=1 ORDER BY id")
+        canva_products = cur.fetchall()
+
+        rows = []
+        for prod_id, prod_name in canva_products[:40]:
+            label_name = strip_premium(str(prod_name))[:35]
+            mark = "✅" if prod_id in enabled_ids else "⬜"
+            rows.append([InlineKeyboardButton(f"{mark} #{prod_id} {label_name}", callback_data=f"admin_canva_toggle_{prod_id}")])
+        rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_canva")])
+
+        await edit_or_send(
+            q,
+            "📦 <b>Canva Auto-Invite Products</b>\n\n"
+            "Tap a product to switch auto-invite ON/OFF.\n\n"
+            "✅ ON = after payment the bot asks the customer's email and sends the Canva team invitation automatically (no stock codes used).\n"
+            "⬜ OFF = normal stock-code delivery.\n\n"
+            "💡 Tip: set the product's <b>stock</b> number = free seats left in your Canva team.",
+            InlineKeyboardMarkup(rows)
+        )
+        return True
+
+    if data == "admin_canva_invites":
+        invites = list_canva_invites(15)
+        text_out = "🧾 <b>Canva Invites</b>\n"
+        rows = []
+
+        for inv in invites:
+            inv_id, inv_uid, inv_order_id, inv_email, inv_status, inv_error, inv_created = inv
+            icon = "✅" if inv_status == "sent" else ("❌" if inv_status == "failed" else "⏳")
+            text_out += (
+                f"\n{icon} <b>#{inv_id}</b> <code>{html.escape(str(inv_email), quote=False)}</code>\n"
+                f"👤 <code>{inv_uid}</code> | 🛒 Order #{inv_order_id} | {inv_status}"
+            )
+            if inv_error:
+                text_out += f"\n⚠️ <code>{html.escape(str(inv_error)[:90], quote=False)}</code>"
+            text_out += "\n"
+            if inv_status == "failed":
+                rows.append([InlineKeyboardButton(f"🔁 Retry #{inv_id}", callback_data=f"admin_canva_retry_{inv_id}")])
+
+        if not invites:
+            text_out += "\nNo invites yet."
+
+        rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_canva")])
+        await edit_or_send(q, text_out, InlineKeyboardMarkup(rows))
+        return True
+
+    if data.startswith("admin_canva_retry_"):
+        try:
+            retry_invite_id = int(data.replace("admin_canva_retry_", ""))
+        except Exception:
+            return True
+
+        set_canva_invite_status(retry_invite_id, "pending", None)
+
+        import asyncio
+        from services.canva_invite import process_invite as canva_process_invite
+        asyncio.create_task(canva_process_invite(q.message.get_bot(), retry_invite_id))
+
+        await edit_or_send(
+            q,
+            f"🔁 <b>Retrying invite #{retry_invite_id}...</b>\n\nYou will get the result here within a minute.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_canva")]])
+        )
+        return True
+
     if data == "admin_broadcast":
         user_state[uid] = "admin_broadcast"
         await edit_or_send(
@@ -2993,6 +3129,39 @@ async def handle_admin_message(update, context, uid, text, state):
             try:
                 import io as _io
                 await update.message.reply_photo(photo=_io.BytesIO(screenshot), caption="📸 Microsoft page screenshot")
+            except Exception:
+                pass
+        return True
+
+    if state == "admin_canva_test_email" and is_admin(uid):
+        email = text.strip()
+        if "@" not in email or "." not in email:
+            await update.message.reply_text("❌ Send a valid email address.", parse_mode="HTML")
+            return True
+
+        user_state.pop(uid, None)
+        await update.message.reply_text(
+            "🧪 <b>Sending test Canva invite...</b>\n\nThis can take up to a minute, please wait.",
+            parse_mode="HTML"
+        )
+
+        try:
+            from services.canva_invite import send_canva_invite
+            ok, result_msg, screenshot = await send_canva_invite(email)
+        except Exception as exc:
+            ok, result_msg, screenshot = False, str(exc), None
+
+        icon = "✅" if ok else "❌"
+        await update.message.reply_text(
+            f"{icon} <b>Test result:</b> {html.escape(str(result_msg)[:800], quote=False)}",
+            reply_markup=admin_menu(),
+            parse_mode="HTML"
+        )
+
+        if screenshot:
+            try:
+                import io as _io
+                await update.message.reply_photo(photo=_io.BytesIO(screenshot), caption="📸 Canva confirmation screenshot")
             except Exception:
                 pass
         return True
@@ -3190,7 +3359,7 @@ async def handle_admin_message(update, context, uid, text, state):
             await update.message.reply_text(
                 f"""🤝 <b>Reseller Coupon Saved</b>
 
-🎟 Code: <code>{code}</code>
+���� Code: <code>{code}</code>
 💝 Discount: <code>{discount_text}</code>
 ⏳ Validity: <code>{hours:g} hours</code>
 📌 Expires: <code>{ends}</code>
