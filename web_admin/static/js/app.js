@@ -468,7 +468,7 @@ async function userDetail(uid) {
 async function viewCoupons() {
   const d = await api("/api/coupons");
   const rows = (d.coupons || []).map(c => `<tr>
-    <td class="mono"><b>${esc(c.code)}</b></td>
+    <td class="mono"><b>${esc(c.code)}</b>${c.reseller ? ' <span class="badge">🤝 Reseller</span>' : ''}</td>
     <td>${c.discount_type === "fixed" ? money(c.value) : c.value + "%"}</td>
     <td>${c.used_count}/${c.max_uses || "\u221e"}</td>
     <td>${c.expires_at ? fmtDate(c.expires_at) : '<span class="muted">never</span>'}</td>
@@ -489,10 +489,11 @@ function addCoupon() {
       <label><span>Value</span><input id="c_value" type="number" step="0.01"></label>
       <label><span>Max uses (0 = unlimited)</span><input id="c_max" type="number" value="0"></label>
       <label class="full"><span>Expires at (optional, YYYY-MM-DD HH:MM:SS)</span><input id="c_exp" placeholder=""></label>
+      <label class="full" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="c_reseller" style="width:auto"><span>🤝 Reseller coupon (private — do NOT broadcast to users)</span></label>
     </div>
     <div class="toolbar" style="margin-top:16px"><div class="grow"></div><button class="btn btn-glow" id="cSave"><span>Create</span></button></div>`);
   $("#cSave").onclick = async () => {
-    const r = await post("/api/coupons/create", { code: val("c_code"), discount_type: val("c_type"), value: parseFloat(val("c_value") || 0), max_uses: parseInt(val("c_max") || 0), expires_at: val("c_exp") });
+    const r = await post("/api/coupons/create", { code: val("c_code"), discount_type: val("c_type"), value: parseFloat(val("c_value") || 0), max_uses: parseInt(val("c_max") || 0), expires_at: val("c_exp"), reseller: ($("#c_reseller") && $("#c_reseller").checked) ? 1 : 0 });
     if (r.ok) { toast("Coupon created"); closeModal(); render(); } else toast(r.error || "Failed", "err");
   };
 }

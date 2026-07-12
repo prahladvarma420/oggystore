@@ -73,6 +73,13 @@ async def notify_restock_users(context_bot, product_id: int, product_name: str, 
         log_error("Restock notify failed", exc, extra=f"product={product_id}")
 
 
+def _admin_name(value):
+    """Product name for HTML messages: premium-emoji tags -> fallback emoji,
+    other HTML tags removed, then HTML-escaped so stray < > & never break
+    parse_mode=HTML."""
+    return html.escape(strip_premium(value), quote=False)
+
+
 async def notify_low_stock(context_bot, product_id: int, product_name: str, remaining_stock: int):
     """Smart low-stock alert: only alert at configured levels like 10,5,1."""
     try:
@@ -100,11 +107,11 @@ async def notify_low_stock(context_bot, product_id: int, product_name: str, rema
         await context_bot.send_message(
             chat_id=ADMIN_ID,
             text=(
-                "⚠️ <b>Low Stock Alert</b>\\n\\n"
-                f"📦 <b>Product:</b> {product_name}\\n"
-                f"🆔 <b>ID:</b> <code>{product_id}</code>\\n"
-                f"📊 <b>Remaining:</b> <code>{remaining_stock}</code>\\n"
-                f"🔔 <b>Alert Level:</b> <code>{alert_level}</code>\\n\\n"
+                "⚠️ <b>Low Stock Alert</b>\n\n"
+                f"📦 <b>Product:</b> {_admin_name(product_name)}\n"
+                f"🆔 <b>ID:</b> <code>{product_id}</code>\n"
+                f"📊 <b>Remaining:</b> <code>{remaining_stock}</code>\n"
+                f"🔔 <b>Alert Level:</b> <code>{alert_level}</code>\n\n"
                 "➕ Add more stock from Admin Panel."
             ),
             parse_mode="HTML"
@@ -129,7 +136,7 @@ async def notify_admin_order(
             text=(
                 "🛒 <b>New Order Received</b>\n\n"
                 f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
-                f"📦 <b>Product:</b> {product_name}\n"
+                f"📦 <b>Product:</b> {_admin_name(product_name)}\n"
                 f"🆔 <b>Product ID:</b> <code>{product_id}</code>\n"
                 f"🔢 <b>Quantity:</b> <code>{quantity}</code>\n"
                 f"💰 <b>Total:</b> <code>{total_price:.2f} USDT</code>\n"
@@ -864,7 +871,7 @@ Deposit exactly what's missing with one tap below.""",
                 "✅ <b>Payment Successful!</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"🧾 <b>Order ID:</b> <b>#{order_id}</b>\n"
-                f"📦 <b>{name}</b>\n\n"
+                f"📦 <b>{_admin_name(name)}</b>\n\n"
                 f"💰 <b>Paid:</b> <b>${total_price:.2f}</b>\n"
                 f"💼 <b>Remaining Balance:</b> <b>${new_balance:.2f}</b>\n\n"
                 "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -970,7 +977,7 @@ Deposit exactly what's missing with one tap below.""",
             "delivery_success",
             "✅ <b>Payment Successful!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\n\n📦 <b>{product_name}</b>\n\n🔑 <b>Code(s):</b>\n<code>{delivery}</code>\n\n━━━━━━━━━━━━━━━━━━━━\n\n💰 <b>Paid:</b> <b>${paid}</b>\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\n\n━━━━━━━━━━━━━━━━━━━━\nThank you for your purchase! 🎉\n\nUse /orders to view your order history.",
             order_id=order_id,
-            product_name=name,
+            product_name=_admin_name(name),
             delivery=("📎 Your codes are attached as a file below (15+ items)." if codes_as_file else delivery_text),
             paid=f"{total_price:.2f}",
             balance=f"{new_balance:.2f}",
@@ -1076,7 +1083,7 @@ async def show_bundle_details(q, uid: int, bundle_id: int):
         return
 
     _bid, bname_raw, bprice, _active = bundle
-    bname = html.escape(str(bname_raw), quote=False)
+    bname = _admin_name(bname_raw)
     bprice = float(bprice)
     items = get_bundle_items(bundle_id)
 
@@ -1145,7 +1152,7 @@ async def buy_bundle(q, uid: int, bundle_id: int):
             return
 
         _bid, bname_raw, bprice, _active = bundle
-        bname = html.escape(str(bname_raw), quote=False)
+        bname = _admin_name(bname_raw)
         bprice = float(bprice)
         items = get_bundle_items(bundle_id)
 

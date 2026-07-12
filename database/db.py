@@ -207,6 +207,7 @@ def init_db():
     """)
 
     _safe_add_column("coupons", "expires_at", "TEXT")
+    _safe_add_column("coupons", "reseller", "INTEGER DEFAULT 0")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS user_coupons(

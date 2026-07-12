@@ -1489,11 +1489,17 @@ def api_coupon_create():
     value = float(d.get("value") or 0)
     max_uses = int(d.get("max_uses") or 0)
     expires_at = d.get("expires_at") or None
+    reseller = 1 if d.get("reseller") else 0
     ex("INSERT OR REPLACE INTO coupons(code, discount_type, value, active, max_uses, "
-       "used_count, expires_at) VALUES(?,?,?,?,?,COALESCE((SELECT used_count FROM "
-       "coupons WHERE code=?),0),?)",
-       (code, dtype, value, 1, max_uses, code, expires_at))
+       "used_count, expires_at, reseller) VALUES(?,?,?,?,?,COALESCE((SELECT used_count FROM "
+       "coupons WHERE code=?),0),?,?)",
+       (code, dtype, value, 1, max_uses, code, expires_at, reseller))
     log_action("create_coupon", code)
+
+    # Reseller coupons are private: never broadcast to users.
+    if reseller:
+        log_action("create_reseller_coupon", code)
+        return jsonify({"ok": True, "reseller": True, "broadcast_sent": 0, "broadcast_failed": 0})
 
     # Auto-broadcast the new coupon to all bot users (same as TG admin).
     sent = failed = 0

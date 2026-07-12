@@ -254,6 +254,7 @@ async def broadcast_coupon_created(context, code: str, dtype: str, value: float,
 def admin_coupons_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Create Coupon", callback_data="admin_coupon_create")],
+        [InlineKeyboardButton("🤝 Reseller Coupon", callback_data="admin_reseller_coupon_create")],
         [InlineKeyboardButton("📋 List Coupons", callback_data="admin_coupon_list")],
         [InlineKeyboardButton("🗑 Delete Coupon", callback_data="admin_coupon_delete")],
         [InlineKeyboardButton("⬅️ Marketing Menu", callback_data="admin_section_marketing")],
@@ -2151,18 +2152,39 @@ Hours means coupon validity time before auto-expiry.""",
         )
         return True
 
+    if data == "admin_reseller_coupon_create":
+        user_state[uid] = "admin_reseller_coupon_create"
+        await edit_or_send(
+            q,
+            """🤝 <b>Reseller Coupon</b>
+
+Create a <b>private</b> coupon for a reseller. It will <b>NOT</b> be broadcast to users — share the code manually.
+
+Send:
+<code>CODE | percent/fixed | value | max_uses | hours</code>
+
+Examples:
+<code>RESELLER10 | percent | 10 | 100 | 720</code>
+<code>VIP5 | fixed | 5 | 50 | 168</code>
+
+Use max_uses <code>0</code> for unlimited.
+Hours means coupon validity time before auto-expiry.""",
+            admin_coupons_keyboard()
+        )
+        return True
+
     if data == "admin_coupon_list":
-        cur.execute("SELECT code, discount_type, value, active, max_uses, used_count, expires_at FROM coupons ORDER BY created DESC LIMIT 25")
+        cur.execute("SELECT code, discount_type, value, active, max_uses, used_count, expires_at, COALESCE(reseller,0) FROM coupons ORDER BY created DESC LIMIT 25")
         rows = cur.fetchall()
         text = "📋 <b>Coupons</b>\n\n"
         if not rows:
             text += "No coupons created yet."
         else:
-            for code, dtype, value, active, max_uses, used, expires_at in rows:
+            for code, dtype, value, active, max_uses, used, expires_at, reseller in rows:
                 status = "✅" if active else "❌"
                 limit = "∞" if not max_uses else str(max_uses)
                 suffix = "%" if dtype == "percent" else " USDT"
-                text += f"{status} <code>{code}</code> — {value}{suffix} | Used <code>{used}/{limit}</code> | Expires <code>{expires_at or 'No expiry'}</code>\n"
+                text += f"{status} <code>{code}</code>{' 🤝' if reseller else ''} — {value}{suffix} | Used <code>{used}/{limit}</code> | Expires <code>{expires_at or 'No expiry'}</code>\n"
         await edit_or_send(q, text, admin_coupons_keyboard())
         return True
 
@@ -3111,6 +3133,59 @@ async def handle_admin_message(update, context, uid, text, state):
             await update.message.reply_text(f"✅ User unbanned: <code>{target}</code>", reply_markup=user_management_keyboard(), parse_mode="HTML")
         except Exception:
             await update.message.reply_text("❌ Send valid user ID.", parse_mode="HTML")
+        return True
+
+    if state == "admin_reseller_coupon_create" and is_admin(uid):
+        try:
+            parts = [x.strip() for x in text.split("|")]
+            if len(parts) < 5:
+                raise ValueError("Missing fields")
+
+            code = parts[0].upper()
+            dtype = parts[1].lower()
+            value = float(parts[2])
+            max_uses = int(parts[3]) if parts[3] else 0
+            hours = float(parts[4]) if parts[4] else 24
+
+            if dtype not in ("percent", "fixed"):
+                raise ValueError("discount type must be percent or fixed")
+
+            if hours <= 0:
+                hours = 24
+
+            ends = (now() + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO coupons(code, discount_type, value, active, max_uses, used_count, expires_at, reseller)
+                VALUES(?,?,?,?,?,COALESCE((SELECT used_count FROM coupons WHERE code=?),0),?,1)
+                """,
+                (code, dtype, value, 1, max_uses, code, ends)
+            )
+            conn.commit()
+            user_state.pop(uid, None)
+
+            discount_text = f"{value:g}%" if dtype == "percent" else f"${value:.2f}"
+
+            await update.message.reply_text(
+                f"""🤝 <b>Reseller Coupon Saved</b>
+
+🎟 Code: <code>{code}</code>
+💝 Discount: <code>{discount_text}</code>
+⏳ Validity: <code>{hours:g} hours</code>
+📌 Expires: <code>{ends}</code>
+
+🔒 <b>Private:</b> this coupon was <b>NOT</b> broadcast. Share the code only with your reseller.""",
+                reply_markup=admin_coupons_keyboard(),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Wrong Format</b>\n\nUse:\n<code>RESELLER10 | percent | 10 | 100 | 720</code>",
+                parse_mode="HTML"
+            )
+            return True
         return True
 
     if state == "admin_coupon_create" and is_admin(uid):
