@@ -25,6 +25,94 @@ user_last_action = {}
 user_warn_count = {}
 user_locked_until = {}
 
+# ---------------- Force-join gate ----------------
+# Users must join the official channels before using the bot.
+# NOTE: the bot must be an ADMIN in each channel/group to check membership.
+
+_join_cache = {}  # uid -> cache expiry timestamp (positive results only)
+
+def _force_join_channels():
+    raw = get_setting("force_join_channels", "@oggypremiumstore,@oggypremiumchat") or ""
+    out = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if part.startswith("https://t.me/"):
+            part = "@" + part.split("t.me/")[1].strip("/")
+        if part and not part.startswith("@"):
+            part = "@" + part
+        if part and part != "@":
+            out.append(part)
+    return out
+
+
+async def get_unjoined_channels(bot, uid):
+    """Return the list of required channels this user has NOT joined."""
+    if str(get_setting("force_join_enabled", "1")).strip() != "1":
+        return []
+
+    if bot is None:
+        return []
+
+    now_ts = time.time()
+
+    if _join_cache.get(uid, 0) > now_ts:
+        return []
+
+    missing = []
+
+    for ch in _force_join_channels():
+        try:
+            member = await bot.get_chat_member(chat_id=ch, user_id=uid)
+
+            if getattr(member, "status", "") in ("left", "kicked"):
+                missing.append(ch)
+
+        except Exception:
+            # Bot isn't admin or channel username is wrong.
+            # Don't accidentally lock everyone out.
+            continue
+
+    if not missing:
+        _join_cache[uid] = now_ts + 300
+
+    return missing
+
+
+def force_join_text():
+    return (
+        "🔐 <b>Join Our Channels To Continue</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "To use this bot, please join our official channels first:\n\n"
+        "📢 <b>Announcements</b> — offers, new stock &amp; updates\n"
+        "💬 <b>Discussion</b> — community &amp; support\n\n"
+        "1️⃣ Tap the buttons below to join\n"
+        "2️⃣ Then tap <b>✅ I Joined</b>"
+    )
+
+
+def force_join_markup(missing):
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+
+    rows = []
+
+    for ch in missing:
+        uname = ch.lstrip("@")
+        rows.append([
+            InlineKeyboardButton(
+                "➕ Join @" + uname,
+                url="https://t.me/" + uname
+            )
+        ])
+
+    rows.append([
+        InlineKeyboardButton(
+            "✅ I Joined",
+            callback_data="check_join"
+        )
+    ])
+
+    return InlineKeyboardMarkup(rows)
+
 PROFILE_MSG_DEFAULT = (
     "👤 <b>My Profile</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💼 <b>Wallet Balance:</b> <b>{balance} USDT</b>\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💰 <b>Total Spent:</b> <b>${spent}</b>\n\n💳 <b>Paid Deposits:</b> <b>{deposits}</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n\n🎁 <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n\n🎟 <b>Coupon:</b> {coupon}\n🔔 <b>Notifications:</b> {notifications}"
 )
@@ -127,6 +215,18 @@ async def start(update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if not is_admin(user.id):
+    missing = await get_unjoined_channels(context.bot, user.id)
+
+    if missing:
+        await update.message.reply_text(
+            force_join_text(),
+            reply_markup=force_join_markup(missing),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        return
+
     await update.message.reply_text(
         welcome_text(user.first_name),
         reply_markup=main_menu(user.id),
@@ -195,6 +295,57 @@ async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
             q,
             f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(uid) or 2} seconds before clicking again.",
             back_home()
+        )
+        return
+
+    try:
+    _gate_bot = q.message.get_bot()
+except Exception:
+    _gate_bot = None
+
+
+if data == "check_join":
+    _join_cache.pop(uid, None)
+
+    missing = await get_unjoined_channels(_gate_bot, uid)
+
+    if missing:
+        try:
+            await q.answer(
+                "❌ You haven't joined all channels yet. Join them, then tap again.",
+                show_alert=True,
+            )
+        except Exception:
+            pass
+
+        await edit_or_send(
+            q,
+            force_join_text(),
+            force_join_markup(missing),
+        )
+        return
+
+    try:
+        await q.answer("✅ Thank you for joining!")
+    except Exception:
+        pass
+
+    await edit_or_send(
+        q,
+        welcome_text(user.first_name),
+        main_menu(uid),
+    )
+    return
+
+
+if not is_admin(uid) and not data.startswith("admin_"):
+    missing = await get_unjoined_channels(_gate_bot, uid)
+
+    if missing:
+        await edit_or_send(
+            q,
+            force_join_text(),
+            force_join_markup(missing),
         )
         return
 
