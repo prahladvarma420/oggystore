@@ -93,7 +93,6 @@ _CHROMIUM_ARGS = [
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--disable-setuid-sandbox",
-    "--no-zygote",
     "--disable-extensions",
     "--disable-background-networking",
     "--disable-background-timer-throttling",
@@ -103,12 +102,19 @@ _CHROMIUM_ARGS = [
     "--mute-audio",
     "--hide-scrollbars",
     "--no-first-run",
-    "--js-flags=--max-old-space-size=256",
 ]
 
 # Resource types to block (images/media/fonts) to slash memory + load time.
 # CSS/stylesheets are kept so element visibility checks stay accurate.
 _BLOCK_RESOURCE_TYPES = ("image", "media", "font")
+
+
+def _log(msg: str):
+    """Server-side breadcrumb, visible in Railway deploy logs."""
+    try:
+        print(f"[M365] {msg}", flush=True)
+    except Exception:
+        pass
 
 
 def _block_heavy_resources(route):
@@ -187,15 +193,19 @@ def send_family_invite_sync(email: str):
     # wrapper's hard timeout kills this thread (which would give no info).
     _deadline = time.monotonic() + 100
 
+    _log(f"invite start -> {email}")
     try:
         with sync_playwright() as p:
+            _log("playwright started, launching chromium")
             try:
                 browser = p.chromium.launch(
                     headless=True,
                     args=_CHROMIUM_ARGS,
                 )
+                _log("chromium launched OK")
             except Exception as launch_exc:
                 err_text = str(launch_exc)
+                _log(f"launch failed: {err_text[:300]}")
                 if (
                     "Executable doesn't exist" in err_text
                     or "has been closed" in err_text
@@ -213,6 +223,7 @@ def send_family_invite_sync(email: str):
                         headless=True,
                         args=_CHROMIUM_ARGS,
                     )
+                    _log("chromium launched OK after reinstall")
                 else:
                     raise
 
@@ -231,6 +242,7 @@ def send_family_invite_sync(email: str):
             except Exception:
                 pass
             page = context.new_page()
+            _log("context + page created")
             # Cap every individual page operation so nothing can hang forever.
             page.set_default_timeout(15000)
             page.set_default_navigation_timeout(30000)
@@ -246,9 +258,12 @@ def send_family_invite_sync(email: str):
                 SHARING_URL,
             ):
                 try:
+                    _log(f"goto start: {nav_url}")
                     page.goto(nav_url, wait_until="commit", timeout=25000)
+                    _log(f"goto committed: {page.url[:120]}")
                     break
-                except Exception:
+                except Exception as nav_exc:
+                    _log(f"goto failed: {repr(nav_exc)[:300]}")
                     continue
 
             # Wait for the sharing UI (it's a slow single-page app): poll for up
@@ -257,8 +272,9 @@ def send_family_invite_sync(email: str):
             # Let the heavy single-page app settle before probing.
             try:
                 page.wait_for_load_state("domcontentloaded", timeout=12000)
-            except Exception:
-                pass
+                _log("domcontentloaded reached")
+            except Exception as ls_exc:
+                _log(f"load_state timeout/error: {repr(ls_exc)[:200]}")
 
             # Capture a viewport screenshot and stash it at module level so even
             # a hard timeout later can still attach an image. Viewport (NOT
@@ -268,21 +284,25 @@ def send_family_invite_sync(email: str):
                 try:
                     shot = page.screenshot(timeout=8000)
                     _LAST_SCREENSHOT = shot
+                    _log(f"screenshot captured ({len(shot)} bytes)")
                     return shot
-                except Exception:
+                except Exception as shot_exc:
+                    _log(f"screenshot FAILED: {repr(shot_exc)[:200]}")
                     return _LAST_SCREENSHOT
             screenshot = _snap()
 
             # is_visible() returns immediately (no waiting), so this poll is
             # fast and bounded: ~10 x 1.5s = 15s max, capped by the deadline.
             sharing_ui_found = False
-            for _ in range(10):
+            for poll_i in range(10):
                 if time.monotonic() > _deadline:
+                    _log("poll aborted: internal deadline")
                     break
                 try:
                     cur_url = page.url
                 except Exception:
                     cur_url = ""
+                _log(f"poll {poll_i}: url={cur_url[:120]}")
                 if "login.live.com" in cur_url or "login.microsoftonline" in cur_url:
                     break
                 for probe in ("Share", "Start sharing", "Invite", "Manage sharing"):
@@ -299,6 +319,7 @@ def send_family_invite_sync(email: str):
                     break
                 page.wait_for_timeout(1500)
 
+            _log(f"poll done: sharing_ui_found={sharing_ui_found}")
             # Refresh the screenshot with the final page state.
             screenshot = _snap()
             try:
@@ -320,7 +341,10 @@ def send_family_invite_sync(email: str):
                     snippet = page.inner_text("body", timeout=4000)[:300].replace("\n", " ").strip()
                 except Exception:
                     pass
+                _log(f"share UI not found; url={cur_url[:120]} | text={snippet[:150]}")
+                _log("closing browser (not-found path)")
                 browser.close()
+                _log("browser closed (not-found path)")
                 return (
                     False,
                     "Loaded the account page but the Share/Manage button never appeared. "
@@ -330,6 +354,7 @@ def send_family_invite_sync(email: str):
 
             # 1) Open the invite dialog (several possible button labels).
             _LAST_PHASE = "clicking the blue Share button"
+            _log("share UI found; opening invite dialog")
             opened = False
             for label in ("Start sharing", "Invite people", "Invite someone", "Add people", "Share", "Invite"):
                 try:
@@ -358,6 +383,7 @@ def send_family_invite_sync(email: str):
             # 1b) "Share your benefits" chooser dialog: pick "Email invite"
             #     (the other option is "Copy link").
             _LAST_PHASE = "choosing 'Email invite'"
+            _log(f"dialog open attempt done (opened={opened}); choosing Email invite")
             for label in ("Email invite", "Invite via email", "Invite by email", "Email"):
                 clicked_chooser = False
                 for role in ("button", "link"):
@@ -376,6 +402,7 @@ def send_family_invite_sync(email: str):
 
             # 2) Fill the customer's email into the "Add email" box.
             _LAST_PHASE = "entering the email address"
+            _log("entering email address")
             filled = False
             for selector in (
                 'input[placeholder="Add email" i]',
@@ -411,6 +438,7 @@ def send_family_invite_sync(email: str):
             # 3) Click the dialog's "Share" button to send the invite.
             #    It stays disabled until a valid email is entered.
             _LAST_PHASE = "clicking 'Share' to send the invite"
+            _log("clicking Share to send")
             clicked = False
             for label in ("Share", "Send invite", "Send invitation", "Send", "Invite"):
                 try:
@@ -436,6 +464,7 @@ def send_family_invite_sync(email: str):
 
             # Wait for the "Your invite has been sent" confirmation screen.
             _LAST_PHASE = "waiting for the 'invite sent' confirmation"
+            _log("waiting for confirmation")
             page.wait_for_timeout(6000)
 
             body_text = ""
@@ -454,6 +483,7 @@ def send_family_invite_sync(email: str):
                 "sent an invitation",
             )
             ok = any(marker in body_text for marker in success_markers)
+            _log(f"confirmation check: ok={ok}")
 
             screenshot = _snap()
 
@@ -492,6 +522,7 @@ async def send_family_invite(email: str):
             timeout=120,
         )
     except asyncio.TimeoutError:
+        _log(f"HARD TIMEOUT 120s; last phase: {_LAST_PHASE}")
         return (
             False,
             f"Timed out. Last step reached: {_LAST_PHASE}. "
