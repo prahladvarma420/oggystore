@@ -6,7 +6,7 @@ import random
 import time
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
-from utils.premium_emoji import strip_premium, first_premium_id, button_premium
+from utils.premium_emoji import strip_premium, first_premium_id, button_premium, premium_safe
 from database.db import render_message_template,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items, is_m365_product
 from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
 from utils.crypto import encrypt_text
@@ -47,7 +47,7 @@ async def notify_restock_users(context_bot, product_id: int, product_name: str, 
                     text=render_message_template(
                         "restock_alert",
                         "🔔 <b>Back In Stock!</b>\n\n📦 <b>{product_name}</b>\n📊 Available: <code>{stock}</code>\n\nTap below to buy now 👇",
-                        product_name=_admin_name(product_name),
+                        product_name=premium_safe(product_name),
                         stock=available_stock,
                     ),
                     reply_markup=InlineKeyboardMarkup([
@@ -978,7 +978,7 @@ Deposit exactly what's missing with one tap below.""",
             "delivery_success",
             "✅ <b>Payment Successful!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\n\n📦 <b>{product_name}</b>\n\n🔑 <b>Code(s):</b>\n<code>{delivery}</code>\n\n━━━━━━━━━━━━━━━━━━━━\n\n💰 <b>Paid:</b> <b>${paid}</b>\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\n\n━━━━━━━━━━━━━━━━━━━━\nThank you for your purchase! 🎉\n\nUse /orders to view your order history.",
             order_id=order_id,
-            product_name=_admin_name(name),
+            product_name=premium_safe(name),
             delivery=("📎 Your codes are attached as a file below (15+ items)." if codes_as_file else delivery_text),
             paid=f"{total_price:.2f}",
             balance=f"{new_balance:.2f}",

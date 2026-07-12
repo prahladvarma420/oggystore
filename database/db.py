@@ -1163,10 +1163,11 @@ def render_message_template(key: str, default: str = "", **kwargs):
         rendered = body.format(**{**kwargs, **aliases})
     except Exception:
         rendered = body
-    # Defense-in-depth: never let a raw <tg-emoji> tag reach users via a
-    # stored/edited template. Replaces the tag with its fallback emoji and
-    # keeps all other HTML (<b>, <code>, ...) intact.
-    return _TG_EMOJI_TAG_RE.sub(r"\2", rendered)
+    # Defense-in-depth: never let a broken/escaped <tg-emoji> tag reach users
+    # as literal text. Normalizes raw AND html-escaped forms into one canonical
+    # well-formed tag so Telegram renders the premium emoji (or its plain
+    # fallback), and keeps all other HTML (<b>, <code>, ...) intact.
+    return _TG_EMOJI_TAG_RE.sub(r'<tg-emoji emoji-id="\1">\2</tg-emoji>', rendered)
 
 
 def simplify_default_message_templates():

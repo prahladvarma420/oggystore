@@ -71,6 +71,29 @@ def strip_premium(text):
     return s.strip()
 
 
+def premium_safe(text):
+    """HTML-safe product name for parse_mode=HTML messages that KEEPS the
+    premium emoji: <tg-emoji> tags survive intact (so they render as the
+    animated premium emoji when possible, plain fallback otherwise), while
+    every other character is HTML-escaped so stray < > & never break
+    parsing. Accepts names that were HTML-escaped one or more times."""
+    s = str(text or "")
+    for _ in range(4):
+        new = _html.unescape(s)
+        if new == s:
+            break
+        s = new
+    s = _OTHER_TAG_RE.sub("", s)
+    parts = []
+    last = 0
+    for m in _TG_EMOJI_RE.finditer(s):
+        parts.append(_html.escape(s[last:m.start()], quote=False))
+        parts.append('<tg-emoji emoji-id="%s">%s</tg-emoji>' % (m.group(1), m.group(2)))
+        last = m.end()
+    parts.append(_html.escape(s[last:], quote=False))
+    return "".join(parts).strip()
+
+
 def sanitize_premium_name(text):
     """Sanitize a product name captured via premium_html: keep only
     <tg-emoji> tags, drop every other HTML tag (<b>, <i>, ...) that
