@@ -85,6 +85,44 @@ _LAST_PHASE = "not started"
 # mid-run (e.g. browser.close() or a screenshot call hangs).
 _LAST_SCREENSHOT = None
 
+# Lean Chromium flags: keep memory low so the browser does not get OOM-killed
+# on Railway while loading Microsoft's heavy account SPA (an OOM kill makes
+# every following Playwright call hang on a dead browser, ignoring timeouts).
+_CHROMIUM_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-setuid-sandbox",
+    "--no-zygote",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-features=TranslateUI",
+    "--mute-audio",
+    "--hide-scrollbars",
+    "--no-first-run",
+    "--js-flags=--max-old-space-size=256",
+]
+
+# Resource types to block (images/media/fonts) to slash memory + load time.
+# CSS/stylesheets are kept so element visibility checks stay accurate.
+_BLOCK_RESOURCE_TYPES = ("image", "media", "font")
+
+
+def _block_heavy_resources(route):
+    try:
+        if route.request.resource_type in _BLOCK_RESOURCE_TYPES:
+            route.abort()
+        else:
+            route.continue_()
+    except Exception:
+        try:
+            route.continue_()
+        except Exception:
+            pass
+
 
 def _install_chromium(with_deps: bool = False):
     """Last-resort runtime install if the build step did not install Chromium.
@@ -154,7 +192,7 @@ def send_family_invite_sync(email: str):
             try:
                 browser = p.chromium.launch(
                     headless=True,
-                    args=["--no-sandbox", "--disable-dev-shm-usage"],
+                    args=_CHROMIUM_ARGS,
                 )
             except Exception as launch_exc:
                 err_text = str(launch_exc)
@@ -173,20 +211,25 @@ def send_family_invite_sync(email: str):
                     _install_chromium(with_deps=False)
                     browser = p.chromium.launch(
                         headless=True,
-                        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+                        args=_CHROMIUM_ARGS,
                     )
                 else:
                     raise
 
             context = browser.new_context(
                 storage_state=tmp.name,
-                viewport={"width": 1366, "height": 900},
+                viewport={"width": 1280, "height": 800},
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
                 ),
                 locale="en-US",
             )
+            # Block heavy resources to keep memory low (prevents OOM hangs).
+            try:
+                context.route("**/*", _block_heavy_resources)
+            except Exception:
+                pass
             page = context.new_page()
             # Cap every individual page operation so nothing can hang forever.
             page.set_default_timeout(15000)
