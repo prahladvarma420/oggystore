@@ -14,12 +14,13 @@ from database.db import get_pending_replacements, get_replacement, set_replaceme
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
-from utils.premium_emoji import premium_html, strip_premium, first_premium_id, sanitize_premium_name, button_premium
+from utils.premium_emoji import premium_html, strip_premium, first_premium_id, sanitize_premium_name, button_premium, premium_safe
 
 
 def _admin_name(value):
-    """Strip premium/custom emoji tags and HTML-escape a product name for safe display."""
-    return html.escape(strip_premium(str(value)), quote=False)
+    """Product name for HTML messages: KEEP premium (custom) emoji as <tg-emoji>
+    tags so they render, while HTML-escaping everything else for safe display."""
+    return premium_safe(str(value))
 from keyboards.menus import MAIN_MENU_BUTTONS
 from utils.states import user_state
 from utils.timezone import now, now_text, today_prefix, month_prefix
@@ -784,7 +785,7 @@ async def broadcast_product_update(context, product_id: int, product_name: str, 
         msg = render_message_template(
             tpl_key,
             default_msg,
-            product_name=html.escape(strip_premium(product_name), quote=False),
+            product_name=premium_safe(product_name),
             added=added,
             available=available,
             price=f"${float(price or 0):.2f}",
@@ -1507,7 +1508,7 @@ Examples:
         rows = cur.fetchall()
         bio = _csv_bytes(["user_id", "first_name", "username", "balance", "blocked", "joined"], rows)
         bio.name = "users_export.csv"
-        await q.message.reply_document(document=bio, filename="users_export.csv", caption="📤 Users export")
+        await q.message.reply_document(document=bio, filename="users_export.csv", caption="�� Users export")
         log_admin_action(uid, "EXPORT_USERS", f"{len(rows)} rows")
         return True
 
