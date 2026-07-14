@@ -175,229 +175,181 @@ def _page_text(page, n=220):
 
 
 def _do_login(page, email, password, totp_secret):
-    """Best-effort automated Microsoft consumer sign-in.
+    """Re-entrant Microsoft consumer sign-in. Returns (ok, message, discovered_secret).
 
-    Returns (ok, message, discovered_secret). discovered_secret is a base32
-    TOTP key the bot auto-registered from a forced "set up Microsoft
-    Authenticator" screen (None if nothing new was set up).
-
-    Handles the real consumer flow, including accounts with a recovery email:
-      email -> ("Verify your email" -> "Use your password") -> password
-      -> (passkey setup -> Cancel) -> (optional TOTP 2FA)
-      -> (forced Authenticator setup -> switch to a different app -> scrape key
-          -> enter generated code) -> "Stay signed in?" -> Yes
+    Microsoft bounces between login.microsoftonline.com/common and
+    login.live.com and sometimes RE-SHOWS the email page after a redirect.
+    So instead of a fixed email->password->done order, we loop: each pass we
+    detect whichever screen is actually visible (email / verify / password /
+    passkey / forced Authenticator setup / OTP / stay-signed-in) and act on it.
     """
     discovered_secret = None
+    EMAIL_SEL = "input[type=\'email\'], input[name=\'loginfmt\']"
+    PW_SEL = "input[type=\'password\'], input[name=\'passwd\']"
+    OTP_SEL = "input[name=\'otc\'], input[autocomplete=\'one-time-code\'], input[inputmode=\'numeric\'], input[type=\'tel\']"
+
+    def _vis(selector, timeout=600):
+        try:
+            return page.locator(selector).first.is_visible(timeout=timeout)
+        except Exception:
+            return False
+
+    def _text_vis(pattern, timeout=600):
+        try:
+            return page.get_by_text(re.compile(pattern, re.I)).first.is_visible(timeout=timeout)
+        except Exception:
+            return False
+
+    emails = 0
+    passwords = 0
+    otps = 0
     try:
-        # If an account picker appears, choose to use another account.
-        try:
-            tile = page.get_by_role("button", name=re.compile("another account|use another", re.I)).first
-            if tile.is_visible(timeout=1500):
-                tile.click()
-                page.wait_for_timeout(1200)
-        except Exception:
-            pass
-
         _log(f"login: start url={_short_url(page)}")
-
-        # 1) Email
-        try:
-            email_box = page.locator("input[type='email'], input[name='loginfmt']").first
-            email_box.fill(email, timeout=12000)
-            clicked = _click_any(page, ["Next", "Sign in"])
-            if not clicked:
-                try:
-                    email_box.press("Enter")
-                    clicked = True
-                except Exception:
-                    pass
-            page.wait_for_timeout(3500)
-            _log(f"login: email submitted (clicked={clicked}) url={_short_url(page)}")
-        except Exception as e:
-            return False, f"could not enter email ({repr(e)[:100]})", discovered_secret
-
-        # 1b) Microsoft rejected the address? (bad/typo/non-existent account)
-        _bl = _page_text(page, 400).lower()
-        if any(k in _bl for k in [
-            "that microsoft account doesn't exist", "couldn't find an account",
-            "we couldn't find", "enter a valid email", "enter a valid phone",
-            "doesn't exist. enter a different", "this username may be incorrect",
-            "no account found",
-        ]):
-            return False, ("Microsoft rejected the login EMAIL (account not found / typo). "
-                           "Fix the login email in Admin → M365 → Sessions."), discovered_secret
-
-        # 2) "Verify your email" / passwordless screen -> switch to password.
-        try:
-            if _click_link_any(page, [
-                "Use your password", "Use my password", "Sign in with your password",
-                "Sign in with a password", "Enter your password instead", "Use password",
-            ], timeout=2500):
-                _log("login: clicked 'Use your password'")
-                page.wait_for_timeout(2500)
-        except Exception:
-            pass
-
-        # 3) Password (only if the password field actually appeared)
-        try:
-            pw_box = page.locator("input[type='password'], input[name='passwd']").first
-            if not pw_box.is_visible(timeout=9000):
-                return False, ("password screen never appeared after the email step "
-                               f"(stuck on: {_page_text(page) or 'unknown'}). The email likely didn't "
-                               "advance, or this ID needs an email/SMS code instead of a password."), discovered_secret
-            pw_box.fill(password, timeout=15000)
-            clicked = _click_any(page, ["Sign in", "Next", "Submit"])
-            if not clicked:
-                try:
-                    pw_box.press("Enter")
-                except Exception:
-                    pass
-            page.wait_for_timeout(3500)
-            _log(f"login: password submitted url={_short_url(page)}")
-        except Exception as e:
-            return False, f"could not enter password ({repr(e)[:100]})", discovered_secret
-
-        # 3b) Wrong password?
-        _bl = _page_text(page, 400).lower()
-        if any(k in _bl for k in [
-            "your account or password is incorrect", "password is incorrect",
-            "that password is incorrect", "incorrect password",
-        ]):
-            return False, ("Microsoft says the PASSWORD is incorrect for this ID. "
-                           "Update the password in Admin → M365 → Sessions."), discovered_secret
-
-        # 4) Post-password: clear passkey nudges, handle 2FA, auto-register a
-        #    forced Authenticator if needed, then reach "Stay signed in?".
-        for step in range(7):
-            handled = False
+        for step in range(18):
             try:
-                cur_url = page.url
+                low = (page.url or "").lower()
             except Exception:
-                cur_url = ""
+                low = ""
 
-            # 4a) Passkey / "use your phone" setup prompt -> Cancel / Skip.
-            if "fido" in cur_url or "passkey" in cur_url.lower():
-                if _click_link_any(page, ["Cancel", "Skip for now", "Not now", "Maybe later", "No thanks", "Back"], timeout=1800):
-                    _log("login: dismissed passkey setup prompt")
-                    page.wait_for_timeout(1800)
-                    handled = True
-            else:
-                try:
-                    if page.get_by_text(re.compile("use your phone or tablet|sign in faster with a passkey|create a passkey", re.I)).first.is_visible(timeout=800):
-                        if _click_link_any(page, ["Cancel", "Skip for now", "Not now", "Maybe later", "No thanks"], timeout=1500):
-                            _log("login: dismissed passkey nudge")
-                            page.wait_for_timeout(1800)
-                            handled = True
-                except Exception:
-                    pass
+            # A) Keep-signed-in prompt -> Yes (we are basically in).
+            if _text_vis("Stay signed in"):
+                _click_any(page, ["Yes"], timeout=5000)
+                _log("login: clicked 'Stay signed in? -> Yes'")
+                page.wait_for_timeout(2000)
+                continue
 
-            # 4b) Forced "set up Microsoft Authenticator" (QR) screen. A bot
-            #     can't scan a QR, so switch to "a different authenticator app",
-            #     which reveals a TEXT setup key we can use as a TOTP secret.
+            # B) Success: left the sign-in hosts entirely.
+            on_login = ("login.live.com" in low or "login.microsoftonline" in low or "login.microsoft.com" in low)
+            if low and not on_login:
+                _log(f"login: left sign-in host, now at {_short_url(page)}")
+                break
+
+            # C) Account picker -> use another account.
             try:
-                setup_visible = page.get_by_text(re.compile(
-                    "set up the Microsoft Authenticator|to sign in to Microsoft Authenticator|follow the steps below|Keep your account secure|Start by getting the app|scan this QR code|Scan the QR code",
-                    re.I,
-                )).first.is_visible(timeout=800)
+                tile = page.get_by_role("button", name=re.compile("another account|use another", re.I)).first
+                if tile.is_visible(timeout=500):
+                    tile.click(); page.wait_for_timeout(1200); continue
             except Exception:
-                setup_visible = False
-            if setup_visible and not discovered_secret:
-                _log("login: forced Authenticator setup detected; switching to a different authenticator app")
+                pass
+
+            # D) Forced "set up Microsoft Authenticator" (QR) -> switch to text key.
+            if not discovered_secret and _text_vis("set up the Microsoft Authenticator|to sign in to Microsoft Authenticator|scan this QR code|Scan the QR code|Start by getting the app", 600):
+                _log("login: forced Authenticator setup detected")
                 _click_link_any(page, [
-                    "I want to use a different authenticator app",
-                    "use a different authenticator app",
-                    "different authenticator app",
-                    "Set up a different Authenticator app",
-                    "I can't scan the QR code",
-                    "Can't scan the image",
-                    "Can't scan",
-                    "enter the code manually",
-                    "Next",
+                    "I want to use a different authenticator app", "use a different authenticator app",
+                    "different authenticator app", "Set up a different Authenticator app",
+                    "I can\'t scan the QR code", "Can\'t scan the image", "Can\'t scan", "enter the code manually", "Next",
                 ], timeout=2500)
                 page.wait_for_timeout(2500)
                 secret = _extract_totp_secret(page)
                 if secret:
                     discovered_secret = secret
-                    _log(f"login: scraped TOTP setup key (len={len(secret)}); auto-registering")
-                    _click_any(page, ["Next"])
-                    page.wait_for_timeout(2500)
-                    try:
-                        from utils.totp import totp_now
-                        otp_box = page.locator(
-                            "input[name='otc'], input[autocomplete='one-time-code'], input[inputmode='numeric'], input[type='tel']"
-                        ).first
-                        otp_box.fill(totp_now(secret), timeout=10000)
-                        _click_any(page, ["Next", "Verify", "Done", "Sign in", "Submit"])
-                        page.wait_for_timeout(3000)
-                        # Some flows ask to confirm the code twice.
+                    _log(f"login: scraped setup key len={len(secret)}; registering")
+                    _click_any(page, ["Next"]); page.wait_for_timeout(2500)
+                    if _vis(OTP_SEL, 4000):
                         try:
-                            otp2 = page.locator("input[name='otc'], input[autocomplete='one-time-code'], input[inputmode='numeric'], input[type='tel']").first
-                            if otp2.is_visible(timeout=1200):
-                                otp2.fill(totp_now(secret), timeout=8000)
-                                _click_any(page, ["Next", "Verify", "Done", "Submit"])
-                                page.wait_for_timeout(2500)
+                            from utils.totp import totp_now
+                            page.locator(OTP_SEL).first.fill(totp_now(secret), timeout=8000)
+                            _click_any(page, ["Next", "Verify", "Done", "Sign in", "Submit"])
+                            page.wait_for_timeout(2500)
                         except Exception:
                             pass
-                        _log("login: auto-registered TOTP authenticator")
-                        handled = True
-                    except Exception as e:
-                        return False, (
-                            "Found the setup key but could not confirm the 2FA code ("
-                            + repr(e)[:80] + "). The key was saved — try Test Invite again."
-                        ), discovered_secret
-                else:
-                    return False, (
-                        "Microsoft is FORCING Microsoft Authenticator (QR) setup for this ID and didn't offer a "
-                        "text setup key to scrape. Fix once manually: sign in to this account → Security → add a "
-                        "sign-in method → Authenticator app → 'I want to use a different authenticator app' to reveal "
-                        "the SETUP KEY, paste that key into the bot (Add Login), and finish setup. Then auto-login works."
-                    ), discovered_secret
+                    continue
+                return False, ("Microsoft is FORCING Microsoft Authenticator (QR) setup for this ID and offered no text "
+                               "setup key. Set up 2FA once manually via 'I want to use a different authenticator app' to "
+                               "get the SETUP KEY, paste it into Add Login, then retry."), discovered_secret
 
-            # 4c) TOTP challenge (asks for the 6-digit code).
-            if (totp_secret or discovered_secret):
-                try:
-                    otp_box = page.locator(
-                        "input[name='otc'], input[autocomplete='one-time-code'], input[inputmode='numeric'], input[type='tel']"
-                    ).first
-                    if otp_box.is_visible(timeout=800):
+            # E) Passkey / "use your phone" nudge -> Cancel / Skip.
+            if "fido" in low or "passkey" in low or _text_vis("use your phone or tablet|sign in faster with a passkey|create a passkey", 500):
+                if _click_link_any(page, ["Cancel", "Skip for now", "Not now", "Maybe later", "No thanks", "Back"], timeout=1500):
+                    _log("login: dismissed passkey prompt"); page.wait_for_timeout(1500); continue
+
+            # F) OTP / 2FA code prompt (only when no password box is showing).
+            if (totp_secret or discovered_secret) and _vis(OTP_SEL, 500) and not _vis(PW_SEL, 250):
+                if otps < 3:
+                    try:
                         from utils.totp import totp_now
-                        otp_box.fill(totp_now(discovered_secret or totp_secret), timeout=8000)
+                        page.locator(OTP_SEL).first.fill(totp_now(discovered_secret or totp_secret), timeout=8000)
                         _click_any(page, ["Verify", "Sign in", "Next", "Submit"])
-                        _log("login: entered TOTP 2FA code")
-                        page.wait_for_timeout(2500)
-                        handled = True
-                except Exception:
-                    pass
+                        otps += 1; _log("login: entered TOTP code"); page.wait_for_timeout(2500); continue
+                    except Exception:
+                        pass
 
-            # 4d) Reached "Stay signed in?" -> done with challenges.
-            try:
-                if page.get_by_text(re.compile("Stay signed in", re.I)).first.is_visible(timeout=800):
-                    break
-            except Exception:
-                pass
+            # G) "Verify your email" / passwordless -> switch to password.
+            if _click_link_any(page, [
+                "Use your password", "Use my password", "Sign in with your password",
+                "Sign in with a password", "Enter your password instead", "Use password",
+            ], timeout=700):
+                _log("login: clicked 'Use your password'"); page.wait_for_timeout(2000); continue
 
-            if not handled:
-                page.wait_for_timeout(1500)
+            email_vis = _vis(EMAIL_SEL, 600)
 
-        # 5) "Stay signed in?" -> Yes (keeps cookies alive longer)
+            # H) Password field (only when the email field is NOT the one showing).
+            if _vis(PW_SEL, 600) and not email_vis:
+                if passwords >= 3:
+                    return False, "password step kept looping (likely wrong password)", discovered_secret
+                try:
+                    box = page.locator(PW_SEL).first
+                    box.fill(password, timeout=12000)
+                    if not _click_any(page, ["Sign in", "Next", "Submit"]):
+                        try: box.press("Enter")
+                        except Exception: pass
+                    passwords += 1; page.wait_for_timeout(3500)
+                    _log(f"login: password submitted (#{passwords}) url={_short_url(page)}")
+                    if any(k in _page_text(page, 400).lower() for k in [
+                        "your account or password is incorrect", "password is incorrect",
+                        "that password is incorrect", "incorrect password",
+                    ]):
+                        return False, "Microsoft says the PASSWORD is incorrect for this ID. Update it in Admin → M365 → Sessions.", discovered_secret
+                    continue
+                except Exception as e:
+                    return False, f"could not enter password ({repr(e)[:90]})", discovered_secret
+
+            # I) Email field -> fill / advance (handles redirect re-prompts).
+            if email_vis:
+                # If we already did a full email+password cycle and got bounced
+                # back here, the credentials were rejected.
+                if passwords >= 1:
+                    return False, ("Entered the email and password but Microsoft bounced back to the sign-in screen. "
+                                   "This almost always means the PASSWORD is wrong or the account needs extra "
+                                   "verification. Re-check the password in Admin → M365 → Sessions."), discovered_secret
+                if emails >= 3:
+                    return False, ("email step kept looping across redirects (page: " + (_page_text(page) or "?") + ")"), discovered_secret
+                try:
+                    box = page.locator(EMAIL_SEL).first
+                    try:
+                        cur_val = box.input_value(timeout=500)
+                    except Exception:
+                        cur_val = ""
+                    if email.lower() not in (cur_val or "").lower():
+                        box.fill(email, timeout=10000)
+                    if not _click_any(page, ["Next", "Sign in"]):
+                        try: box.press("Enter")
+                        except Exception: pass
+                    emails += 1; page.wait_for_timeout(3500)
+                    _log(f"login: email submitted #{emails} url={_short_url(page)}")
+                    if any(k in _page_text(page, 400).lower() for k in [
+                        "that microsoft account doesn\'t exist", "couldn\'t find an account", "we couldn\'t find",
+                        "enter a valid email", "this username may be incorrect", "no account found",
+                    ]):
+                        return False, "Microsoft rejected the login EMAIL (account not found / typo). Fix it in Admin → M365 → Sessions.", discovered_secret
+                    continue
+                except Exception as e:
+                    return False, f"could not enter email ({repr(e)[:90]})", discovered_secret
+
+            # Nothing recognized this pass; wait and re-scan.
+            page.wait_for_timeout(1500)
+
+        # Final keep-signed-in safety click.
+        if _text_vis("Stay signed in"):
+            _click_any(page, ["Yes"], timeout=5000); page.wait_for_timeout(2000)
+
         try:
-            _click_any(page, ["Yes"], timeout=6000)
-            page.wait_for_timeout(2500)
+            low = (page.url or "").lower()
         except Exception:
-            pass
-
-        # Success = we are no longer sitting on an auth challenge page.
-        try:
-            cur = page.url
-        except Exception:
-            cur = ""
-        if "login.live.com" in cur or "login.microsoftonline" in cur:
-            snippet = ""
-            try:
-                snippet = page.inner_text("body", timeout=3000)[:200].replace("\n", " ").strip()
-            except Exception:
-                pass
-            return False, f"still on the sign-in page after submitting (page said: {snippet or 'unknown'})", discovered_secret
+            low = ""
+        if "login.live.com" in low or "login.microsoftonline" in low or "login.microsoft.com" in low:
+            return False, f"still on the sign-in page after submitting (page said: {_page_text(page) or 'unknown'})", discovered_secret
         return True, "signed in", discovered_secret
     except Exception as e:
         return False, f"login error: {repr(e)[:140]}", discovered_secret
