@@ -1725,3 +1725,84 @@ def set_replacement_status(replacement_id: int, status: str, new_delivery=None):
     else:
         cur.execute("UPDATE replacements SET status=? WHERE id=?", (status, replacement_id))
     conn.commit()
+
+
+# ---------------- M365 Multi-Session Rotation ----------------
+
+cur.execute("""CREATE TABLE IF NOT EXISTS m365_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT,
+    state TEXT,
+    invites_used INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'active',
+    created TEXT
+)""")
+conn.commit()
+
+cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('m365_invites_per_session', '5')")
+conn.commit()
+
+
+def add_m365_session(label, state_json):
+    """Store a new Microsoft session (encrypted). Returns the new session id."""
+    cur.execute(
+        "INSERT INTO m365_sessions (label, state, invites_used, status, created) VALUES (?, ?, 0, 'active', ?)",
+        (str(label or ""), encrypt_text(state_json), now_text()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def rename_m365_session(session_id, label):
+    cur.execute("UPDATE m365_sessions SET label=? WHERE id=?", (str(label), session_id))
+    conn.commit()
+
+
+def get_current_m365_session():
+    """First active (non-full) session. Returns (id, label, state_json, invites_used) or None."""
+    cur.execute("SELECT id, label, state, invites_used FROM m365_sessions WHERE status='active' ORDER BY id ASC LIMIT 1")
+    row = cur.fetchone()
+    if not row:
+        return None
+    state = decrypt_text(row[2]) if row[2] else None
+    return (row[0], row[1], state, int(row[3] or 0))
+
+
+def update_m365_session_state(session_id, state_json):
+    """Persist refreshed cookies for a session."""
+    cur.execute("UPDATE m365_sessions SET state=? WHERE id=?", (encrypt_text(state_json), session_id))
+    conn.commit()
+
+
+def increment_m365_session_used(session_id):
+    cur.execute("UPDATE m365_sessions SET invites_used=COALESCE(invites_used,0)+1 WHERE id=?", (session_id,))
+    conn.commit()
+    cur.execute("SELECT invites_used FROM m365_sessions WHERE id=?", (session_id,))
+    row = cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+def mark_m365_session_full(session_id):
+    cur.execute("UPDATE m365_sessions SET status='full' WHERE id=?", (session_id,))
+    conn.commit()
+
+
+def reset_m365_session(session_id):
+    """Zero the invite counter and reactivate (after freeing family slots)."""
+    cur.execute("UPDATE m365_sessions SET invites_used=0, status='active' WHERE id=?", (session_id,))
+    conn.commit()
+
+
+def delete_m365_session(session_id):
+    cur.execute("DELETE FROM m365_sessions WHERE id=?", (session_id,))
+    conn.commit()
+
+
+def list_m365_sessions():
+    cur.execute("SELECT id, label, invites_used, status, created FROM m365_sessions ORDER BY id ASC")
+    return cur.fetchall()
+
+
+def count_active_m365_sessions():
+    cur.execute("SELECT COUNT(*) FROM m365_sessions WHERE status='active'")
+    return int(cur.fetchone()[0])

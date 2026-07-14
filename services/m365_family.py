@@ -53,6 +53,12 @@ PAGE_TIMEOUT_MS = 60000
 # ---------------------------------------------------------------- session
 
 def has_session() -> bool:
+    try:
+        from database.db import count_active_m365_sessions
+        if count_active_m365_sessions() > 0:
+            return True
+    except Exception:
+        pass
     return bool(get_setting(SESSION_KEY))
 
 
@@ -70,6 +76,91 @@ def load_session():
     if not value or value.startswith("[encrypted:"):
         return None
     return value
+
+
+# ------------------------------------------------- multi-session rotation
+
+_ROTATION_NOTE = None
+
+
+def pop_rotation_note():
+    """Return and clear the last session-rotation alert (HTML), if any."""
+    global _ROTATION_NOTE
+    note = _ROTATION_NOTE
+    _ROTATION_NOTE = None
+    return note
+
+
+def _load_active_session():
+    """Return (session_id, label, state_json) for the first non-full Microsoft ID.
+
+    Falls back to (and migrates) the legacy single-session settings key.
+    Returns None when no usable session exists.
+    """
+    try:
+        from database.db import get_current_m365_session, list_m365_sessions, add_m365_session
+        row = get_current_m365_session()
+        if row:
+            sid, label, state, _used = row
+            if state and not str(state).startswith("[encrypted:"):
+                return sid, str(label or f"ID #{sid}"), state
+            return None
+        if not list_m365_sessions():
+            legacy = load_session()
+            if legacy:
+                sid = add_m365_session("ID #1", legacy)
+                try:
+                    set_setting(SESSION_KEY, "")
+                except Exception:
+                    pass
+                _log("migrated legacy session into sessions table as ID #1")
+                return sid, "ID #1", legacy
+        return None
+    except Exception:
+        legacy = load_session()
+        if legacy:
+            return None, "legacy session", legacy
+        return None
+
+
+def _persist_session_state(session_id, state_json):
+    """Save refreshed cookies back to the right storage slot."""
+    if session_id is None:
+        save_session(state_json)
+        return
+    from database.db import update_m365_session_state
+    update_m365_session_state(session_id, state_json)
+
+
+def _handle_rotation(session_id, session_label):
+    """Count a successful invite; when this ID is full, rotate to the next one."""
+    global _ROTATION_NOTE
+    if session_id is None:
+        return
+    from database.db import increment_m365_session_used, mark_m365_session_full, get_current_m365_session
+    used = increment_m365_session_used(session_id)
+    try:
+        limit = int(float(get_setting("m365_invites_per_session", "5") or 5))
+    except Exception:
+        limit = 5
+    if limit <= 0 or used < limit:
+        return
+    mark_m365_session_full(session_id)
+    safe_label = html.escape(str(session_label), quote=False)
+    nxt = get_current_m365_session()
+    if nxt:
+        nxt_label = html.escape(str(nxt[1]), quote=False)
+        _ROTATION_NOTE = (
+            f"Microsoft ID <b>{safe_label}</b> is now FULL (<code>{used}/{limit}</code> invites used).\n\n"
+            f"➡️ Switched to the next ID: <b>{nxt_label}</b>"
+        )
+    else:
+        _ROTATION_NOTE = (
+            f"🚨 Microsoft ID <b>{safe_label}</b> is now FULL (<code>{used}/{limit}</code> invites used) "
+            "and there are <b>NO more IDs left</b>!\n\nUpload a new session now or the next invites will FAIL:\n"
+            "Admin Panel → 📩 M365 Auto-Invite → 🔑 Upload Session"
+        )
+    _log(f"rotation: session #{session_id} full ({used}/{limit}); next={'yes' if nxt else 'NONE'}")
 
 
 # ---------------------------------------------------------------- browser
@@ -174,9 +265,19 @@ def send_family_invite_sync(email: str):
     Returns (ok: bool, message: str, screenshot: bytes | None).
     Runs blocking Playwright code — call via send_family_invite() from async code.
     """
-    state_json = load_session()
-    if not state_json:
+    global _ROTATION_NOTE
+    _ROTATION_NOTE = None
+    _session = _load_active_session()
+    if not _session:
+        try:
+            from database.db import list_m365_sessions
+            _all_full = bool(list_m365_sessions())
+        except Exception:
+            _all_full = False
+        if _all_full:
+            return False, "ALL Microsoft IDs are FULL — upload a new session or reset one: Admin Panel → 📩 M365 Auto-Invite → 📂 Sessions.", None
         return False, "No Microsoft session uploaded. Admin Panel → 📩 M365 Auto-Invite → 🔑 Upload Session.", None
+    session_id, session_label, state_json = _session
 
     try:
         from playwright.sync_api import sync_playwright
@@ -410,7 +511,7 @@ def send_family_invite_sync(email: str):
             # Session expired -> Microsoft redirects to the login page.
             if "login.live.com" in cur_url or "login.microsoftonline" in cur_url:
                 browser.close()
-                return False, "Microsoft session EXPIRED — run tools/m365_login.py again and upload a fresh session.", screenshot
+                return False, f"Microsoft session '" + str(session_label) + "' EXPIRED — run tools/m365_login.py again and upload a fresh session for this ID.", screenshot
 
             # The Share/Manage control never appeared: return the screenshot +
             # URL + on-page text so we can see EXACTLY what the page shows
@@ -569,13 +670,17 @@ def send_family_invite_sync(email: str):
 
             # Persist refreshed cookies so the session lives longer.
             try:
-                save_session(json.dumps(context.storage_state()))
+                _persist_session_state(session_id, json.dumps(context.storage_state()))
             except Exception:
                 pass
 
             browser.close()
 
             if ok:
+                try:
+                    _handle_rotation(session_id, session_label)
+                except Exception as rot_exc:
+                    _log(f"rotation bookkeeping failed: {rot_exc}")
                 return True, "Invite sent successfully.", screenshot
             return False, "Could not confirm the invite was sent (check the screenshot).", screenshot
 
@@ -661,6 +766,17 @@ async def process_invite(bot, invite_id: int):
             )
         except Exception:
             pass
+
+        rotation_note = pop_rotation_note()
+        if rotation_note:
+            try:
+                await bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text="🔄 <b>M365 Session Rotation</b>\n\n" + rotation_note,
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
         return
 
     # ---------------- failure path ----------------

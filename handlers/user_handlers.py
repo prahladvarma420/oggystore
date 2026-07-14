@@ -1757,13 +1757,25 @@ async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
             file = await context.bot.get_file(doc.file_id)
             data = bytes(await file.download_as_bytearray())
 
-            from services.m365_family import save_session
-            save_session(data.decode("utf-8"))
-            user_state.pop(uid, None)
+            import json as _json
+            state_json = data.decode("utf-8")
+            _json.loads(state_json)  # validate before storing
+
+            from database.db import add_m365_session, rename_m365_session, list_m365_sessions
+            caption = (update.message.caption or "").strip()
+            new_sess_id = add_m365_session("", state_json)
+            sess_label = caption[:60] if caption else "ID #" + str(new_sess_id)
+            rename_m365_session(new_sess_id, sess_label)
+            total_sessions = len(list_m365_sessions())
+
+            user_state[uid] = "admin_m365_sess_label:" + str(new_sess_id)
 
             await update.message.reply_text(
                 "✅ <b>Microsoft session saved (encrypted).</b>\n\n"
-                "🧪 Now use Admin Panel → 📩 M365 Auto-Invite → Test Invite to verify it works.\n\n"
+                f"🆔 Stored as: <b>{html.escape(sess_label, quote=False)}</b>\n"
+                f"📂 Total IDs stored: <b>{total_sessions}</b>\n\n"
+                "✏️ Now send the <b>Microsoft account email/name</b> for this ID so rotation alerts are easy to read — or send <code>-</code> to keep the automatic name.\n\n"
+                "🧪 Then use Admin Panel → 📩 M365 Auto-Invite → Test Invite to verify it works.\n\n"
                 "💡 For safety, delete <code>m365_session.json</code> from your PC after this.",
                 reply_markup=main_menu(uid),
                 parse_mode="HTML"

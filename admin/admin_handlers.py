@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, render_message_template, cur, conn, is_admin, is_owner, add_admin, remove_admin, get_admins, add_balance, add_stock_items, get_available_stock_count, get_sold_stock_count, get_total_stock_count, restock_product, block_user, unblock_user, log_admin_action, get_admin_logs, update_product_details, get_open_tickets, get_ticket, reply_ticket, close_ticket, get_pending_withdrawals, update_withdrawal_status, set_setting, get_setting, set_product_featured, remove_product_image, get_product_price_tiers, set_product_price_tier, delete_product_price_tier, clear_product_price_tiers, validate_coupon, list_message_templates, get_message_template, set_message_template, smart_dashboard_stats, clear_admin_logs, create_backup_zip, restore_backup_zip, create_bundle, get_all_bundles, get_bundle_items, delete_bundle, get_m365_product_ids, toggle_m365_product, list_m365_invites, get_m365_invite, set_m365_invite_status, get_canva_product_ids, toggle_canva_product, list_canva_invites, get_canva_invite, set_canva_invite_status
 from utils.crypto import decrypt_text
-from database.db import get_pending_replacements, get_replacement, set_replacement_status, set_warranty_ban, is_warranty_banned, count_recent_replacements, reserve_stock_item, create_gift_code, list_gift_codes
+from database.db import get_pending_replacements, get_replacement, set_replacement_status, set_warranty_ban, is_warranty_banned, count_recent_replacements, reserve_stock_item, create_gift_code, list_gift_codes, rename_m365_session, list_m365_sessions, get_current_m365_session, reset_m365_session, delete_m365_session
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
@@ -1817,9 +1817,10 @@ Example:
 This is a <b>Microsoft 365 auto-invite</b> product — it does <b>NOT</b> use email:pass codes.
 The invite is sent automatically from your saved Microsoft session.
 
-Just send the <b>number of free family slots</b> to make available (a Family plan allows up to 5 extra people).
+Send a number to <b>ADD</b> slots on top of the current stock (a Family plan allows up to 5 extra people per ID).
 
-Example: <code>5</code>""", products_select_keyboard("admin_stock_select"))
+Example: <code>3</code> → adds 3 more slots
+Or <code>=5</code> → sets the total to exactly 5""", products_select_keyboard("admin_stock_select"))
             return True
         user_state[uid] = f"admin_easy_add_stock:{product_id}"
         await edit_or_send(q, f"""➕ <b>Add Stock</b>
@@ -2942,8 +2943,15 @@ Choose an order to view details:""",
     # ---------------- Microsoft 365 Family Auto-Invite ----------------
     if data == "admin_m365":
         try:
-            from services.m365_family import has_session
-            session_line = "✅ Uploaded" if has_session() else "❌ Not uploaded yet"
+            sess_rows = list_m365_sessions()
+            sess_current = get_current_m365_session()
+            if sess_current:
+                session_line = f"✅ {len(sess_rows)} ID(s) stored | current: <b>{html.escape(str(sess_current[1]), quote=False)}</b>"
+            elif sess_rows:
+                session_line = "🔴 ALL IDs FULL — upload a new session!"
+            else:
+                from services.m365_family import has_session
+                session_line = "✅ Uploaded" if has_session() else "❌ Not uploaded yet"
         except Exception:
             session_line = "❌ Not uploaded yet"
 
@@ -2969,6 +2977,7 @@ Choose an order to view details:""",
             InlineKeyboardMarkup([
                 [InlineKeyboardButton("📦 Choose Products", callback_data="admin_m365_products")],
                 [InlineKeyboardButton("🔑 Upload Session", callback_data="admin_m365_upload"), InlineKeyboardButton("🧪 Test Invite", callback_data="admin_m365_test")],
+                [InlineKeyboardButton("📂 Sessions", callback_data="admin_m365_sessions")],
                 [InlineKeyboardButton("🧾 All Invites", callback_data="admin_m365_invites")],
                 [InlineKeyboardButton("⬅️ Admin Home", callback_data="admin_panel")],
             ])
@@ -3055,6 +3064,56 @@ Choose an order to view details:""",
 
         rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_m365")])
         await edit_or_send(q, text_out, InlineKeyboardMarkup(rows))
+        return True
+
+    if data == "admin_m365_sessions":
+        sess_rows = list_m365_sessions()
+        try:
+            per_id = int(float(get_setting("m365_invites_per_session", "5") or 5))
+        except Exception:
+            per_id = 5
+        text = "📂 <b>Microsoft Sessions</b>\n\n"
+        text += f"Each ID sends <b>{per_id}</b> family invites, then the bot rotates to the next ID automatically and alerts you.\n\n"
+        kb = []
+        if not sess_rows:
+            text += "No sessions uploaded yet."
+        else:
+            sess_current = get_current_m365_session()
+            current_id = sess_current[0] if sess_current else None
+            for sid, sess_label, sess_used, sess_status, sess_created in sess_rows:
+                if sess_status == "active":
+                    icon = "🟢" if sid == current_id else "🕒"
+                    marker = " ← current" if sid == current_id else " (queued)"
+                else:
+                    icon = "🔴"
+                    marker = " (FULL)"
+                text += f"{icon} <b>#{sid}</b> {html.escape(str(sess_label), quote=False)} — <code>{sess_used}/{per_id}</code>{marker}\n"
+                kb.append([
+                    InlineKeyboardButton(f"🔄 Reset #{sid}", callback_data=f"admin_m365_sess_reset_{sid}"),
+                    InlineKeyboardButton(f"🗑 Delete #{sid}", callback_data=f"admin_m365_sess_del_{sid}"),
+                ])
+        kb.append([InlineKeyboardButton("⏳ Invites Per ID", callback_data="admin_m365_sess_limit"), InlineKeyboardButton("🔑 Upload New", callback_data="admin_m365_upload")])
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_m365")])
+        await edit_or_send(q, text, InlineKeyboardMarkup(kb))
+        return True
+
+    if data.startswith("admin_m365_sess_reset_"):
+        sess_id = int(data.rsplit("_", 1)[1])
+        reset_m365_session(sess_id)
+        log_admin_action(uid, "M365_SESSION_RESET", f"session #{sess_id}")
+        await edit_or_send(q, f"🔄 <b>Session #{sess_id} reset</b> — counter back to <code>0</code> and marked active.\n\nUse this after removing members from that Microsoft family.", InlineKeyboardMarkup([[InlineKeyboardButton("📂 Back to Sessions", callback_data="admin_m365_sessions")]]))
+        return True
+
+    if data.startswith("admin_m365_sess_del_"):
+        sess_id = int(data.rsplit("_", 1)[1])
+        delete_m365_session(sess_id)
+        log_admin_action(uid, "M365_SESSION_DELETE", f"session #{sess_id}")
+        await edit_or_send(q, f"🗑 <b>Session #{sess_id} deleted.</b>", InlineKeyboardMarkup([[InlineKeyboardButton("📂 Back to Sessions", callback_data="admin_m365_sessions")]]))
+        return True
+
+    if data == "admin_m365_sess_limit":
+        user_state[uid] = "admin_m365_sess_limit"
+        await edit_or_send(q, "⏳ <b>Invites Per ID</b>\n\nSend how many invites each Microsoft ID can send before the bot rotates to the next one.\n\nA Family plan allows <b>5</b> extra members.\n\nExample: <code>5</code>", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_m365_sessions")]]))
         return True
 
     if data.startswith("admin_m365_retry_"):
@@ -3229,6 +3288,30 @@ Use carefully. This will be sent to every saved user.""",
 
 
 async def handle_admin_message(update, context, uid, text, state):
+    if state and state.startswith("admin_m365_sess_label:") and is_admin(uid):
+        try:
+            sess_id = int(state.split(":")[1])
+        except Exception:
+            sess_id = 0
+        user_state.pop(uid, None)
+        new_label = text.strip()[:60]
+        if sess_id and new_label and new_label != "-":
+            rename_m365_session(sess_id, new_label)
+            await update.message.reply_text(f"✅ <b>Session #{sess_id} named:</b> {html.escape(new_label, quote=False)}", parse_mode="HTML")
+        else:
+            await update.message.reply_text("👍 Keeping the automatic name.", parse_mode="HTML")
+        return True
+
+    if state == "admin_m365_sess_limit" and is_admin(uid):
+        raw = text.strip()
+        if not raw.isdigit() or int(raw) <= 0 or int(raw) > 50:
+            await update.message.reply_text("❌ Send a whole number between 1 and 50.\n\nExample: <code>5</code>", parse_mode="HTML")
+            return True
+        set_setting("m365_invites_per_session", raw)
+        user_state.pop(uid, None)
+        await update.message.reply_text(f"✅ <b>Each Microsoft ID will now send {raw} invites before rotating to the next one.</b>", parse_mode="HTML")
+        return True
+
     if state == "admin_warr_hours" and is_admin(uid):
         try:
             w_hours = int(float(text.strip()))
@@ -3298,6 +3381,17 @@ async def handle_admin_message(update, context, uid, text, state):
             reply_markup=admin_menu(),
             parse_mode="HTML"
         )
+
+        try:
+            from services.m365_family import pop_rotation_note
+            rotation_note = pop_rotation_note()
+        except Exception:
+            rotation_note = None
+        if rotation_note:
+            try:
+                await update.message.reply_text("🔄 <b>M365 Session Rotation</b>\n\n" + rotation_note, parse_mode="HTML")
+            except Exception:
+                pass
 
         if screenshot:
             try:
@@ -4150,32 +4244,40 @@ You must include the confirmation word <code>DELETE</code>.""",
                 user_state.pop(uid, None)
                 return True
             raw = text.strip()
+            exact_mode = raw.startswith("=")
+            if exact_mode:
+                raw = raw[1:].strip()
             if not raw.isdigit():
-                await update.message.reply_text("❌ <b>Send a whole number</b> of slots.\n\nExample: <code>5</code>", parse_mode="HTML")
+                await update.message.reply_text("❌ <b>Send a whole number</b> of slots to ADD.\n\nExample: <code>3</code> → adds 3 slots on top of current stock.\nOr <code>=5</code> → sets the total to exactly 5.", parse_mode="HTML")
                 return True
             slots = int(raw)
+            cur.execute("SELECT COALESCE(stock,0) FROM products WHERE id=?", (product_id,))
+            current_stock = int(cur.fetchone()[0] or 0)
+            new_total = slots if exact_mode else current_stock + slots
+            added = new_total - current_stock
             # Auto-invite products deliver no codes: clear any code rows so the
             # numeric stock column gates purchases, then set it directly.
             cur.execute("DELETE FROM product_stock WHERE product_id=?", (product_id,))
-            cur.execute("UPDATE products SET stock=? WHERE id=?", (slots, product_id))
+            cur.execute("UPDATE products SET stock=? WHERE id=?", (new_total, product_id))
             conn.commit()
             user_state.pop(uid, None)
-            log_admin_action(uid, "M365_SET_SLOTS", f"Product ID {product_id} | slots {slots}")
+            log_admin_action(uid, "M365_SET_SLOTS", f"Product ID {product_id} | added {added} | total {new_total}")
 
             # Broadcast to all users, same as normal stock additions.
             broadcast_note = ""
-            if slots > 0:
+            if added > 0:
                 try:
-                    sent, failed = await broadcast_product_update(context, product_id, str(product[0]), float(product[1] or 0), slots, slots, mode="stock")
+                    sent, failed = await broadcast_product_update(context, product_id, str(product[0]), float(product[1] or 0), added, new_total, mode="stock")
                     broadcast_note = f"\n📢 Broadcast sent to <b>{sent}</b> users"
                 except Exception:
                     broadcast_note = "\n⚠️ Broadcast failed"
 
-            await update.message.reply_text(f"""✅ <b>Family Slots Set</b>
+            await update.message.reply_text(f"""✅ <b>Family Slots Updated</b>
 
 📦 Product: <b>{product[0]}</b>
 🆔 ID: <code>{product_id}</code>
-🎟 Available Slots: <code>{slots}</code>{broadcast_note}
+➕ Added: <code>{added}</code>
+🎟 Total Available Slots: <code>{new_total}</code>{broadcast_note}
 
 Customers can now buy this plan. After payment the bot asks their email and sends the Microsoft 365 Family invite automatically.""", reply_markup=products_select_keyboard("admin_stock_select"), parse_mode="HTML")
         except Exception as exc:
