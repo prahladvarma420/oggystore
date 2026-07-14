@@ -30,6 +30,7 @@ import html
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -91,19 +92,136 @@ def pop_rotation_note():
     return note
 
 
-def _load_active_session():
-    """Return (session_id, label, state_json) for the first non-full Microsoft ID.
+def _click_any(page, labels, timeout=8000):
+    """Click the first visible button/submit matching any of the given labels."""
+    for label in labels:
+        try:
+            btn = page.get_by_role("button", name=label, exact=False).first
+            if btn.is_visible(timeout=max(1200, timeout // max(1, len(labels)))):
+                btn.click()
+                return True
+        except Exception:
+            pass
+        try:
+            inp = page.locator(f"input[type='submit'][value*='{label}' i]").first
+            if inp.is_visible(timeout=1200):
+                inp.click()
+                return True
+        except Exception:
+            pass
+    return False
 
+
+def _do_login(page, email, password, totp_secret):
+    """Best-effort automated Microsoft consumer sign-in. Returns (ok, message).
+
+    Drives the login.live.com flow: email -> password -> (optional) 2FA code
+    generated from the stored authenticator secret -> "Stay signed in? Yes".
+    """
+    try:
+        # If an account picker appears, choose to use another account.
+        try:
+            tile = page.get_by_role("button", name=re.compile("another account|use another|sign in", re.I)).first
+            if tile.is_visible(timeout=1500):
+                tile.click()
+                page.wait_for_timeout(1200)
+        except Exception:
+            pass
+
+        # 1) Email
+        try:
+            email_box = page.locator("input[type='email'], input[name='loginfmt']").first
+            email_box.fill(email, timeout=12000)
+            _click_any(page, ["Next", "Sign in"])
+            page.wait_for_timeout(2500)
+        except Exception as e:
+            return False, f"could not enter email ({repr(e)[:100]})"
+
+        # 2) Password
+        try:
+            pw_box = page.locator("input[type='password'], input[name='passwd']").first
+            pw_box.fill(password, timeout=15000)
+            _click_any(page, ["Sign in", "Next", "Submit"])
+            page.wait_for_timeout(3000)
+        except Exception as e:
+            return False, f"could not enter password ({repr(e)[:100]}) — wrong password or unexpected page"
+
+        # 3) Two-factor: prefer typing a code over a push approval.
+        if totp_secret:
+            for link in ("verification code", "use a different", "I have a code",
+                         "can't use my", "authenticator app", "Verify with"):
+                try:
+                    lk = page.get_by_text(re.compile(re.escape(link), re.I)).first
+                    if lk.is_visible(timeout=1500):
+                        lk.click()
+                        page.wait_for_timeout(1500)
+                        break
+                except Exception:
+                    continue
+            try:
+                from utils.totp import totp_now
+                code = totp_now(totp_secret)
+                otp_box = page.locator(
+                    "input[name='otc'], input[type='tel'], input[inputmode='numeric'], input[autocomplete='one-time-code']"
+                ).first
+                otp_box.fill(code, timeout=12000)
+                _click_any(page, ["Verify", "Sign in", "Next", "Submit"])
+                page.wait_for_timeout(3000)
+            except Exception as e:
+                return False, f"could not enter 2FA code ({repr(e)[:100]}) — check the 2FA secret key"
+
+        # 4) "Stay signed in?" -> Yes (keeps cookies alive longer)
+        try:
+            _click_any(page, ["Yes"], timeout=6000)
+            page.wait_for_timeout(2000)
+        except Exception:
+            pass
+
+        try:
+            cur = page.url
+        except Exception:
+            cur = ""
+        if "login.live.com" in cur or "login.microsoftonline" in cur:
+            snippet = ""
+            try:
+                snippet = page.inner_text("body", timeout=3000)[:200].replace("\n", " ").strip()
+            except Exception:
+                pass
+            return False, f"still on the sign-in page after submitting (page said: {snippet or 'unknown'})"
+        return True, "signed in"
+    except Exception as e:
+        return False, f"login error: {repr(e)[:140]}"
+
+
+def _load_active_session():
+    """Return (session_id, label, state_json_or_None, creds_or_None) for the
+    first non-full Microsoft ID.
+
+    - state_json is the saved cookies (None when only credentials are stored).
+    - creds is (email, password, totp_secret) when a saved login exists.
     Falls back to (and migrates) the legacy single-session settings key.
     Returns None when no usable session exists.
     """
     try:
-        from database.db import get_current_m365_session, list_m365_sessions, add_m365_session
+        from database.db import (
+            get_current_m365_session,
+            list_m365_sessions,
+            add_m365_session,
+            get_m365_credentials,
+        )
         row = get_current_m365_session()
         if row:
             sid, label, state, _used = row
-            if state and not str(state).startswith("[encrypted:"):
-                return sid, str(label or f"ID #{sid}"), state
+            try:
+                creds = get_m365_credentials(sid)
+            except Exception:
+                creds = None
+            state_ok = bool(state) and not str(state).startswith("[encrypted:")
+            if state_ok:
+                return sid, str(label or f"ID #{sid}"), state, creds
+            if creds:
+                # No usable cookies yet, but we can log in with credentials.
+                return sid, str(label or f"ID #{sid}"), None, creds
             return None
         if not list_m365_sessions():
             legacy = load_session()
@@ -114,12 +232,12 @@ def _load_active_session():
                 except Exception:
                     pass
                 _log("migrated legacy session into sessions table as ID #1")
-                return sid, "ID #1", legacy
+                return sid, "ID #1", legacy, None
         return None
     except Exception:
         legacy = load_session()
         if legacy:
-            return None, "legacy session", legacy
+            return None, "legacy session", legacy, None
         return None
 
 
@@ -277,16 +395,20 @@ def send_family_invite_sync(email: str):
         if _all_full:
             return False, "ALL Microsoft IDs are FULL — upload a new session or reset one: Admin Panel → 📩 M365 Auto-Invite → 📂 Sessions.", None
         return False, "No Microsoft session uploaded. Admin Panel → 📩 M365 Auto-Invite → 🔑 Upload Session.", None
-    session_id, session_label, state_json = _session
+    session_id, session_label, state_json, session_creds = _session
 
     try:
         from playwright.sync_api import sync_playwright
     except Exception:
         return False, "Playwright is not installed on the server (add `playwright` to requirements + install chromium).", None
 
-    tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-    tmp.write(state_json)
-    tmp.close()
+    # A credential-only ID (no saved cookies yet) starts with a fresh browser
+    # and signs in automatically below.
+    tmp = None
+    if state_json:
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        tmp.write(state_json)
+        tmp.close()
 
     screenshot = None
     global _LAST_PHASE, _LAST_SCREENSHOT
@@ -365,8 +487,9 @@ def send_family_invite_sync(email: str):
                 else:
                     raise
 
+            _ctx_kwargs = {"storage_state": tmp.name} if tmp else {}
             context = browser.new_context(
-                storage_state=tmp.name,
+                **_ctx_kwargs,
                 viewport={"width": 1280, "height": 800},
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -508,10 +631,66 @@ def send_family_invite_sync(email: str):
             except Exception:
                 cur_url = ""
 
-            # Session expired -> Microsoft redirects to the login page.
+            # Login page shown -> either the cookies expired, or this is a
+            # credential-only ID signing in for the first time.
             if "login.live.com" in cur_url or "login.microsoftonline" in cur_url:
-                browser.close()
-                return False, f"Microsoft session '" + str(session_label) + "' EXPIRED — run tools/m365_login.py again and upload a fresh session for this ID.", screenshot
+                if session_creds and session_creds[0] and session_creds[1]:
+                    _LAST_PHASE = "auto-signing in with saved credentials"
+                    _log(f"login page detected; auto sign-in for '{session_label}'")
+                    login_ok, login_msg = _do_login(page, session_creds[0], session_creds[1], session_creds[2])
+                    _log(f"auto sign-in result: ok={login_ok} msg={login_msg}")
+                    screenshot = _snap()
+                    if not login_ok:
+                        browser.close()
+                        return False, f"Auto sign-in failed for '" + str(session_label) + "': " + str(login_msg) + ". Check the email/password/2FA secret in Admin → M365 → Sessions.", screenshot
+                    # Re-open the subscription page now that we are signed in.
+                    for nav_url in (
+                        "https://account.microsoft.com/services/microsoft365/details",
+                        SHARING_URL,
+                    ):
+                        try:
+                            page.goto(nav_url, wait_until="commit", timeout=25000)
+                            break
+                        except Exception:
+                            continue
+                    try:
+                        page.wait_for_load_state("domcontentloaded", timeout=12000)
+                    except Exception:
+                        pass
+                    # Persist the fresh cookies so future invites skip the login.
+                    try:
+                        _persist_session_state(session_id, json.dumps(context.storage_state()))
+                        _log("fresh login cookies saved to session")
+                    except Exception as save_exc:
+                        _log(f"could not save fresh cookies: {repr(save_exc)[:120]}")
+                    # Re-poll for the sharing UI after signing in.
+                    sharing_ui_found = False
+                    screenshot = _snap()
+                    for poll_i in range(10):
+                        if time.monotonic() > _deadline:
+                            break
+                        try:
+                            cur_url = page.url
+                        except Exception:
+                            cur_url = ""
+                        for probe in ("Share", "Start sharing", "Invite", "Manage sharing"):
+                            try:
+                                if page.get_by_role("button", name=probe, exact=False).first.is_visible():
+                                    sharing_ui_found = True
+                                    break
+                                if page.get_by_role("link", name=probe, exact=False).first.is_visible():
+                                    sharing_ui_found = True
+                                    break
+                            except Exception:
+                                continue
+                        if sharing_ui_found:
+                            break
+                        page.wait_for_timeout(1500)
+                    screenshot = _snap()
+                    _log(f"post-login poll: sharing_ui_found={sharing_ui_found}")
+                else:
+                    browser.close()
+                    return False, f"Microsoft session '" + str(session_label) + "' EXPIRED — add a saved login (email + password + 2FA secret) so it can refresh itself, or upload a fresh session. Admin → 📩 M365 Auto-Invite → 📂 Sessions.", screenshot
 
             # The Share/Manage control never appeared: return the screenshot +
             # URL + on-page text so we can see EXACTLY what the page shows

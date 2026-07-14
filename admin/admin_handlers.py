@@ -765,6 +765,10 @@ def get_product_preview(product_id: int):
 🛡 <b>Warranty:</b> {warranty or 'No warranty'}
 Choose what you want to edit:"""
 
+# Temporary per-admin buffer for the "Add Login" wizard (email/password/2FA).
+_m365_add_tmp = {}
+
+
 async def broadcast_product_update(context, product_id: int, product_name: str, price: float, added: int, available: int, mode: str = "stock"):
     """Broadcast new product/new stock alert to all users."""
     try:
@@ -3066,6 +3070,19 @@ Choose an order to view details:""",
         await edit_or_send(q, text_out, InlineKeyboardMarkup(rows))
         return True
 
+    if data == "admin_m365_add_login":
+        _m365_add_tmp[uid] = {}
+        user_state[uid] = "admin_m365_add_email"
+        await edit_or_send(
+            q,
+            "🔐 <b>Add Login (Email + Password + 2FA)</b>\n\n"
+            "Instead of uploading a session file, store the account's login once. "
+            "The bot signs in on its own and re-logs in automatically whenever the session expires — no more re-uploading! 🎉\n\n"
+            "Step 1/3 — send the <b>Microsoft account email</b>:",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Cancel", callback_data="admin_m365_sessions")]]),
+        )
+        return True
+
     if data == "admin_m365_sessions":
         sess_rows = list_m365_sessions()
         try:
@@ -3080,19 +3097,23 @@ Choose an order to view details:""",
         else:
             sess_current = get_current_m365_session()
             current_id = sess_current[0] if sess_current else None
-            for sid, sess_label, sess_used, sess_status, sess_created in sess_rows:
+            for row in sess_rows:
+                sid, sess_label, sess_used, sess_status = row[0], row[1], row[2], row[3]
+                sess_has_login = (len(row) > 5 and row[5])
                 if sess_status == "active":
                     icon = "🟢" if sid == current_id else "🕒"
                     marker = " ← current" if sid == current_id else " (queued)"
                 else:
                     icon = "🔴"
                     marker = " (FULL)"
-                text += f"{icon} <b>#{sid}</b> {html.escape(str(sess_label), quote=False)} — <code>{sess_used}/{per_id}</code>{marker}\n"
+                login_tag = " 🔐 auto-login" if sess_has_login else ""
+                text += f"{icon} <b>#{sid}</b> {html.escape(str(sess_label), quote=False)} — <code>{sess_used}/{per_id}</code>{marker}{login_tag}\n"
                 kb.append([
                     InlineKeyboardButton(f"🔄 Reset #{sid}", callback_data=f"admin_m365_sess_reset_{sid}"),
                     InlineKeyboardButton(f"🗑 Delete #{sid}", callback_data=f"admin_m365_sess_del_{sid}"),
                 ])
-        kb.append([InlineKeyboardButton("⏳ Invites Per ID", callback_data="admin_m365_sess_limit"), InlineKeyboardButton("🔑 Upload New", callback_data="admin_m365_upload")])
+        kb.append([InlineKeyboardButton("🔐 Add Login (ID+Pass+2FA)", callback_data="admin_m365_add_login")])
+        kb.append([InlineKeyboardButton("⏳ Invites Per ID", callback_data="admin_m365_sess_limit"), InlineKeyboardButton("🔑 Upload Session", callback_data="admin_m365_upload")])
         kb.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_m365")])
         await edit_or_send(q, text, InlineKeyboardMarkup(kb))
         return True
@@ -3288,6 +3309,71 @@ Use carefully. This will be sent to every saved user.""",
 
 
 async def handle_admin_message(update, context, uid, text, state):
+    if state == "admin_m365_add_email" and is_admin(uid):
+        _m365_add_tmp.setdefault(uid, {})["email"] = text.strip()
+        user_state[uid] = "admin_m365_add_pass"
+        await update.message.reply_text(
+            "Step 2/3 — send the <b>password</b> for this account.\n\n"
+            "🔒 I'll delete your message right after reading it.",
+            parse_mode="HTML",
+        )
+        return True
+
+    if state == "admin_m365_add_pass" and is_admin(uid):
+        _m365_add_tmp.setdefault(uid, {})["password"] = text
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        user_state[uid] = "admin_m365_add_totp"
+        await context.bot.send_message(
+            chat_id=uid,
+            text=(
+                "Step 3/3 — send the <b>2FA secret key</b> (the authenticator SETUP KEY: a string of letters/numbers you get when adding an authenticator, <i>not</i> the changing 6-digit code).\n\n"
+                "Send <code>-</code> if this account has no 2FA."
+            ),
+            parse_mode="HTML",
+        )
+        return True
+
+    if state == "admin_m365_add_totp" and is_admin(uid):
+        info = _m365_add_tmp.pop(uid, {})
+        email = info.get("email", "")
+        password = info.get("password", "")
+        totp = text.strip().replace(" ", "")
+        if totp == "-":
+            totp = ""
+        user_state.pop(uid, None)
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        from database.db import add_m365_credentials, list_m365_sessions
+        note = ""
+        if totp:
+            try:
+                from utils.totp import totp_now
+                totp_now(totp)
+                note = "\n✅ 2FA secret looks valid (generated a test code)."
+            except Exception:
+                note = "\n⚠️ Couldn't generate a code from that 2FA secret — make sure it's the SETUP KEY, not the 6-digit code. You can re-add it later."
+        new_sid = add_m365_credentials("", email, password, totp)
+        rename_m365_session(new_sid, email[:60] if email else f"ID #{new_sid}")
+        total = len(list_m365_sessions())
+        await context.bot.send_message(
+            chat_id=uid,
+            text=(
+                "✅ <b>Login saved (encrypted).</b>\n\n"
+                f"🆔 Account: <b>{html.escape(email, quote=False)}</b>\n"
+                f"🔐 2FA: {'set' if totp else 'none'}{note}\n"
+                f"📂 Total IDs stored: <b>{total}</b>\n\n"
+                "The bot will sign in automatically when this ID is used and refresh itself when the session expires — no more uploading session files for this ID! 🎉\n\n"
+                "🧪 Tip: use 📩 M365 Auto-Invite → Test Invite to confirm the login works."
+            ),
+            parse_mode="HTML",
+        )
+        return True
+
     if state and state.startswith("admin_m365_sess_label:") and is_admin(uid):
         try:
             sess_id = int(state.split(":")[1])

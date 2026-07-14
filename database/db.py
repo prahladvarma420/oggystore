@@ -1742,6 +1742,13 @@ conn.commit()
 cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('m365_invites_per_session', '5')")
 conn.commit()
 
+# Optional saved login (email + password + 2FA secret) so a session can be
+# refreshed automatically by logging in again when its cookies expire.
+_safe_add_column("m365_sessions", "login_email", "TEXT")
+_safe_add_column("m365_sessions", "login_password", "TEXT")
+_safe_add_column("m365_sessions", "totp_secret", "TEXT")
+conn.commit()
+
 
 def add_m365_session(label, state_json):
     """Store a new Microsoft session (encrypted). Returns the new session id."""
@@ -1751,6 +1758,58 @@ def add_m365_session(label, state_json):
     )
     conn.commit()
     return cur.lastrowid
+
+
+def add_m365_credentials(label, email, password, totp_secret):
+    """Store a Microsoft ID as login credentials (no cookie upload needed).
+
+    The session starts with an empty cookie state; the bot signs in with these
+    credentials automatically on first use and whenever the session expires.
+    Returns the new session id.
+    """
+    cur.execute(
+        "INSERT INTO m365_sessions (label, state, invites_used, status, created, login_email, login_password, totp_secret) VALUES (?, '', 0, 'active', ?, ?, ?, ?)",
+        (
+            str(label or ""),
+            now_text(),
+            encrypt_text(email or ""),
+            encrypt_text(password or ""),
+            encrypt_text(totp_secret or ""),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def set_m365_credentials(session_id, email, password, totp_secret):
+    """Attach/update saved login credentials on an existing session."""
+    cur.execute(
+        "UPDATE m365_sessions SET login_email=?, login_password=?, totp_secret=? WHERE id=?",
+        (
+            encrypt_text(email or ""),
+            encrypt_text(password or ""),
+            encrypt_text(totp_secret or ""),
+            session_id,
+        ),
+    )
+    conn.commit()
+
+
+def get_m365_credentials(session_id):
+    """Return (email, password, totp_secret) for a session, or None if not set."""
+    try:
+        cur.execute("SELECT login_email, login_password, totp_secret FROM m365_sessions WHERE id=?", (session_id,))
+    except Exception:
+        return None
+    row = cur.fetchone()
+    if not row or not row[0]:
+        return None
+    email = decrypt_text(row[0]) if row[0] else ""
+    if not email or str(email).startswith("[encrypted:"):
+        return None
+    password = decrypt_text(row[1]) if row[1] else ""
+    totp = decrypt_text(row[2]) if row[2] else ""
+    return (email, password, totp)
 
 
 def rename_m365_session(session_id, label):
@@ -1799,8 +1858,12 @@ def delete_m365_session(session_id):
 
 
 def list_m365_sessions():
-    cur.execute("SELECT id, label, invites_used, status, created FROM m365_sessions ORDER BY id ASC")
-    return cur.fetchall()
+    try:
+        cur.execute("SELECT id, label, invites_used, status, created, CASE WHEN login_email IS NOT NULL AND login_email != '' THEN 1 ELSE 0 END FROM m365_sessions ORDER BY id ASC")
+        return cur.fetchall()
+    except Exception:
+        cur.execute("SELECT id, label, invites_used, status, created, 0 FROM m365_sessions ORDER BY id ASC")
+        return cur.fetchall()
 
 
 def count_active_m365_sessions():
