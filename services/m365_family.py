@@ -160,6 +160,20 @@ def _extract_totp_secret(page):
     return None
 
 
+def _short_url(page):
+    try:
+        return (page.url or "")[:100]
+    except Exception:
+        return "?"
+
+
+def _page_text(page, n=220):
+    try:
+        return page.inner_text("body", timeout=2500)[:n].replace("\n", " ").strip()
+    except Exception:
+        return ""
+
+
 def _do_login(page, email, password, totp_secret):
     """Best-effort automated Microsoft consumer sign-in.
 
@@ -184,14 +198,34 @@ def _do_login(page, email, password, totp_secret):
         except Exception:
             pass
 
+        _log(f"login: start url={_short_url(page)}")
+
         # 1) Email
         try:
             email_box = page.locator("input[type='email'], input[name='loginfmt']").first
             email_box.fill(email, timeout=12000)
-            _click_any(page, ["Next", "Sign in"])
-            page.wait_for_timeout(2500)
+            clicked = _click_any(page, ["Next", "Sign in"])
+            if not clicked:
+                try:
+                    email_box.press("Enter")
+                    clicked = True
+                except Exception:
+                    pass
+            page.wait_for_timeout(3500)
+            _log(f"login: email submitted (clicked={clicked}) url={_short_url(page)}")
         except Exception as e:
             return False, f"could not enter email ({repr(e)[:100]})", discovered_secret
+
+        # 1b) Microsoft rejected the address? (bad/typo/non-existent account)
+        _bl = _page_text(page, 400).lower()
+        if any(k in _bl for k in [
+            "that microsoft account doesn't exist", "couldn't find an account",
+            "we couldn't find", "enter a valid email", "enter a valid phone",
+            "doesn't exist. enter a different", "this username may be incorrect",
+            "no account found",
+        ]):
+            return False, ("Microsoft rejected the login EMAIL (account not found / typo). "
+                           "Fix the login email in Admin → M365 → Sessions."), discovered_secret
 
         # 2) "Verify your email" / passwordless screen -> switch to password.
         try:
@@ -204,14 +238,33 @@ def _do_login(page, email, password, totp_secret):
         except Exception:
             pass
 
-        # 3) Password
+        # 3) Password (only if the password field actually appeared)
         try:
             pw_box = page.locator("input[type='password'], input[name='passwd']").first
+            if not pw_box.is_visible(timeout=9000):
+                return False, ("password screen never appeared after the email step "
+                               f"(stuck on: {_page_text(page) or 'unknown'}). The email likely didn't "
+                               "advance, or this ID needs an email/SMS code instead of a password."), discovered_secret
             pw_box.fill(password, timeout=15000)
-            _click_any(page, ["Sign in", "Next", "Submit"])
-            page.wait_for_timeout(3000)
+            clicked = _click_any(page, ["Sign in", "Next", "Submit"])
+            if not clicked:
+                try:
+                    pw_box.press("Enter")
+                except Exception:
+                    pass
+            page.wait_for_timeout(3500)
+            _log(f"login: password submitted url={_short_url(page)}")
         except Exception as e:
-            return False, f"could not enter password ({repr(e)[:100]}) — wrong password or unexpected page", discovered_secret
+            return False, f"could not enter password ({repr(e)[:100]})", discovered_secret
+
+        # 3b) Wrong password?
+        _bl = _page_text(page, 400).lower()
+        if any(k in _bl for k in [
+            "your account or password is incorrect", "password is incorrect",
+            "that password is incorrect", "incorrect password",
+        ]):
+            return False, ("Microsoft says the PASSWORD is incorrect for this ID. "
+                           "Update the password in Admin → M365 → Sessions."), discovered_secret
 
         # 4) Post-password: clear passkey nudges, handle 2FA, auto-register a
         #    forced Authenticator if needed, then reach "Stay signed in?".
