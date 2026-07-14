@@ -112,16 +112,37 @@ def _click_any(page, labels, timeout=8000):
     return False
 
 
+def _click_link_any(page, labels, timeout=2000):
+    """Click the first visible link/button/text matching any label (regex-escaped)."""
+    for label in labels:
+        pat = re.compile(re.escape(label), re.I)
+        for getter in (
+            lambda: page.get_by_role("link", name=pat).first,
+            lambda: page.get_by_role("button", name=pat).first,
+            lambda: page.get_by_text(pat).first,
+        ):
+            try:
+                el = getter()
+                if el.is_visible(timeout=timeout):
+                    el.click()
+                    return True
+            except Exception:
+                continue
+    return False
+
+
 def _do_login(page, email, password, totp_secret):
     """Best-effort automated Microsoft consumer sign-in. Returns (ok, message).
 
-    Drives the login.live.com flow: email -> password -> (optional) 2FA code
-    generated from the stored authenticator secret -> "Stay signed in? Yes".
+    Handles the real consumer flow, including accounts with a recovery email:
+      email -> ("Verify your email" -> "Use your password") -> password
+      -> (passkey setup prompt -> Cancel) -> (optional TOTP 2FA)
+      -> "Stay signed in?" -> Yes
     """
     try:
         # If an account picker appears, choose to use another account.
         try:
-            tile = page.get_by_role("button", name=re.compile("another account|use another|sign in", re.I)).first
+            tile = page.get_by_role("button", name=re.compile("another account|use another", re.I)).first
             if tile.is_visible(timeout=1500):
                 tile.click()
                 page.wait_for_timeout(1200)
@@ -137,7 +158,20 @@ def _do_login(page, email, password, totp_secret):
         except Exception as e:
             return False, f"could not enter email ({repr(e)[:100]})"
 
-        # 2) Password
+        # 2) "Verify your email" / passwordless screen -> switch to password.
+        #    (Accounts with a recovery email default to sending a code; we click
+        #     "Use your password" instead so no email code is ever needed.)
+        try:
+            if _click_link_any(page, [
+                "Use your password", "Use my password", "Sign in with your password",
+                "Sign in with a password", "Enter your password instead", "Use password",
+            ], timeout=2500):
+                _log("login: clicked 'Use your password'")
+                page.wait_for_timeout(2500)
+        except Exception:
+            pass
+
+        # 3) Password
         try:
             pw_box = page.locator("input[type='password'], input[name='passwd']").first
             pw_box.fill(password, timeout=15000)
@@ -146,37 +180,66 @@ def _do_login(page, email, password, totp_secret):
         except Exception as e:
             return False, f"could not enter password ({repr(e)[:100]}) — wrong password or unexpected page"
 
-        # 3) Two-factor: prefer typing a code over a push approval.
-        if totp_secret:
-            for link in ("verification code", "use a different", "I have a code",
-                         "can't use my", "authenticator app", "Verify with"):
-                try:
-                    lk = page.get_by_text(re.compile(re.escape(link), re.I)).first
-                    if lk.is_visible(timeout=1500):
-                        lk.click()
-                        page.wait_for_timeout(1500)
-                        break
-                except Exception:
-                    continue
-            try:
-                from utils.totp import totp_now
-                code = totp_now(totp_secret)
-                otp_box = page.locator(
-                    "input[name='otc'], input[type='tel'], input[inputmode='numeric'], input[autocomplete='one-time-code']"
-                ).first
-                otp_box.fill(code, timeout=12000)
-                _click_any(page, ["Verify", "Sign in", "Next", "Submit"])
-                page.wait_for_timeout(3000)
-            except Exception as e:
-                return False, f"could not enter 2FA code ({repr(e)[:100]}) — check the 2FA secret key"
+        # 4) Post-password: dismiss the "set up a passkey" nudge, handle optional
+        #    TOTP 2FA, and stop once we reach the "Stay signed in?" screen.
+        for step in range(5):
+            handled = False
 
-        # 4) "Stay signed in?" -> Yes (keeps cookies alive longer)
+            # 4a) Passkey / "use your phone" setup prompt -> Cancel / Skip.
+            try:
+                cur_url = page.url
+            except Exception:
+                cur_url = ""
+            if "fido" in cur_url or "passkey" in cur_url.lower():
+                if _click_link_any(page, ["Cancel", "Skip for now", "Not now", "Maybe later", "No thanks", "Back"], timeout=1800):
+                    _log("login: dismissed passkey setup prompt")
+                    page.wait_for_timeout(1800)
+                    handled = True
+            else:
+                # Some layouts show the passkey nudge without a fido URL.
+                try:
+                    if page.get_by_text(re.compile("passkey|use your phone or tablet|sign in faster", re.I)).first.is_visible(timeout=1000):
+                        if _click_link_any(page, ["Cancel", "Skip for now", "Not now", "Maybe later", "No thanks"], timeout=1500):
+                            _log("login: dismissed passkey nudge")
+                            page.wait_for_timeout(1800)
+                            handled = True
+                except Exception:
+                    pass
+
+            # 4b) TOTP challenge (only for IDs that use an authenticator app).
+            if totp_secret:
+                try:
+                    otp_box = page.locator(
+                        "input[name='otc'], input[autocomplete='one-time-code'], input[inputmode='numeric'], input[type='tel']"
+                    ).first
+                    if otp_box.is_visible(timeout=1000):
+                        from utils.totp import totp_now
+                        otp_box.fill(totp_now(totp_secret), timeout=8000)
+                        _click_any(page, ["Verify", "Sign in", "Next", "Submit"])
+                        _log("login: entered TOTP 2FA code")
+                        page.wait_for_timeout(2500)
+                        handled = True
+                except Exception:
+                    pass
+
+            # 4c) Reached "Stay signed in?" -> done with challenges.
+            try:
+                if page.get_by_text(re.compile("Stay signed in", re.I)).first.is_visible(timeout=1000):
+                    break
+            except Exception:
+                pass
+
+            if not handled:
+                page.wait_for_timeout(1500)
+
+        # 5) "Stay signed in?" -> Yes (keeps cookies alive longer)
         try:
             _click_any(page, ["Yes"], timeout=6000)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(2500)
         except Exception:
             pass
 
+        # Success = we are no longer sitting on an auth challenge page.
         try:
             cur = page.url
         except Exception:
