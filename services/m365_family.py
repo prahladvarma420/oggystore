@@ -295,12 +295,22 @@ def _do_login(page, email, password, totp_secret):
                         try: box.press("Enter")
                         except Exception: pass
                     passwords += 1; page.wait_for_timeout(3500)
-                    _log(f"login: password submitted (#{passwords}) url={_short_url(page)}")
-                    if any(k in _page_text(page, 400).lower() for k in [
+                    _post_pw = _page_text(page, 320)
+                    _log(f"login: password submitted (#{passwords}) url={_short_url(page)} :: {_post_pw[:200]}")
+                    _low_pw = _post_pw.lower()
+                    if any(k in _low_pw for k in [
                         "your account or password is incorrect", "password is incorrect",
                         "that password is incorrect", "incorrect password",
                     ]):
                         return False, "Microsoft says the PASSWORD is incorrect for this ID. Update it in Admin → M365 → Sessions.", discovered_secret
+                    if any(k in _low_pw for k in [
+                        "unusual", "verify your identity", "help us protect", "protect your account",
+                        "verify it's you", "we need to verify", "prove you're not a robot",
+                        "let's prove", "solve the puzzle", "press and hold",
+                    ]):
+                        return False, ("Microsoft is asking for EXTRA VERIFICATION after the password (unusual-activity / "
+                                       "identity or robot check) — automated login cannot pass this. Use the session-upload "
+                                       "method for this ID: sign in once manually, then upload its session file."), discovered_secret
                     continue
                 except Exception as e:
                     return False, f"could not enter password ({repr(e)[:90]})", discovered_secret
