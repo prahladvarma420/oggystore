@@ -131,14 +131,49 @@ def _click_link_any(page, labels, timeout=2000):
     return False
 
 
+def _extract_totp_secret(page):
+    """Scrape a base32 TOTP setup key from the current page, if one is shown.
+
+    Microsoft's "different authenticator app" screen prints the key on its own
+    line, so we scan line-by-line (most reliable) and only fall back to a
+    grouped inline match that stays within a single line.
+    """
+    try:
+        body = page.inner_text("body", timeout=4000)
+    except Exception:
+        return None
+    import re as _re
+    for raw in body.splitlines():
+        line = raw.strip()
+        if ":" in line:
+            line = line.split(":")[-1].strip()
+        compact = _re.sub(r"[\s-]+", "", line)
+        if 16 <= len(compact) <= 64 and _re.fullmatch(r"[A-Za-z2-7]+", compact) and _re.search(r"[2-7]", compact):
+            return compact.upper()
+    # Fallback: 4-char groups separated by spaces/tabs WITHIN one line only
+    # (never across newlines), and only if the result contains a base32 digit.
+    m = _re.search(r"((?:[A-Za-z2-7]{4}[ \t-]+){3,}[A-Za-z2-7]{4})", body)
+    if m:
+        cand = _re.sub(r"[\s-]+", "", m.group(1)).upper()
+        if _re.search(r"[2-7]", cand):
+            return cand
+    return None
+
+
 def _do_login(page, email, password, totp_secret):
-    """Best-effort automated Microsoft consumer sign-in. Returns (ok, message).
+    """Best-effort automated Microsoft consumer sign-in.
+
+    Returns (ok, message, discovered_secret). discovered_secret is a base32
+    TOTP key the bot auto-registered from a forced "set up Microsoft
+    Authenticator" screen (None if nothing new was set up).
 
     Handles the real consumer flow, including accounts with a recovery email:
       email -> ("Verify your email" -> "Use your password") -> password
-      -> (passkey setup prompt -> Cancel) -> (optional TOTP 2FA)
-      -> "Stay signed in?" -> Yes
+      -> (passkey setup -> Cancel) -> (optional TOTP 2FA)
+      -> (forced Authenticator setup -> switch to a different app -> scrape key
+          -> enter generated code) -> "Stay signed in?" -> Yes
     """
+    discovered_secret = None
     try:
         # If an account picker appears, choose to use another account.
         try:
@@ -156,11 +191,9 @@ def _do_login(page, email, password, totp_secret):
             _click_any(page, ["Next", "Sign in"])
             page.wait_for_timeout(2500)
         except Exception as e:
-            return False, f"could not enter email ({repr(e)[:100]})"
+            return False, f"could not enter email ({repr(e)[:100]})", discovered_secret
 
         # 2) "Verify your email" / passwordless screen -> switch to password.
-        #    (Accounts with a recovery email default to sending a code; we click
-        #     "Use your password" instead so no email code is ever needed.)
         try:
             if _click_link_any(page, [
                 "Use your password", "Use my password", "Sign in with your password",
@@ -178,27 +211,26 @@ def _do_login(page, email, password, totp_secret):
             _click_any(page, ["Sign in", "Next", "Submit"])
             page.wait_for_timeout(3000)
         except Exception as e:
-            return False, f"could not enter password ({repr(e)[:100]}) — wrong password or unexpected page"
+            return False, f"could not enter password ({repr(e)[:100]}) — wrong password or unexpected page", discovered_secret
 
-        # 4) Post-password: dismiss the "set up a passkey" nudge, handle optional
-        #    TOTP 2FA, and stop once we reach the "Stay signed in?" screen.
-        for step in range(5):
+        # 4) Post-password: clear passkey nudges, handle 2FA, auto-register a
+        #    forced Authenticator if needed, then reach "Stay signed in?".
+        for step in range(7):
             handled = False
-
-            # 4a) Passkey / "use your phone" setup prompt -> Cancel / Skip.
             try:
                 cur_url = page.url
             except Exception:
                 cur_url = ""
+
+            # 4a) Passkey / "use your phone" setup prompt -> Cancel / Skip.
             if "fido" in cur_url or "passkey" in cur_url.lower():
                 if _click_link_any(page, ["Cancel", "Skip for now", "Not now", "Maybe later", "No thanks", "Back"], timeout=1800):
                     _log("login: dismissed passkey setup prompt")
                     page.wait_for_timeout(1800)
                     handled = True
             else:
-                # Some layouts show the passkey nudge without a fido URL.
                 try:
-                    if page.get_by_text(re.compile("passkey|use your phone or tablet|sign in faster", re.I)).first.is_visible(timeout=1000):
+                    if page.get_by_text(re.compile("use your phone or tablet|sign in faster with a passkey|create a passkey", re.I)).first.is_visible(timeout=800):
                         if _click_link_any(page, ["Cancel", "Skip for now", "Not now", "Maybe later", "No thanks"], timeout=1500):
                             _log("login: dismissed passkey nudge")
                             page.wait_for_timeout(1800)
@@ -206,15 +238,77 @@ def _do_login(page, email, password, totp_secret):
                 except Exception:
                     pass
 
-            # 4b) TOTP challenge (only for IDs that use an authenticator app).
-            if totp_secret:
+            # 4b) Forced "set up Microsoft Authenticator" (QR) screen. A bot
+            #     can't scan a QR, so switch to "a different authenticator app",
+            #     which reveals a TEXT setup key we can use as a TOTP secret.
+            try:
+                setup_visible = page.get_by_text(re.compile(
+                    "set up the Microsoft Authenticator|to sign in to Microsoft Authenticator|follow the steps below|Keep your account secure|Start by getting the app|scan this QR code|Scan the QR code",
+                    re.I,
+                )).first.is_visible(timeout=800)
+            except Exception:
+                setup_visible = False
+            if setup_visible and not discovered_secret:
+                _log("login: forced Authenticator setup detected; switching to a different authenticator app")
+                _click_link_any(page, [
+                    "I want to use a different authenticator app",
+                    "use a different authenticator app",
+                    "different authenticator app",
+                    "Set up a different Authenticator app",
+                    "I can't scan the QR code",
+                    "Can't scan the image",
+                    "Can't scan",
+                    "enter the code manually",
+                    "Next",
+                ], timeout=2500)
+                page.wait_for_timeout(2500)
+                secret = _extract_totp_secret(page)
+                if secret:
+                    discovered_secret = secret
+                    _log(f"login: scraped TOTP setup key (len={len(secret)}); auto-registering")
+                    _click_any(page, ["Next"])
+                    page.wait_for_timeout(2500)
+                    try:
+                        from utils.totp import totp_now
+                        otp_box = page.locator(
+                            "input[name='otc'], input[autocomplete='one-time-code'], input[inputmode='numeric'], input[type='tel']"
+                        ).first
+                        otp_box.fill(totp_now(secret), timeout=10000)
+                        _click_any(page, ["Next", "Verify", "Done", "Sign in", "Submit"])
+                        page.wait_for_timeout(3000)
+                        # Some flows ask to confirm the code twice.
+                        try:
+                            otp2 = page.locator("input[name='otc'], input[autocomplete='one-time-code'], input[inputmode='numeric'], input[type='tel']").first
+                            if otp2.is_visible(timeout=1200):
+                                otp2.fill(totp_now(secret), timeout=8000)
+                                _click_any(page, ["Next", "Verify", "Done", "Submit"])
+                                page.wait_for_timeout(2500)
+                        except Exception:
+                            pass
+                        _log("login: auto-registered TOTP authenticator")
+                        handled = True
+                    except Exception as e:
+                        return False, (
+                            "Found the setup key but could not confirm the 2FA code ("
+                            + repr(e)[:80] + "). The key was saved — try Test Invite again."
+                        ), discovered_secret
+                else:
+                    return False, (
+                        "Microsoft is FORCING Microsoft Authenticator (QR) setup for this ID and didn't offer a "
+                        "text setup key to scrape. Fix once manually: sign in to this account → Security → add a "
+                        "sign-in method → Authenticator app → 'I want to use a different authenticator app' to reveal "
+                        "the SETUP KEY, paste that key into the bot (Add Login), and finish setup. Then auto-login works."
+                    ), discovered_secret
+
+            # 4c) TOTP challenge (asks for the 6-digit code).
+            if (totp_secret or discovered_secret):
                 try:
                     otp_box = page.locator(
                         "input[name='otc'], input[autocomplete='one-time-code'], input[inputmode='numeric'], input[type='tel']"
                     ).first
-                    if otp_box.is_visible(timeout=1000):
+                    if otp_box.is_visible(timeout=800):
                         from utils.totp import totp_now
-                        otp_box.fill(totp_now(totp_secret), timeout=8000)
+                        otp_box.fill(totp_now(discovered_secret or totp_secret), timeout=8000)
                         _click_any(page, ["Verify", "Sign in", "Next", "Submit"])
                         _log("login: entered TOTP 2FA code")
                         page.wait_for_timeout(2500)
@@ -222,9 +316,9 @@ def _do_login(page, email, password, totp_secret):
                 except Exception:
                     pass
 
-            # 4c) Reached "Stay signed in?" -> done with challenges.
+            # 4d) Reached "Stay signed in?" -> done with challenges.
             try:
-                if page.get_by_text(re.compile("Stay signed in", re.I)).first.is_visible(timeout=1000):
+                if page.get_by_text(re.compile("Stay signed in", re.I)).first.is_visible(timeout=800):
                     break
             except Exception:
                 pass
@@ -250,10 +344,10 @@ def _do_login(page, email, password, totp_secret):
                 snippet = page.inner_text("body", timeout=3000)[:200].replace("\n", " ").strip()
             except Exception:
                 pass
-            return False, f"still on the sign-in page after submitting (page said: {snippet or 'unknown'})"
-        return True, "signed in"
+            return False, f"still on the sign-in page after submitting (page said: {snippet or 'unknown'})", discovered_secret
+        return True, "signed in", discovered_secret
     except Exception as e:
-        return False, f"login error: {repr(e)[:140]}"
+        return False, f"login error: {repr(e)[:140]}", discovered_secret
 
 
 def _load_active_session():
@@ -700,8 +794,15 @@ def send_family_invite_sync(email: str):
                 if session_creds and session_creds[0] and session_creds[1]:
                     _LAST_PHASE = "auto-signing in with saved credentials"
                     _log(f"login page detected; auto sign-in for '{session_label}'")
-                    login_ok, login_msg = _do_login(page, session_creds[0], session_creds[1], session_creds[2])
-                    _log(f"auto sign-in result: ok={login_ok} msg={login_msg}")
+                    login_ok, login_msg, _new_secret = _do_login(page, session_creds[0], session_creds[1], session_creds[2])
+                    _log(f"auto sign-in result: ok={login_ok} msg={login_msg} new_secret={'yes' if _new_secret else 'no'}")
+                    if _new_secret and session_id is not None:
+                        try:
+                            from database.db import set_m365_credentials
+                            set_m365_credentials(session_id, session_creds[0], session_creds[1], _new_secret)
+                            _log("saved auto-registered TOTP secret to this session")
+                        except Exception as _sec_exc:
+                            _log(f"could not save auto-registered secret: {repr(_sec_exc)[:120]}")
                     screenshot = _snap()
                     if not login_ok:
                         browser.close()
