@@ -550,9 +550,10 @@ Price: <b>{format_price(display_price)} / code</b>{sale_text}
 
 🔥 <b>{sold_count}</b> sold
 """
+
     if stock > 0:
         text += f"📦 <b>{stock}</b> in stock\n"
-        
+
     if stock <= 0:
         text += "\n🔴 <b>Out of stock</b>\n"
 
@@ -1013,8 +1014,8 @@ Deposit exactly what's missing with one tap below.""",
         delivery_text = format_delivery_items(deliveries)
 
         cur.execute(
-            "INSERT INTO orders(user_id, product_name, price, delivery) VALUES(?,?,?,?)",
-            (uid, f"{raw_name} x{quantity}", total_price, encrypt_text(delivery_text))
+            "INSERT INTO orders(user_id, product_name, price, delivery, product_id) VALUES(?,?,?,?,?)",
+            (uid, f"{raw_name} x{quantity}", total_price, encrypt_text(delivery_text), pid)
         )
         conn.commit()
 

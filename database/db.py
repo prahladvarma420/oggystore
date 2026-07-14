@@ -1179,7 +1179,7 @@ def simplify_default_message_templates():
         "coupon_broadcast": "🎟 New Coupon Available!\n\n💝 Discount: {discount}\n🎫 Code: {code}\n⏳ Validity: {validity}\n🔥 Limit: {limit}\n\nUse it before checkout 👇",
         "flash_sale_broadcast": "🔥 FLASH SALE!\n\n📦 {product}\n\n💰 Was: {old_price}\n⚡ Now: {new_price}\n🎁 Discount: {discount}\n\n⏳ {validity}\n\nBuy before it ends 👇",
         "restock_alert": "🔔 Back In Stock!\n\n📦 {product}\n📊 Available: {stock}\n\nTap below to buy now 👇",
-        "deposit_success": "✅ Deposit Confirmed\n\n��� Amount: {amount} USDT\n\nYour wallet balance has been updated."
+        "deposit_success": "✅ Deposit Confirmed\n\n���� Amount: {amount} USDT\n\nYour wallet balance has been updated."
     }
     for key, body in simple_templates.items():
         cur.execute("UPDATE message_templates SET body=? WHERE key=?", (body, key))
@@ -1530,3 +1530,198 @@ def toggle_canva_product(product_id: int) -> bool:
         enabled = True
     set_setting("canva_invite_products", ",".join(str(x) for x in sorted(ids)))
     return enabled
+
+
+# ---------------- Gift Codes & Warranty Replacement ----------------
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS gift_codes(
+    code TEXT PRIMARY KEY,
+    amount REAL NOT NULL,
+    created_by INTEGER,
+    redeemed_by INTEGER,
+    redeemed_at TEXT,
+    created TEXT DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS replacements(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    product_id INTEGER,
+    old_delivery TEXT,
+    new_delivery TEXT,
+    status TEXT DEFAULT 'pending',
+    created TEXT DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+_safe_add_column("orders", "product_id", "INTEGER")
+_safe_add_column("users", "warranty_banned", "INTEGER DEFAULT 0")
+
+cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('warranty_enabled', '1')")
+cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('warranty_hours', '24')")
+cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('warranty_max_week', '3')")
+cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('gift_min_amount', '1')")
+cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('gift_max_amount', '500')")
+conn.commit()
+
+
+def generate_gift_code() -> str:
+    import secrets
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "GIFT-" + "".join(secrets.choice(alphabet) for _ in range(10))
+
+
+def create_gift_code(user_id: int, amount: float, free: bool = False):
+    """Create a gift code. Deducts the buyer's balance unless free (admin gift)."""
+    amount = round(float(amount), 2)
+    if amount <= 0:
+        return None
+
+    if not free:
+        cur.execute(
+            "UPDATE users SET balance=balance-? WHERE user_id=? AND balance>=?",
+            (amount, user_id, amount)
+        )
+        if cur.rowcount == 0:
+            conn.rollback()
+            return None
+
+    code = generate_gift_code()
+    cur.execute(
+        "INSERT INTO gift_codes(code, amount, created_by, created) VALUES(?,?,?,?)",
+        (code, amount, user_id, now_text())
+    )
+    conn.commit()
+    return code
+
+
+def redeem_gift_code(user_id: int, code: str):
+    code = str(code).strip().upper()
+    cur.execute("SELECT amount, redeemed_by, created_by FROM gift_codes WHERE code=?", (code,))
+    row = cur.fetchone()
+
+    if not row:
+        return False, "Invalid gift code."
+
+    amount, redeemed_by, created_by = row
+
+    if redeemed_by:
+        return False, "This gift code has already been redeemed."
+
+    if created_by == user_id:
+        return False, "You cannot redeem your own gift code. Share it with someone!"
+
+    cur.execute(
+        "UPDATE gift_codes SET redeemed_by=?, redeemed_at=? WHERE code=? AND redeemed_by IS NULL",
+        (user_id, now_text(), code)
+    )
+    if cur.rowcount == 0:
+        conn.rollback()
+        return False, "This gift code has already been redeemed."
+
+    cur.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, user_id))
+    conn.commit()
+    return True, amount
+
+
+def get_user_gift_codes(user_id: int, limit: int = 10):
+    cur.execute(
+        "SELECT code, amount, redeemed_by, created FROM gift_codes WHERE created_by=? ORDER BY created DESC LIMIT ?",
+        (user_id, limit)
+    )
+    return cur.fetchall()
+
+
+def list_gift_codes(limit: int = 15):
+    cur.execute(
+        "SELECT code, amount, created_by, redeemed_by, created FROM gift_codes ORDER BY created DESC LIMIT ?",
+        (limit,)
+    )
+    return cur.fetchall()
+
+
+def is_warranty_banned(user_id: int) -> bool:
+    cur.execute("SELECT warranty_banned FROM users WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    return bool(row and row[0] == 1)
+
+
+def set_warranty_ban(user_id: int, banned: bool):
+    ensure_user_id(user_id)
+    cur.execute("UPDATE users SET warranty_banned=? WHERE user_id=?", (1 if banned else 0, user_id))
+    conn.commit()
+
+
+def get_warranty_orders(user_id: int):
+    """Orders inside the warranty window, with a known product and no replacement yet."""
+    hours = int(float(get_setting("warranty_hours", "24") or 24))
+    cur.execute(
+        "SELECT o.id, o.product_name, o.product_id, o.created FROM orders o "
+        "WHERE o.user_id=? AND o.product_id IS NOT NULL "
+        "AND datetime(o.created) >= datetime('now', ?) "
+        "AND NOT EXISTS (SELECT 1 FROM replacements r WHERE r.order_id = o.id) "
+        "ORDER BY o.id DESC LIMIT 10",
+        (user_id, "-" + str(hours) + " hours")
+    )
+    return cur.fetchall()
+
+
+def get_order_for_warranty(order_id: int, user_id: int):
+    hours = int(float(get_setting("warranty_hours", "24") or 24))
+    cur.execute(
+        "SELECT o.id, o.product_id, o.product_name, o.delivery FROM orders o "
+        "WHERE o.id=? AND o.user_id=? AND o.product_id IS NOT NULL "
+        "AND datetime(o.created) >= datetime('now', ?) "
+        "AND NOT EXISTS (SELECT 1 FROM replacements r WHERE r.order_id = o.id)",
+        (order_id, user_id, "-" + str(hours) + " hours")
+    )
+    return cur.fetchone()
+
+
+def count_recent_replacements(user_id: int, days: int = 7) -> int:
+    cur.execute(
+        "SELECT COUNT(*) FROM replacements WHERE user_id=? AND datetime(created) >= datetime('now', ?)",
+        (user_id, "-" + str(int(days)) + " days")
+    )
+    row = cur.fetchone()
+    return row[0] if row else 0
+
+
+def create_replacement(order_id: int, user_id: int, product_id, old_delivery: str, new_delivery: str, status: str) -> int:
+    cur.execute(
+        "INSERT INTO replacements(order_id, user_id, product_id, old_delivery, new_delivery, status, created) VALUES(?,?,?,?,?,?,?)",
+        (order_id, user_id, product_id, encrypt_text(old_delivery or ""), encrypt_text(new_delivery or ""), status, now_text())
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_replacement(replacement_id: int):
+    cur.execute(
+        "SELECT id, order_id, user_id, product_id, old_delivery, new_delivery, status FROM replacements WHERE id=?",
+        (replacement_id,)
+    )
+    return cur.fetchone()
+
+
+def get_pending_replacements(limit: int = 10):
+    cur.execute(
+        "SELECT id, order_id, user_id, product_id, created FROM replacements WHERE status='pending' ORDER BY id ASC LIMIT ?",
+        (limit,)
+    )
+    return cur.fetchall()
+
+
+def set_replacement_status(replacement_id: int, status: str, new_delivery=None):
+    if new_delivery is not None:
+        cur.execute(
+            "UPDATE replacements SET status=?, new_delivery=? WHERE id=?",
+            (status, encrypt_text(new_delivery), replacement_id)
+        )
+    else:
+        cur.execute("UPDATE replacements SET status=? WHERE id=?", (status, replacement_id))
+    conn.commit()

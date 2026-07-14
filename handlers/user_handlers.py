@@ -14,6 +14,7 @@ from products.product_handlers import show_shop, show_product, buy_product, show
 from payments.deposit_handlers import start_deposit, handle_deposit_amount, deposit_shortfall
 from admin.admin_handlers import show_admin_panel, handle_admin_callback, handle_admin_message
 from config import ADMIN_USERNAME, ADMIN_ID
+from database.db import create_gift_code, redeem_gift_code, get_user_gift_codes, get_warranty_orders, get_order_for_warranty, is_warranty_banned, count_recent_replacements, create_replacement, reserve_stock_item
 
 
 # Security anti-spam settings.
@@ -70,7 +71,7 @@ async def get_unjoined_channels(bot, uid):
             continue
 
     if not missing:
-        _join_cache[uid] = now_ts + 30  # re-check at most every 30 seconnds
+        _join_cache[uid] = now_ts + 30  # re-check at most every 30 sec
     return missing
 
 
@@ -94,6 +95,105 @@ def force_join_markup(missing):
         rows.append([InlineKeyboardButton(f"➕ Join @{uname}", url=f"https://t.me/{uname}")])
     rows.append([InlineKeyboardButton("✅ I Joined", callback_data="check_join")])
     return InlineKeyboardMarkup(rows)
+
+
+async def process_warranty_request(q, uid, order_id, context):
+    """Hybrid warranty: instant auto-replace for users in good standing,
+    manual admin review when abuse signals appear or stock is empty."""
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+
+    if str(get_setting("warranty_enabled", "1")).strip() != "1":
+        await edit_or_send(q, "🛡 <b>Warranty is currently disabled.</b>", back_home())
+        return
+
+    order = get_order_for_warranty(order_id, uid)
+
+    if not order:
+        await edit_or_send(
+            q,
+            "❌ <b>Not Eligible</b>\n\nThis order is outside the warranty window, was already replaced once, or does not support auto-replacement.\n\nPlease create a support ticket instead.",
+            back_home()
+        )
+        return
+
+    _oid, w_product_id, w_product_name, w_delivery_enc = order
+    old_delivery = decrypt_text(w_delivery_enc) or ""
+    safe_name = html.escape(strip_premium(str(w_product_name)), quote=False)
+
+    max_week = int(float(get_setting("warranty_max_week", "3") or 3))
+    suspicious = is_warranty_banned(uid) or count_recent_replacements(uid, 7) >= max_week
+
+    if not suspicious:
+        new_code = reserve_stock_item(w_product_id, uid)
+
+        if new_code:
+            cur.execute("UPDATE products SET stock=stock-1 WHERE id=? AND stock > 0", (w_product_id,))
+            conn.commit()
+            rid = create_replacement(order_id, uid, w_product_id, old_delivery, new_code, "auto")
+
+            await edit_or_send(
+                q,
+                "✅ <b>Replacement Sent</b>\n\n"
+                f"🧾 Order: <code>#{order_id}</code>\n"
+                f"📦 {safe_name}\n\n"
+                f"🔑 <b>New Delivery:</b>\n<code>{html.escape(new_code, quote=False)}</code>\n\n"
+                "This order's one-time warranty replacement has now been used.",
+                main_menu(uid)
+            )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "🛡 <b>Auto Replacement Issued</b>\n\n"
+                        f"🧾 Replacement: <code>#{rid}</code> | Order: <code>#{order_id}</code>\n"
+                        f"👤 User: <code>{uid}</code>\n"
+                        f"📦 {safe_name}\n\n"
+                        f"🔴 <b>Old:</b>\n<code>{html.escape(old_delivery[:600], quote=False)}</code>\n\n"
+                        f"🟢 <b>New:</b>\n<code>{html.escape(new_code, quote=False)}</code>\n\n"
+                        "Verify the old code if you suspect abuse — Admin Panel → 🛡 Warranty Requests."
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+            return
+
+    # Manual review path (abuse signals, warranty ban, or no stock left).
+    rid = create_replacement(order_id, uid, w_product_id, old_delivery, "", "pending")
+
+    await edit_or_send(
+        q,
+        "🕒 <b>Replacement Request Sent</b>\n\n"
+        f"🧾 Order: <code>#{order_id}</code>\n"
+        f"📦 {safe_name}\n\n"
+        "Your request needs admin review. You will be notified here once it is processed.",
+        main_menu(uid)
+    )
+
+    try:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Approve", callback_data="admin_warr_ok_" + str(rid)),
+             InlineKeyboardButton("❌ Deny", callback_data="admin_warr_no_" + str(rid))],
+            [InlineKeyboardButton("🚫 Warranty-Ban User", callback_data="admin_warr_ban_" + str(uid))],
+        ])
+        banned_note = " | 🚫 <b>warranty-banned</b>" if is_warranty_banned(uid) else ""
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                "🛡 <b>Replacement Needs Review</b>\n\n"
+                f"🧾 Replacement: <code>#{rid}</code> | Order: <code>#{order_id}</code>\n"
+                f"👤 User: <code>{uid}</code>\n"
+                f"📦 {safe_name}\n"
+                f"📊 Replacements (7d): <code>{count_recent_replacements(uid, 7)}</code>" + banned_note + "\n\n"
+                f"🔴 <b>Old Delivery:</b>\n<code>{html.escape(old_delivery[:600], quote=False)}</code>"
+            ),
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+    except Exception:
+        pass
 
 
 PROFILE_MSG_DEFAULT = (
@@ -500,6 +600,98 @@ Example:
             "🔔 <b>Restock Alert Added</b>\n\nYou will be notified when this product is back in stock.",
             back_home()
         )
+        return
+
+    if data == "gift_codes":
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        gmin = float(get_setting("gift_min_amount", "1") or 1)
+        gmax = float(get_setting("gift_max_amount", "500") or 500)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛒 Buy Gift Code", callback_data="gift_buy")],
+            [InlineKeyboardButton("🔑 Redeem Gift Code", callback_data="gift_redeem")],
+            [InlineKeyboardButton("📂 My Gift Codes", callback_data="gift_mine")],
+            [InlineKeyboardButton("◀️ Back", callback_data="home")],
+        ])
+        await edit_or_send(
+            q,
+            "🎁 <b>Gift Codes</b>\n\n"
+            "Buy a gift code with your wallet balance and share it with a friend — they redeem it and the balance is added to their wallet instantly.\n\n"
+            f"💰 Amount range: <code>{gmin:.2f}</code> – <code>{gmax:.2f}</code> USDT",
+            kb
+        )
+        return
+
+    if data == "gift_buy":
+        user_state[uid] = "gift_buy_amount"
+        await edit_or_send(
+            q,
+            "🎁 <b>Buy Gift Code</b>\n\n"
+            f"💼 Your balance: <code>{get_balance(uid):.2f} USDT</code>\n\n"
+            "Send the amount for the gift code.\n\nExample:\n<code>5</code>",
+            back_home()
+        )
+        return
+
+    if data == "gift_redeem":
+        user_state[uid] = "gift_redeem_code"
+        await edit_or_send(
+            q,
+            "🔑 <b>Redeem Gift Code</b>\n\nSend your gift code now.\n\nExample:\n<code>GIFT-AB12CD34EF</code>",
+            back_home()
+        )
+        return
+
+    if data == "gift_mine":
+        rows = get_user_gift_codes(uid, 10)
+        text = "📂 <b>My Gift Codes</b>\n\n"
+        if not rows:
+            text += "You haven't created any gift codes yet."
+        else:
+            for code, amount, redeemed_by, created in rows:
+                status = "✅ Redeemed" if redeemed_by else "🟢 Active"
+                text += f"🎁 <code>{code}</code>\n💰 <code>{float(amount):.2f} USDT</code> | {status}\n\n"
+        await edit_or_send(q, text, back_home())
+        return
+
+    if data == "warranty_menu":
+        if str(get_setting("warranty_enabled", "1")).strip() != "1":
+            await edit_or_send(q, "🛡 <b>Warranty is currently disabled.</b>", back_home())
+            return
+
+        w_hours = int(float(get_setting("warranty_hours", "24") or 24))
+        w_rows = get_warranty_orders(uid)
+
+        if not w_rows:
+            await edit_or_send(
+                q,
+                "🛡 <b>Warranty Replacement</b>\n\n"
+                f"No eligible orders found.\n\nOrders qualify for <b>one</b> free replacement within <b>{w_hours} hours</b> of purchase.\n\nFor anything else, please create a support ticket.",
+                back_home()
+            )
+            return
+
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        kb_rows = []
+        for w_order_id, w_pname, _wpid, _wcreated in w_rows:
+            label = "🧾 #" + str(w_order_id) + " — " + strip_premium(str(w_pname))[:30]
+            kb_rows.append([InlineKeyboardButton(label, callback_data="warranty_req_" + str(w_order_id))])
+        kb_rows.append([InlineKeyboardButton("◀️ Back", callback_data="home")])
+
+        await edit_or_send(
+            q,
+            "🛡 <b>Warranty Replacement</b>\n\n"
+            f"Got a dead code? Orders below are inside the <b>{w_hours}h</b> warranty window.\n\nSelect the order to replace (one replacement per order):",
+            InlineKeyboardMarkup(kb_rows)
+        )
+        return
+
+    if data.startswith("warranty_req_"):
+        try:
+            w_order_id = int(data.split("_")[2])
+        except Exception:
+            await edit_or_send(q, "❌ <b>Invalid request.</b>", back_home())
+            return
+        await process_warranty_request(q, uid, w_order_id, context)
         return
 
     if data == "search":
@@ -1139,6 +1331,62 @@ It will be used on your next wallet purchase.""",
                 parse_mode="HTML"
             )
             return
+
+    if state == "gift_buy_amount":
+        try:
+            g_amount = round(float(text.strip()), 2)
+        except Exception:
+            await update.message.reply_text("❌ <b>Invalid amount.</b>\n\nSend only a number, example: <code>5</code>", parse_mode="HTML")
+            return
+
+        gmin = float(get_setting("gift_min_amount", "1") or 1)
+        gmax = float(get_setting("gift_max_amount", "500") or 500)
+
+        if g_amount < gmin or g_amount > gmax:
+            await update.message.reply_text(
+                f"❌ <b>Amount must be between {gmin:.2f} and {gmax:.2f} USDT.</b>",
+                parse_mode="HTML"
+            )
+            return
+
+        gift_code = create_gift_code(uid, g_amount)
+        user_state.pop(uid, None)
+
+        if not gift_code:
+            await update.message.reply_text(
+                f"❌ <b>Insufficient balance.</b>\n\n💼 Your balance: <code>{get_balance(uid):.2f} USDT</code>",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+            return
+
+        await update.message.reply_text(
+            "✅ <b>Gift Code Created</b>\n\n"
+            f"🎁 <code>{gift_code}</code>\n"
+            f"💰 Value: <code>{g_amount:.2f} USDT</code>\n\n"
+            "Share this code with anyone — they redeem it in 👤 Profile → 🎁 Gift Codes.\n\n"
+            f"💼 New balance: <code>{get_balance(uid):.2f} USDT</code>",
+            reply_markup=main_menu(uid),
+            parse_mode="HTML"
+        )
+        return
+
+    if state == "gift_redeem_code":
+        g_ok, g_result = redeem_gift_code(uid, text)
+        user_state.pop(uid, None)
+
+        if not g_ok:
+            await update.message.reply_text(f"❌ <b>{g_result}</b>", reply_markup=main_menu(uid), parse_mode="HTML")
+            return
+
+        await update.message.reply_text(
+            "🎉 <b>Gift Code Redeemed</b>\n\n"
+            f"💰 <code>{float(g_result):.2f} USDT</code> added to your wallet.\n\n"
+            f"💼 New balance: <code>{get_balance(uid):.2f} USDT</code>",
+            reply_markup=main_menu(uid),
+            parse_mode="HTML"
+        )
+        return
 
     if state == "deposit_amount":
         await handle_deposit_amount(update, uid, text)
