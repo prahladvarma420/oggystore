@@ -1,5 +1,6 @@
 from tasks.auto_marketing import run_auto_marketing
 from tasks.scheduled_broadcasts import run_scheduled_broadcasts
+from services.m365_family import run_m365_maintenance
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from config import BOT_TOKEN, PAYMENT_CHECK_INTERVAL_SECONDS, BACKUP_INTERVAL_SECONDS
 from database.db import init_db
@@ -18,6 +19,10 @@ def main():
         app.job_queue.run_repeating(run_auto_marketing, interval=3600, first=60)
     if app.job_queue:
         app.job_queue.run_repeating(run_scheduled_broadcasts, interval=60, first=10)
+    if app.job_queue:
+        # M365 keep-alive refresher + early-warning + queued-order auto-deliver.
+        # Runs every 3 hours; first pass 2 min after boot.
+        app.job_queue.run_repeating(run_m365_maintenance, interval=10800, first=120)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin))

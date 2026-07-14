@@ -359,7 +359,7 @@ def init_db():
         ),
         "support_prompt": (
             "Support Ticket Message",
-            "🎫 <b>Create Support Ticket</b>\n\nSend your issue/message now.\n\nExample:\nPayment done but balance not added."
+            "��� <b>Create Support Ticket</b>\n\nSend your issue/message now.\n\nExample:\nPayment done but balance not added."
         ),
         "deposit_success": (
             "Deposit Success Message",
@@ -1868,4 +1868,49 @@ def list_m365_sessions():
 
 def count_active_m365_sessions():
     cur.execute("SELECT COUNT(*) FROM m365_sessions WHERE status='active'")
+    return int(cur.fetchone()[0])
+
+
+def get_m365_session(session_id):
+    """Return one session (id, label, state_json, invites_used) or None."""
+    cur.execute("SELECT id, label, state, invites_used FROM m365_sessions WHERE id=?", (session_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    state = decrypt_text(row[2]) if row[2] else None
+    if state and str(state).startswith("[encrypted:"):
+        state = None
+    return (row[0], row[1], state, int(row[3] or 0))
+
+
+def list_active_m365_sessions():
+    """Return [(id, label, invites_used), ...] for every non-full, non-expired ID."""
+    cur.execute("SELECT id, label, invites_used FROM m365_sessions WHERE status='active' ORDER BY id ASC")
+    return [(r[0], r[1], int(r[2] or 0)) for r in cur.fetchall()]
+
+
+def mark_m365_session_expired(session_id):
+    """Flag a session whose cookies died so it is skipped until re-uploaded."""
+    cur.execute("UPDATE m365_sessions SET status='expired' WHERE id=?", (session_id,))
+    conn.commit()
+
+
+def has_healthy_m365_session():
+    """True if at least one active (usable) Microsoft ID exists."""
+    return count_active_m365_sessions() > 0
+
+
+def list_queued_m365_invites(limit: int = 25):
+    """Invites parked in the safety-net queue, waiting for a fresh session."""
+    ensure_m365_table()
+    cur.execute(
+        "SELECT id, user_id, order_id, email, status, error, created FROM m365_invites WHERE status='queued' ORDER BY id ASC LIMIT ?",
+        (limit,),
+    )
+    return cur.fetchall()
+
+
+def count_queued_m365_invites():
+    ensure_m365_table()
+    cur.execute("SELECT COUNT(*) FROM m365_invites WHERE status='queued'")
     return int(cur.fetchone()[0])

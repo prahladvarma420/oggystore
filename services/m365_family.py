@@ -92,381 +92,49 @@ def pop_rotation_note():
     return note
 
 
-def _click_any(page, labels, timeout=8000):
-    """Click the first visible button/submit matching any of the given labels."""
-    for label in labels:
-        try:
-            btn = page.get_by_role("button", name=label, exact=False).first
-            if btn.is_visible(timeout=max(1200, timeout // max(1, len(labels)))):
-                btn.click()
-                return True
-        except Exception:
-            pass
-        try:
-            inp = page.locator(f"input[type='submit'][value*='{label}' i]").first
-            if inp.is_visible(timeout=1200):
-                inp.click()
-                return True
-        except Exception:
-            pass
-    return False
+def _load_active_session(skip_ids=None):
+    """Return (session_id, label, state_json) for the first usable Microsoft ID
+    (active status + real uploaded cookies), skipping any ids in `skip_ids`.
 
-
-def _click_link_any(page, labels, timeout=2000):
-    """Click the first visible link/button/text matching any label (regex-escaped)."""
-    for label in labels:
-        pat = re.compile(re.escape(label), re.I)
-        for getter in (
-            lambda: page.get_by_role("link", name=pat).first,
-            lambda: page.get_by_role("button", name=pat).first,
-            lambda: page.get_by_text(pat).first,
-        ):
-            try:
-                el = getter()
-                if el.is_visible(timeout=timeout):
-                    el.click()
-                    return True
-            except Exception:
-                continue
-    return False
-
-
-def _extract_totp_secret(page):
-    """Scrape a base32 TOTP setup key from the current page, if one is shown.
-
-    Microsoft's "different authenticator app" screen prints the key on its own
-    line, so we scan line-by-line (most reliable) and only fall back to a
-    grouped inline match that stays within a single line.
-    """
-    try:
-        body = page.inner_text("body", timeout=4000)
-    except Exception:
-        return None
-    import re as _re
-    for raw in body.splitlines():
-        line = raw.strip()
-        if ":" in line:
-            line = line.split(":")[-1].strip()
-        compact = _re.sub(r"[\s-]+", "", line)
-        if 16 <= len(compact) <= 64 and _re.fullmatch(r"[A-Za-z2-7]+", compact) and _re.search(r"[2-7]", compact):
-            return compact.upper()
-    # Fallback: 4-char groups separated by spaces/tabs WITHIN one line only
-    # (never across newlines), and only if the result contains a base32 digit.
-    m = _re.search(r"((?:[A-Za-z2-7]{4}[ \t-]+){3,}[A-Za-z2-7]{4})", body)
-    if m:
-        cand = _re.sub(r"[\s-]+", "", m.group(1)).upper()
-        if _re.search(r"[2-7]", cand):
-            return cand
-    return None
-
-
-def _human_type(box, page, text):
-    """Type like a person: click, clear, then key-by-key with small delays.
-    Falls back to a plain fill if anything about the slow path errors out."""
-    import random
-    try:
-        box.click(timeout=8000)
-    except Exception:
-        pass
-    try:
-        box.fill("", timeout=5000)
-    except Exception:
-        pass
-    try:
-        for ch in str(text):
-            box.type(ch, delay=random.randint(45, 140))
-        try:
-            page.wait_for_timeout(random.randint(180, 420))
-        except Exception:
-            pass
-        return
-    except Exception:
-        pass
-    # Fallback: guarantee the value is present even if slow typing failed.
-    try:
-        box.fill(str(text), timeout=8000)
-    except Exception:
-        pass
-
-
-def _short_url(page):
-    try:
-        return (page.url or "")[:100]
-    except Exception:
-        return "?"
-
-
-def _page_text(page, n=220):
-    try:
-        return page.inner_text("body", timeout=2500)[:n].replace("\n", " ").strip()
-    except Exception:
-        return ""
-
-
-def _do_login(page, email, password, totp_secret):
-    """Re-entrant Microsoft consumer sign-in. Returns (ok, message, discovered_secret).
-
-    Microsoft bounces between login.microsoftonline.com/common and
-    login.live.com and sometimes RE-SHOWS the email page after a redirect.
-    So instead of a fixed email->password->done order, we loop: each pass we
-    detect whichever screen is actually visible (email / verify / password /
-    passkey / forced Authenticator setup / OTP / stay-signed-in) and act on it.
-    """
-    discovered_secret = None
-    EMAIL_SEL = "input[type=\'email\'], input[name=\'loginfmt\']"
-    PW_SEL = "input[type=\'password\'], input[name=\'passwd\']"
-    OTP_SEL = "input[name=\'otc\'], input[autocomplete=\'one-time-code\'], input[inputmode=\'numeric\'], input[type=\'tel\']"
-
-    def _vis(selector, timeout=600):
-        try:
-            return page.locator(selector).first.is_visible(timeout=timeout)
-        except Exception:
-            return False
-
-    def _text_vis(pattern, timeout=600):
-        try:
-            return page.get_by_text(re.compile(pattern, re.I)).first.is_visible(timeout=timeout)
-        except Exception:
-            return False
-
-    emails = 0
-    passwords = 0
-    otps = 0
-    try:
-        _log(f"login: start url={_short_url(page)}")
-        for step in range(18):
-            try:
-                low = (page.url or "").lower()
-            except Exception:
-                low = ""
-
-            # A) Keep-signed-in prompt -> Yes (we are basically in).
-            if _text_vis("Stay signed in"):
-                _click_any(page, ["Yes"], timeout=5000)
-                _log("login: clicked 'Stay signed in? -> Yes'")
-                page.wait_for_timeout(2000)
-                continue
-
-            # B) Success: left the sign-in hosts entirely.
-            on_login = ("login.live.com" in low or "login.microsoftonline" in low or "login.microsoft.com" in low)
-            if low and not on_login:
-                _log(f"login: left sign-in host, now at {_short_url(page)}")
-                break
-
-            # C) Account picker -> use another account.
-            try:
-                tile = page.get_by_role("button", name=re.compile("another account|use another", re.I)).first
-                if tile.is_visible(timeout=500):
-                    tile.click(); page.wait_for_timeout(1200); continue
-            except Exception:
-                pass
-
-            # D) Forced "set up Microsoft Authenticator" (QR) -> switch to text key.
-            if not discovered_secret and _text_vis("set up the Microsoft Authenticator|to sign in to Microsoft Authenticator|scan this QR code|Scan the QR code|Start by getting the app", 600):
-                _log("login: forced Authenticator setup detected")
-                _click_link_any(page, [
-                    "I want to use a different authenticator app", "use a different authenticator app",
-                    "different authenticator app", "Set up a different Authenticator app",
-                    "I can\'t scan the QR code", "Can\'t scan the image", "Can\'t scan", "enter the code manually", "Next",
-                ], timeout=2500)
-                page.wait_for_timeout(2500)
-                secret = _extract_totp_secret(page)
-                if secret:
-                    discovered_secret = secret
-                    _log(f"login: scraped setup key len={len(secret)}; registering")
-                    _click_any(page, ["Next"]); page.wait_for_timeout(2500)
-                    if _vis(OTP_SEL, 4000):
-                        try:
-                            from utils.totp import totp_now
-                            page.locator(OTP_SEL).first.fill(totp_now(secret), timeout=8000)
-                            _click_any(page, ["Next", "Verify", "Done", "Sign in", "Submit"])
-                            page.wait_for_timeout(2500)
-                        except Exception:
-                            pass
-                    continue
-                return False, ("Microsoft is FORCING Microsoft Authenticator (QR) setup for this ID and offered no text "
-                               "setup key. Set up 2FA once manually via 'I want to use a different authenticator app' to "
-                               "get the SETUP KEY, paste it into Add Login, then retry."), discovered_secret
-
-            # E) Passkey / "use your phone" nudge -> Cancel / Skip.
-            if "fido" in low or "passkey" in low or _text_vis("use your phone or tablet|sign in faster with a passkey|create a passkey", 500):
-                if _click_link_any(page, ["Cancel", "Skip for now", "Not now", "Maybe later", "No thanks", "Back"], timeout=1500):
-                    _log("login: dismissed passkey prompt"); page.wait_for_timeout(1500); continue
-
-            # F) OTP / 2FA code prompt (only when no password box is showing).
-            if (totp_secret or discovered_secret) and _vis(OTP_SEL, 500) and not _vis(PW_SEL, 250):
-                if otps < 3:
-                    try:
-                        from utils.totp import totp_now
-                        page.locator(OTP_SEL).first.fill(totp_now(discovered_secret or totp_secret), timeout=8000)
-                        _click_any(page, ["Verify", "Sign in", "Next", "Submit"])
-                        otps += 1; _log("login: entered TOTP code"); page.wait_for_timeout(2500); continue
-                    except Exception:
-                        pass
-
-            # G) "Verify your email" / passwordless -> switch to password.
-            if _click_link_any(page, [
-                "Use your password", "Use my password", "Sign in with your password",
-                "Sign in with a password", "Enter your password instead", "Use password",
-            ], timeout=700):
-                _log("login: clicked 'Use your password'"); page.wait_for_timeout(2000); continue
-
-            email_vis = _vis(EMAIL_SEL, 600)
-
-            # H) Password field (only when the email field is NOT the one showing).
-            if _vis(PW_SEL, 600) and not email_vis:
-                if passwords >= 3:
-                    return False, "password step kept looping (likely wrong password)", discovered_secret
-                try:
-                    box = page.locator(PW_SEL).first
-                    _human_type(box, page, password)
-                    if not _click_any(page, ["Sign in", "Next", "Submit"]):
-                        try: box.press("Enter")
-                        except Exception: pass
-                    passwords += 1
-                    # Poll during the submit window: Microsoft flashes the
-                    # "incorrect password" / verification error for a moment and
-                    # then silently resets to the email screen, so a single
-                    # check after the wait misses it. Sample repeatedly.
-                    _bad_pw_keys = [
-                        "your account or password is incorrect", "password is incorrect",
-                        "that password is incorrect", "incorrect password",
-                        "account or password is incorrect", "try again or reset",
-                    ]
-                    _verify_keys = [
-                        "unusual", "verify your identity", "help us protect", "protect your account",
-                        "verify it's you", "we need to verify", "prove you're not a robot",
-                        "let's prove", "solve the puzzle", "press and hold", "enter the characters",
-                        "we noticed", "suspicious", "confirm your identity",
-                    ]
-                    _seen = ""
-                    _verdict = None
-                    for _i in range(8):
-                        page.wait_for_timeout(600)
-                        _t = _page_text(page, 400)
-                        _tl = _t.lower()
-                        if _t and "email or phone" not in _tl:
-                            _seen = _t  # remember the most informative non-email screen
-                        if any(k in _tl for k in _bad_pw_keys):
-                            _verdict = "bad_pw"; break
-                        if any(k in _tl for k in _verify_keys):
-                            _verdict = "verify"; break
-                        try:
-                            _lo = (page.url or "").lower()
-                        except Exception:
-                            _lo = ""
-                        # OTP prompt, passkey, or stay-signed-in -> let main loop handle it
-                        if _vis(OTP_SEL, 200) or _text_vis("Stay signed in", 200) or "fido" in _lo:
-                            break
-                        # Left the sign-in hosts -> success
-                        if _lo and not ("login.live.com" in _lo or "login.microsoftonline" in _lo or "login.microsoft.com" in _lo):
-                            break
-                    _log(f"login: password submitted (#{passwords}) verdict={_verdict} url={_short_url(page)} :: {_seen[:200]}")
-                    if _verdict == "bad_pw":
-                        return False, "Microsoft says the PASSWORD is incorrect for this ID. Update it in Admin → M365 → Sessions.", discovered_secret
-                    if _verdict == "verify":
-                        return False, ("Microsoft is asking for EXTRA VERIFICATION after the password (unusual-activity / "
-                                       "identity or robot check) — automated login cannot pass this. Use the session-upload "
-                                       "method for this ID: sign in once manually, then upload its session file."), discovered_secret
-                    continue
-                except Exception as e:
-                    return False, f"could not enter password ({repr(e)[:90]})", discovered_secret
-
-            # I) Email field -> fill / advance (handles redirect re-prompts).
-            if email_vis:
-                # If we already did a full email+password cycle and got bounced
-                # back here, the credentials were rejected.
-                if passwords >= 1:
-                    return False, ("Entered the email and password but Microsoft bounced back to the sign-in screen. "
-                                   "This almost always means the PASSWORD is wrong or the account needs extra "
-                                   "verification. Re-check the password in Admin → M365 → Sessions."), discovered_secret
-                if emails >= 3:
-                    return False, ("email step kept looping across redirects (page: " + (_page_text(page) or "?") + ")"), discovered_secret
-                try:
-                    box = page.locator(EMAIL_SEL).first
-                    try:
-                        cur_val = box.input_value(timeout=500)
-                    except Exception:
-                        cur_val = ""
-                    if email.lower() not in (cur_val or "").lower():
-                        _human_type(box, page, email)
-                    if not _click_any(page, ["Next", "Sign in"]):
-                        try: box.press("Enter")
-                        except Exception: pass
-                    emails += 1; page.wait_for_timeout(3500)
-                    _log(f"login: email submitted #{emails} url={_short_url(page)}")
-                    if any(k in _page_text(page, 400).lower() for k in [
-                        "that microsoft account doesn\'t exist", "couldn\'t find an account", "we couldn\'t find",
-                        "enter a valid email", "this username may be incorrect", "no account found",
-                    ]):
-                        return False, "Microsoft rejected the login EMAIL (account not found / typo). Fix it in Admin → M365 → Sessions.", discovered_secret
-                    continue
-                except Exception as e:
-                    return False, f"could not enter email ({repr(e)[:90]})", discovered_secret
-
-            # Nothing recognized this pass; wait and re-scan.
-            page.wait_for_timeout(1500)
-
-        # Final keep-signed-in safety click.
-        if _text_vis("Stay signed in"):
-            _click_any(page, ["Yes"], timeout=5000); page.wait_for_timeout(2000)
-
-        try:
-            low = (page.url or "").lower()
-        except Exception:
-            low = ""
-        if "login.live.com" in low or "login.microsoftonline" in low or "login.microsoft.com" in low:
-            return False, f"still on the sign-in page after submitting (page said: {_page_text(page) or 'unknown'})", discovered_secret
-        return True, "signed in", discovered_secret
-    except Exception as e:
-        return False, f"login error: {repr(e)[:140]}", discovered_secret
-
-
-def _load_active_session():
-    """Return (session_id, label, state_json_or_None, creds_or_None) for the
-    first non-full Microsoft ID.
-
-    - state_json is the saved cookies (None when only credentials are stored).
-    - creds is (email, password, totp_secret) when a saved login exists.
+    `skip_ids` powers the order safety-net: when one ID turns out to be expired
+    mid-purchase, the caller adds it to the skip set and asks for the next ID.
     Falls back to (and migrates) the legacy single-session settings key.
-    Returns None when no usable session exists.
+    Returns None when no usable session is left.
     """
+    skip_ids = set(skip_ids or ())
     try:
         from database.db import (
-            get_current_m365_session,
+            list_active_m365_sessions,
+            get_m365_session,
             list_m365_sessions,
             add_m365_session,
-            get_m365_credentials,
         )
-        row = get_current_m365_session()
-        if row:
-            sid, label, state, _used = row
-            try:
-                creds = get_m365_credentials(sid)
-            except Exception:
-                creds = None
-            state_ok = bool(state) and not str(state).startswith("[encrypted:")
-            if state_ok:
-                return sid, str(label or f"ID #{sid}"), state, creds
-            if creds:
-                # No usable cookies yet, but we can log in with credentials.
-                return sid, str(label or f"ID #{sid}"), None, creds
-            return None
+        for sid, label, _used in list_active_m365_sessions():
+            if sid in skip_ids:
+                continue
+            row = get_m365_session(sid)
+            if not row:
+                continue
+            _sid, _label, state, _u = row
+            if state and not str(state).startswith("[encrypted:"):
+                return _sid, str(_label or f"ID #{_sid}"), state
+        # No usable rows in the sessions table -> migrate a legacy upload.
         if not list_m365_sessions():
             legacy = load_session()
             if legacy:
-                sid = add_m365_session("ID #1", legacy)
+                new_sid = add_m365_session("ID #1", legacy)
                 try:
                     set_setting(SESSION_KEY, "")
                 except Exception:
                     pass
                 _log("migrated legacy session into sessions table as ID #1")
-                return sid, "ID #1", legacy, None
+                if new_sid not in skip_ids:
+                    return new_sid, "ID #1", legacy
         return None
     except Exception:
         legacy = load_session()
         if legacy:
-            return None, "legacy session", legacy, None
+            return None, "legacy session", legacy
         return None
 
 
@@ -522,6 +190,10 @@ _LAST_PHASE = "not started"
 # timeout handler can still attach an image even if the worker thread is killed
 # mid-run (e.g. browser.close() or a screenshot call hangs).
 _LAST_SCREENSHOT = None
+# Order safety-net breadcrumbs: the failover driver reads these after each run
+# to decide whether the session that just ran is dead (skip it, try the next).
+_LAST_SESSION_ID = None
+_LAST_SESSION_EXPIRED = False
 
 # Lean Chromium flags: keep memory low so the browser does not get OOM-killed
 # on Railway while loading Microsoft's heavy account SPA (an OOM kill makes
@@ -641,15 +313,19 @@ def _install_chromium(with_deps: bool = False):
 
 # ---------------------------------------------------------------- core automation
 
-def send_family_invite_sync(email: str):
+def send_family_invite_sync(email: str, forced_session=None):
     """Send a Microsoft 365 Family invite to `email`.
 
     Returns (ok: bool, message: str, screenshot: bytes | None).
     Runs blocking Playwright code — call via send_family_invite() from async code.
+
+    `forced_session` lets the failover driver run a specific (session_id, label,
+    state_json) tuple instead of auto-picking the first active ID.
     """
-    global _ROTATION_NOTE
+    global _ROTATION_NOTE, _LAST_SESSION_ID, _LAST_SESSION_EXPIRED
     _ROTATION_NOTE = None
-    _session = _load_active_session()
+    _LAST_SESSION_EXPIRED = False
+    _session = forced_session or _load_active_session()
     if not _session:
         try:
             from database.db import list_m365_sessions
@@ -657,17 +333,17 @@ def send_family_invite_sync(email: str):
         except Exception:
             _all_full = False
         if _all_full:
-            return False, "ALL Microsoft IDs are FULL — upload a new session or reset one: Admin Panel → 📩 M365 Auto-Invite → 📂 Sessions.", None
+            return False, "ALL Microsoft IDs are FULL or EXPIRED — upload a new session or reset one: Admin Panel → 📩 M365 Auto-Invite → 📂 Sessions.", None
         return False, "No Microsoft session uploaded. Admin Panel → 📩 M365 Auto-Invite → 🔑 Upload Session.", None
-    session_id, session_label, state_json, session_creds = _session
+    session_id, session_label, state_json = _session
+    _LAST_SESSION_ID = session_id
 
     try:
         from playwright.sync_api import sync_playwright
     except Exception:
         return False, "Playwright is not installed on the server (add `playwright` to requirements + install chromium).", None
 
-    # A credential-only ID (no saved cookies yet) starts with a fresh browser
-    # and signs in automatically below.
+    # Load the uploaded session cookies into a throwaway storage-state file.
     tmp = None
     if state_json:
         tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
@@ -911,73 +587,17 @@ def send_family_invite_sync(email: str):
             except Exception:
                 cur_url = ""
 
-            # Login page shown -> either the cookies expired, or this is a
-            # credential-only ID signing in for the first time.
+            # Login page shown -> the uploaded session cookies have expired.
+            # Flag it so the failover driver skips this ID and tries the next,
+            # and so the keep-alive job can alert the owner early.
             if "login.live.com" in cur_url or "login.microsoftonline" in cur_url:
-                if session_creds and session_creds[0] and session_creds[1]:
-                    _LAST_PHASE = "auto-signing in with saved credentials"
-                    _log(f"login page detected; auto sign-in for '{session_label}'")
-                    login_ok, login_msg, _new_secret = _do_login(page, session_creds[0], session_creds[1], session_creds[2])
-                    _log(f"auto sign-in result: ok={login_ok} msg={login_msg} new_secret={'yes' if _new_secret else 'no'}")
-                    if _new_secret and session_id is not None:
-                        try:
-                            from database.db import set_m365_credentials
-                            set_m365_credentials(session_id, session_creds[0], session_creds[1], _new_secret)
-                            _log("saved auto-registered TOTP secret to this session")
-                        except Exception as _sec_exc:
-                            _log(f"could not save auto-registered secret: {repr(_sec_exc)[:120]}")
-                    screenshot = _snap()
-                    if not login_ok:
-                        browser.close()
-                        return False, f"Auto sign-in failed for '" + str(session_label) + "': " + str(login_msg) + ". Check the email/password/2FA secret in Admin → M365 → Sessions.", screenshot
-                    # Re-open the subscription page now that we are signed in.
-                    for nav_url in (
-                        "https://account.microsoft.com/services/microsoft365/details",
-                        SHARING_URL,
-                    ):
-                        try:
-                            page.goto(nav_url, wait_until="commit", timeout=25000)
-                            break
-                        except Exception:
-                            continue
-                    try:
-                        page.wait_for_load_state("domcontentloaded", timeout=12000)
-                    except Exception:
-                        pass
-                    # Persist the fresh cookies so future invites skip the login.
-                    try:
-                        _persist_session_state(session_id, json.dumps(context.storage_state()))
-                        _log("fresh login cookies saved to session")
-                    except Exception as save_exc:
-                        _log(f"could not save fresh cookies: {repr(save_exc)[:120]}")
-                    # Re-poll for the sharing UI after signing in.
-                    sharing_ui_found = False
-                    screenshot = _snap()
-                    for poll_i in range(10):
-                        if time.monotonic() > _deadline:
-                            break
-                        try:
-                            cur_url = page.url
-                        except Exception:
-                            cur_url = ""
-                        for probe in ("Share", "Start sharing", "Invite", "Manage sharing"):
-                            try:
-                                if page.get_by_role("button", name=probe, exact=False).first.is_visible():
-                                    sharing_ui_found = True
-                                    break
-                                if page.get_by_role("link", name=probe, exact=False).first.is_visible():
-                                    sharing_ui_found = True
-                                    break
-                            except Exception:
-                                continue
-                        if sharing_ui_found:
-                            break
-                        page.wait_for_timeout(1500)
-                    screenshot = _snap()
-                    _log(f"post-login poll: sharing_ui_found={sharing_ui_found}")
-                else:
-                    browser.close()
-                    return False, f"Microsoft session '" + str(session_label) + "' EXPIRED — add a saved login (email + password + 2FA secret) so it can refresh itself, or upload a fresh session. Admin → 📩 M365 Auto-Invite → 📂 Sessions.", screenshot
+                _LAST_SESSION_EXPIRED = True
+                _log(f"session '{session_label}' expired (login screen shown)")
+                browser.close()
+                return False, (
+                    f"Microsoft session '" + str(session_label) + "' has EXPIRED (it now shows a login screen). "
+                    "Upload a fresh session: Admin → 📩 M365 Auto-Invite → 🔑 Upload Session."
+                ), screenshot
 
             # The Share/Manage control never appeared: return the screenshot +
             # URL + on-page text so we can see EXACTLY what the page shows
@@ -1161,25 +781,209 @@ def send_family_invite_sync(email: str):
             pass
 
 
-async def send_family_invite(email: str):
-    """Async wrapper — runs the blocking Playwright flow in a worker thread.
+def _invite_with_failover_sync(email: str):
+    """Order safety-net driver: try each active Microsoft ID in turn.
 
-    Wrapped in an overall timeout so the caller (and the Telegram UI) can never
-    hang indefinitely, even if the browser or a page operation stalls.
+    If an ID's cookies turn out to be expired, mark it expired (so the owner is
+    alerted) and automatically fall through to the next ID. Only when every
+    usable ID is exhausted do we give up.
+
+    Returns (ok, message, screenshot, queueable) where `queueable` is True when
+    the failure was 'no usable session right now' — meaning the order should be
+    parked in the queue and auto-delivered once a fresh session is available
+    (rather than shown to the owner as a hard error needing a manual Retry).
+    """
+    from database.db import mark_m365_session_expired
+    tried = set()
+    last_msg = None
+    last_shot = None
+    for _ in range(8):
+        sess = _load_active_session(skip_ids=tried)
+        if not sess:
+            break
+        sid = sess[0]
+        ok, msg, shot = send_family_invite_sync(email, forced_session=sess)
+        last_msg, last_shot = msg, shot
+        if ok:
+            return True, msg, shot, False
+        if _LAST_SESSION_EXPIRED and sid is not None:
+            tried.add(sid)
+            try:
+                mark_m365_session_expired(sid)
+            except Exception:
+                pass
+            _log(f"failover: session #{sid} expired; trying next ID")
+            continue
+        # Real, non-expiry failure on a live session -> surface it (manual Retry).
+        return False, msg, shot, False
+    # Every usable ID is exhausted (all expired, or none uploaded) -> queue it.
+    if last_msg is None:
+        last_msg = (
+            "No usable Microsoft session right now. "
+            "Upload a fresh session: Admin → 📩 M365 Auto-Invite → 🔑 Upload Session."
+        )
+    return False, last_msg, last_shot, True
+
+
+def _refresh_session_sync(session_id, state_json):
+    """Keep-alive: open a session's cookies, visit the account page and either
+    re-save refreshed cookies (Microsoft extends a session every time it is
+    used) or detect that it has died. Returns 'alive' | 'expired' | 'error'.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return "error"
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+    tmp.write(state_json)
+    tmp.close()
+    result = "error"
+    try:
+        with sync_playwright() as p:
+            try:
+                browser = p.chromium.launch(headless=True, channel="chromium", args=_CHROMIUM_ARGS)
+            except Exception:
+                browser = p.chromium.launch(headless=True, args=_CHROMIUM_ARGS)
+            context = browser.new_context(
+                storage_state=tmp.name,
+                viewport={"width": 1280, "height": 800},
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+                ),
+                locale="en-US",
+            )
+            try:
+                context.add_init_script(_STEALTH_JS)
+            except Exception:
+                pass
+            try:
+                context.route("**/*", _block_heavy_resources)
+            except Exception:
+                pass
+            page = context.new_page()
+            page.set_default_timeout(15000)
+            page.set_default_navigation_timeout(30000)
+            nav_ok = False
+            for nav_url in (
+                "https://account.microsoft.com/services/microsoft365/details",
+                SHARING_URL,
+            ):
+                try:
+                    page.goto(nav_url, wait_until="commit", timeout=25000)
+                    nav_ok = True
+                    break
+                except Exception:
+                    continue
+            if not nav_ok:
+                browser.close()
+                return "error"
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=12000)
+            except Exception:
+                pass
+            expired = False
+            alive = False
+            for _ in range(8):
+                try:
+                    cur_url = page.url
+                except Exception:
+                    cur_url = ""
+                low = (cur_url or "").lower()
+                if "login.live.com" in low or "login.microsoftonline" in low:
+                    expired = True
+                    break
+                for probe in ("Share", "Start sharing", "Invite", "Manage sharing"):
+                    try:
+                        if (
+                            page.get_by_role("button", name=probe, exact=False).first.is_visible()
+                            or page.get_by_role("link", name=probe, exact=False).first.is_visible()
+                        ):
+                            alive = True
+                            break
+                    except Exception:
+                        continue
+                if alive:
+                    break
+                if low and "login." not in low and "account.microsoft.com" in low:
+                    alive = True
+                    break
+                page.wait_for_timeout(1500)
+            if expired:
+                result = "expired"
+            elif alive:
+                try:
+                    _persist_session_state(session_id, json.dumps(context.storage_state()))
+                except Exception:
+                    pass
+                result = "alive"
+            else:
+                result = "error"
+            browser.close()
+    except Exception as exc:
+        _log(f"refresh session #{session_id} error: {repr(exc)[:150]}")
+        result = "error"
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+    return result
+
+
+def _keepalive_sessions_sync():
+    """Refresh every active session; return the labels of any that just died."""
+    from database.db import list_active_m365_sessions, get_m365_session, mark_m365_session_expired
+    newly_expired = []
+    for sid, label, _used in list_active_m365_sessions():
+        row = get_m365_session(sid)
+        if not row:
+            continue
+        _s, _l, state, _u = row
+        if not state or str(state).startswith("[encrypted:"):
+            continue
+        status = _refresh_session_sync(sid, state)
+        if status == "expired":
+            try:
+                mark_m365_session_expired(sid)
+            except Exception:
+                pass
+            newly_expired.append(str(label or f"ID #{sid}"))
+            _log(f"keepalive: session #{sid} EXPIRED")
+        elif status == "alive":
+            _log(f"keepalive: session #{sid} refreshed OK")
+        else:
+            _log(f"keepalive: session #{sid} check inconclusive")
+    return newly_expired
+
+
+async def send_family_invite_ex(email: str):
+    """Async wrapper around the failover driver.
+
+    Returns (ok, message, screenshot, queueable). Runs the blocking Playwright
+    work in a worker thread under an overall timeout so the Telegram UI can
+    never hang, even if the browser stalls.
     """
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(send_family_invite_sync, email),
-            timeout=120,
+            asyncio.to_thread(_invite_with_failover_sync, email),
+            timeout=300,
         )
     except asyncio.TimeoutError:
-        _log(f"HARD TIMEOUT 120s; last phase: {_LAST_PHASE}")
+        _log(f"HARD TIMEOUT; last phase: {_LAST_PHASE}")
         return (
             False,
             f"Timed out. Last step reached: {_LAST_PHASE}. "
             "(A screenshot of where it stalled is attached if one was captured.)",
             _LAST_SCREENSHOT,
+            True,
         )
+
+
+async def send_family_invite(email: str):
+    """Back-compat 3-tuple wrapper (used by the admin Test Invite)."""
+    ok, msg, shot, _queueable = await send_family_invite_ex(email)
+    return ok, msg, shot
 
 
 # ---------------------------------------------------------------- orchestration
@@ -1196,9 +1000,9 @@ async def process_invite(bot, invite_id: int):
     safe_email = html.escape(str(email), quote=False)
 
     try:
-        ok, message, screenshot = await send_family_invite(email)
+        ok, message, screenshot, queueable = await send_family_invite_ex(email)
     except Exception as exc:
-        ok, message, screenshot = False, f"Unexpected error: {str(exc).strip()[:400]}", None
+        ok, message, screenshot, queueable = False, f"Unexpected error: {str(exc).strip()[:400]}", None, True
 
     if ok:
         set_m365_invite_status(invite_id, "sent", None)
@@ -1245,7 +1049,55 @@ async def process_invite(bot, invite_id: int):
                 pass
         return
 
-    # ---------------- failure path ----------------
+    # ---------------- safety-net: no usable session right now -> QUEUE ----
+    # The order is parked and auto-delivered by the keep-alive job as soon as a
+    # fresh session is available, so the customer is never handed a dead invite.
+    if queueable:
+        set_m365_invite_status(invite_id, "queued", str(message)[:500])
+
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "⏳ <b>Your Microsoft 365 invite is being processed.</b>\n\n"
+                    f"📧 It will be sent to <code>{safe_email}</code> shortly.\n\n"
+                    "You'll get a confirmation here as soon as it's on its way. "
+                    "If you don't receive it within a few hours, contact support from the main menu."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+        try:
+            from database.db import count_queued_m365_invites
+            queued_total = count_queued_m365_invites()
+        except Exception:
+            queued_total = 0
+
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "🛟 <b>M365 Order Queued (no live session)</b>\n\n"
+                    f"📧 <b>Email:</b> <code>{safe_email}</code>\n"
+                    f"👤 <b>User:</b> <code>{user_id}</code> | 🛒 <b>Order:</b> <b>#{order_id}</b>\n"
+                    f"📦 <b>Orders waiting in queue:</b> <b>{queued_total}</b>\n\n"
+                    f"⚠️ <code>{html.escape(str(message)[:200], quote=False)}</code>\n\n"
+                    "👉 Upload a fresh session and the queued order(s) auto-deliver within minutes — "
+                    "no manual Retry needed."
+                ),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔑 Upload Session", callback_data="admin_m365_upload")],
+                    [InlineKeyboardButton("📩 M365 Menu", callback_data="admin_m365")],
+                ]),
+            )
+        except Exception:
+            pass
+        return
+
+    # ---------------- hard failure path (live session, real error) --------
     set_m365_invite_status(invite_id, "failed", str(message)[:500])
 
     try:
@@ -1289,3 +1141,62 @@ async def process_invite(bot, invite_id: int):
             )
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------- keep-alive job
+
+async def run_m365_maintenance(context):
+    """Background job (runs every few hours):
+
+    1) 🔄 Keep-alive — quietly refresh every uploaded session so Microsoft keeps
+       extending its life (prevents most expiries).
+    2) 🔔 Early warning — DM the owner the instant a session is found dead, so it
+       gets re-uploaded before a customer ever hits it.
+    3) 🛟 Auto-deliver — flush any queued orders the moment a healthy session
+       exists again.
+    """
+    bot = context.bot
+
+    # 1 + 2: refresh sessions and alert on any that just died.
+    try:
+        newly_expired = await asyncio.wait_for(
+            asyncio.to_thread(_keepalive_sessions_sync),
+            timeout=600,
+        )
+    except Exception as exc:
+        _log(f"keepalive job error: {repr(exc)[:150]}")
+        newly_expired = []
+
+    for label in newly_expired:
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "🔔 <b>M365 Session Expired</b>\n\n"
+                    f"🔴 <b>{html.escape(str(label), quote=False)}</b> is no longer signed in.\n\n"
+                    "Upload a fresh session now so invites keep working — any orders that come in "
+                    "meanwhile are safely queued and auto-delivered."
+                ),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔑 Upload Session", callback_data="admin_m365_upload")],
+                    [InlineKeyboardButton("📂 Sessions", callback_data="admin_m365_sessions")],
+                ]),
+            )
+        except Exception:
+            pass
+
+    # 3: auto-deliver queued orders if a usable session is available.
+    try:
+        from database.db import has_healthy_m365_session, list_queued_m365_invites
+        if has_healthy_m365_session():
+            queued = list_queued_m365_invites(25)
+            if queued:
+                _log(f"queue flush: {len(queued)} queued invite(s) to retry")
+            for inv in queued:
+                try:
+                    await process_invite(bot, inv[0])
+                except Exception as pexc:
+                    _log(f"queue flush invite #{inv[0]} error: {repr(pexc)[:120]}")
+    except Exception as exc:
+        _log(f"queue flush error: {repr(exc)[:150]}")
