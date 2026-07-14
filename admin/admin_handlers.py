@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, render_message_template, cur, conn, is_admin, is_owner, add_admin, remove_admin, get_admins, add_balance, add_stock_items, get_available_stock_count, get_sold_stock_count, get_total_stock_count, restock_product, block_user, unblock_user, log_admin_action, get_admin_logs, update_product_details, get_open_tickets, get_ticket, reply_ticket, close_ticket, get_pending_withdrawals, update_withdrawal_status, set_setting, get_setting, set_product_featured, remove_product_image, get_product_price_tiers, set_product_price_tier, delete_product_price_tier, clear_product_price_tiers, validate_coupon, list_message_templates, get_message_template, set_message_template, smart_dashboard_stats, clear_admin_logs, create_backup_zip, restore_backup_zip, create_bundle, get_all_bundles, get_bundle_items, delete_bundle, get_m365_product_ids, toggle_m365_product, list_m365_invites, get_m365_invite, set_m365_invite_status, get_canva_product_ids, toggle_canva_product, list_canva_invites, get_canva_invite, set_canva_invite_status
 from utils.crypto import decrypt_text
+from database.db import get_pending_replacements, get_replacement, set_replacement_status, set_warranty_ban, is_warranty_banned, count_recent_replacements, reserve_stock_item, create_gift_code, list_gift_codes
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
@@ -1035,6 +1036,134 @@ async def handle_admin_callback(q, uid, data, context):
     if data in ("admin_dashboard", "admin_menu", "admin_panel"):
         await show_admin_panel(q, uid)
         return True
+
+    if data == "admin_warranty":
+        pending = get_pending_replacements(10)
+        warr_on = str(get_setting("warranty_enabled", "1")).strip() == "1"
+        w_hours = int(float(get_setting("warranty_hours", "24") or 24))
+
+        kb = []
+        text = "🛡 <b>Warranty Requests</b>\n\n"
+        text += "Status: " + ("🟢 ON" if warr_on else "🔴 OFF") + f" | Window: <b>{w_hours}h</b>\n\n"
+
+        if not pending:
+            text += "No pending replacement requests. ✅"
+        else:
+            for rid, r_order_id, r_user_id, r_product_id, r_created in pending:
+                text += f"🧾 <b>#{rid}</b> | Order <code>#{r_order_id}</code> | User <code>{r_user_id}</code>\n🕒 <code>{r_created}</code>\n\n"
+                kb.append([
+                    InlineKeyboardButton(f"✅ Approve #{rid}", callback_data=f"admin_warr_ok_{rid}"),
+                    InlineKeyboardButton(f"❌ Deny #{rid}", callback_data=f"admin_warr_no_{rid}"),
+                ])
+
+        kb.append([InlineKeyboardButton("⏰ Set Window Hours", callback_data="admin_warr_hours"),
+                   InlineKeyboardButton(("🔴 Disable" if warr_on else "🟢 Enable"), callback_data="admin_warr_toggle")])
+        kb.append([InlineKeyboardButton("🚫 Warranty-Ban / Unban User", callback_data="admin_warr_banuser")])
+        kb.append([InlineKeyboardButton("⬅️ Admin Home", callback_data="admin_panel")])
+
+        await edit_or_send(q, text, InlineKeyboardMarkup(kb))
+        return True
+
+    if data == "admin_warr_toggle":
+        current = str(get_setting("warranty_enabled", "1")).strip()
+        set_setting("warranty_enabled", "0" if current == "1" else "1")
+        await edit_or_send(q, "✅ <b>Warranty setting updated.</b>", InlineKeyboardMarkup([[InlineKeyboardButton("🛡 Back to Warranty", callback_data="admin_warranty")]]))
+        return True
+
+    if data == "admin_warr_hours":
+        user_state[uid] = "admin_warr_hours"
+        await edit_or_send(q, "⏰ <b>Warranty Window</b>\n\nSend the number of hours (example: <code>24</code>).", back_home())
+        return True
+
+    if data == "admin_warr_banuser":
+        user_state[uid] = "admin_warr_banuser"
+        await edit_or_send(q, "🚫 <b>Warranty Ban / Unban</b>\n\nSend the user ID.\n\nIf the user is already banned they will be unbanned, otherwise they will be banned from auto-replacement.", back_home())
+        return True
+
+    if data.startswith("admin_warr_ok_"):
+        rid = int(data.rsplit("_", 1)[1])
+        rep = get_replacement(rid)
+
+        if not rep or rep[6] != "pending":
+            await edit_or_send(q, "❌ <b>Request not found or already processed.</b>", back_home())
+            return True
+
+        _rid, r_order_id, r_user_id, r_product_id, _old_enc, _new_enc, _status = rep
+        new_code = reserve_stock_item(r_product_id, r_user_id) if r_product_id else None
+
+        if not new_code:
+            await edit_or_send(q, f"❌ <b>No stock available</b> for this product.\n\nRestock first, then approve request <code>#{rid}</code> again from 🛡 Warranty Requests.", back_home())
+            return True
+
+        cur.execute("UPDATE products SET stock=stock-1 WHERE id=? AND stock > 0", (r_product_id,))
+        conn.commit()
+        set_replacement_status(rid, "approved", new_code)
+
+        try:
+            await context.bot.send_message(
+                chat_id=r_user_id,
+                text=(
+                    "✅ <b>Replacement Approved</b>\n\n"
+                    f"🧾 Order: <code>#{r_order_id}</code>\n\n"
+                    f"🔑 <b>New Delivery:</b>\n<code>{html.escape(new_code, quote=False)}</code>"
+                ),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+        await edit_or_send(q, f"✅ <b>Replacement #{rid} approved</b> and delivered to user <code>{r_user_id}</code>.", InlineKeyboardMarkup([[InlineKeyboardButton("🛡 Back to Warranty", callback_data="admin_warranty")]]))
+        return True
+
+    if data.startswith("admin_warr_no_"):
+        rid = int(data.rsplit("_", 1)[1])
+        rep = get_replacement(rid)
+
+        if not rep or rep[6] != "pending":
+            await edit_or_send(q, "❌ <b>Request not found or already processed.</b>", back_home())
+            return True
+
+        set_replacement_status(rid, "denied")
+
+        try:
+            await context.bot.send_message(
+                chat_id=rep[2],
+                text=f"❌ <b>Replacement Denied</b>\n\n🧾 Order: <code>#{rep[1]}</code>\n\nIf you believe this is a mistake, please create a support ticket.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+        await edit_or_send(q, f"❌ <b>Replacement #{rid} denied.</b>", InlineKeyboardMarkup([[InlineKeyboardButton("🛡 Back to Warranty", callback_data="admin_warranty")]]))
+        return True
+
+    if data.startswith("admin_warr_ban_"):
+        ban_target = int(data.rsplit("_", 1)[1])
+        set_warranty_ban(ban_target, True)
+        await edit_or_send(q, f"🚫 <b>User <code>{ban_target}</code> is now warranty-banned.</b>\n\nAll their future replacement claims will need your manual approval.", back_home())
+        return True
+
+    if data == "admin_gift":
+        g_rows = list_gift_codes(15)
+        text = "🎁 <b>Gift Codes</b>\n\n"
+        if not g_rows:
+            text += "No gift codes created yet."
+        else:
+            for g_code, g_amount, g_creator, g_redeemer, g_created in g_rows:
+                status = ("✅ redeemed by <code>" + str(g_redeemer) + "</code>") if g_redeemer else "🟢 active"
+                text += f"<code>{g_code}</code> | <code>{float(g_amount):.2f}</code> | " + status + "\n"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Create Free Gift Code", callback_data="admin_gift_new")],
+            [InlineKeyboardButton("⬅️ Admin Home", callback_data="admin_panel")],
+        ])
+        await edit_or_send(q, text, kb)
+        return True
+
+    if data == "admin_gift_new":
+        user_state[uid] = "admin_gift_amount"
+        await edit_or_send(q, "➕ <b>Create Free Gift Code</b>\n\nSend the amount in USDT (example: <code>10</code>).\n\nThis is an admin gift — no balance is deducted.", back_home())
+        return True
+
 
     if data == "admin_customize":
         kb = [[InlineKeyboardButton("✏️ Edit Welcome Message", callback_data="admin_edit_welcome")]]
@@ -3100,6 +3229,51 @@ Use carefully. This will be sent to every saved user.""",
 
 
 async def handle_admin_message(update, context, uid, text, state):
+    if state == "admin_warr_hours" and is_admin(uid):
+        try:
+            w_hours = int(float(text.strip()))
+            if w_hours <= 0 or w_hours > 720:
+                raise ValueError("range")
+        except Exception:
+            await update.message.reply_text("❌ Send a number of hours between 1 and 720.", parse_mode="HTML")
+            return True
+        set_setting("warranty_hours", str(w_hours))
+        user_state.pop(uid, None)
+        await update.message.reply_text(f"✅ <b>Warranty window set to {w_hours} hours.</b>", parse_mode="HTML")
+        return True
+
+    if state == "admin_warr_banuser" and is_admin(uid):
+        try:
+            ban_target = int(text.strip())
+        except Exception:
+            await update.message.reply_text("❌ Send a numeric user ID.", parse_mode="HTML")
+            return True
+        user_state.pop(uid, None)
+        if is_warranty_banned(ban_target):
+            set_warranty_ban(ban_target, False)
+            await update.message.reply_text(f"🟢 <b>User <code>{ban_target}</code> warranty-unbanned.</b> Auto-replacement works for them again.", parse_mode="HTML")
+        else:
+            set_warranty_ban(ban_target, True)
+            await update.message.reply_text(f"🚫 <b>User <code>{ban_target}</code> warranty-banned.</b> Their claims now always need your approval.", parse_mode="HTML")
+        return True
+
+    if state == "admin_gift_amount" and is_admin(uid):
+        try:
+            g_amount = round(float(text.strip()), 2)
+            if g_amount <= 0:
+                raise ValueError("range")
+        except Exception:
+            await update.message.reply_text("❌ Send a valid amount, example: <code>10</code>", parse_mode="HTML")
+            return True
+        gift_code = create_gift_code(uid, g_amount, free=True)
+        user_state.pop(uid, None)
+        await update.message.reply_text(
+            f"✅ <b>Gift Code Created</b>\n\n🎁 <code>{gift_code}</code>\n💰 <code>{g_amount:.2f} USDT</code>\n\nShare it — anyone can redeem it once for wallet balance.",
+            parse_mode="HTML"
+        )
+        return True
+
+
     if state == "admin_m365_test_email" and is_admin(uid):
         email = text.strip()
         if "@" not in email or "." not in email:
@@ -3969,7 +4143,7 @@ You must include the confirmation word <code>DELETE</code>.""",
     if state and state.startswith("admin_m365_set_slots:") and is_admin(uid):
         try:
             product_id = int(state.split(":")[1])
-            cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+            cur.execute("SELECT name, price FROM products WHERE id=?", (product_id,))
             product = cur.fetchone()
             if not product:
                 await update.message.reply_text("❌ <b>Product not found.</b>", parse_mode="HTML")
@@ -3987,11 +4161,21 @@ You must include the confirmation word <code>DELETE</code>.""",
             conn.commit()
             user_state.pop(uid, None)
             log_admin_action(uid, "M365_SET_SLOTS", f"Product ID {product_id} | slots {slots}")
+
+            # Broadcast to all users, same as normal stock additions.
+            broadcast_note = ""
+            if slots > 0:
+                try:
+                    sent, failed = await broadcast_product_update(context, product_id, str(product[0]), float(product[1] or 0), slots, slots, mode="stock")
+                    broadcast_note = f"\n📢 Broadcast sent to <b>{sent}</b> users"
+                except Exception:
+                    broadcast_note = "\n⚠️ Broadcast failed"
+
             await update.message.reply_text(f"""✅ <b>Family Slots Set</b>
 
 📦 Product: <b>{product[0]}</b>
 🆔 ID: <code>{product_id}</code>
-🎟 Available Slots: <code>{slots}</code>
+🎟 Available Slots: <code>{slots}</code>{broadcast_note}
 
 Customers can now buy this plan. After payment the bot asks their email and sends the Microsoft 365 Family invite automatically.""", reply_markup=products_select_keyboard("admin_stock_select"), parse_mode="HTML")
         except Exception as exc:
