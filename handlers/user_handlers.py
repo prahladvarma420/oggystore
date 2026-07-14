@@ -250,6 +250,8 @@ async def send_rate_limit_message(obj):
 
 
 async def start(update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None or update.message.from_user is None:
+        return
     user = update.message.from_user
     ensure_user(user)
 
@@ -318,6 +320,8 @@ async def start(update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def admin(update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None or update.message.from_user is None:
+        return
     user = update.message.from_user
     ensure_user(user)
 
@@ -991,6 +995,8 @@ Example:
 
 
 async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None or update.message.from_user is None:
+        return
     user = update.message.from_user
     uid = user.id
     text = update.message.text.strip()
@@ -1559,6 +1565,8 @@ Admin will reply soon.""",
 
 
 async def photo_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None or update.message.from_user is None:
+        return
     user = update.message.from_user
     uid = user.id
     ensure_user(user)
@@ -1743,6 +1751,8 @@ It will be used on your next wallet purchase.""",
 
 
 async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None or update.message.from_user is None:
+        return
     user = update.message.from_user
     uid = user.id
     state = user_state.get(uid)

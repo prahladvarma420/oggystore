@@ -49,6 +49,8 @@ def get_recent_errors(limit: int = 40) -> str:
 async def error_logs_command(update, context):
     from config import ADMIN_ID
 
+    if update.message is None or update.message.from_user is None:
+        return
     if update.message.from_user.id != ADMIN_ID:
         await update.message.reply_text("❌ <b>Admin only.</b>", parse_mode="HTML")
         return
@@ -66,6 +68,19 @@ async def error_logs_command(update, context):
 
 async def global_error_handler(update, context):
     error = context.error
+
+    # Transient network blips between the bot and Telegram's API (a connection
+    # dropped mid-poll) are self-healing — log quietly and don't DM the admin.
+    err_name = type(error).__name__ if error else ""
+    transient = (
+        "ReadError", "ConnectError", "ConnectTimeout", "ReadTimeout",
+        "WriteError", "WriteTimeout", "PoolTimeout", "RemoteProtocolError",
+        "NetworkError", "TimedOut", "ConnectionError",
+    )
+    if err_name in transient:
+        log_error("Transient network error (ignored)", error)
+        return
+
     log_error("Unhandled bot error", error, extra=f"Update: {update}")
 
     try:
