@@ -294,20 +294,48 @@ def _do_login(page, email, password, totp_secret):
                     if not _click_any(page, ["Sign in", "Next", "Submit"]):
                         try: box.press("Enter")
                         except Exception: pass
-                    passwords += 1; page.wait_for_timeout(3500)
-                    _post_pw = _page_text(page, 320)
-                    _log(f"login: password submitted (#{passwords}) url={_short_url(page)} :: {_post_pw[:200]}")
-                    _low_pw = _post_pw.lower()
-                    if any(k in _low_pw for k in [
+                    passwords += 1
+                    # Poll during the submit window: Microsoft flashes the
+                    # "incorrect password" / verification error for a moment and
+                    # then silently resets to the email screen, so a single
+                    # check after the wait misses it. Sample repeatedly.
+                    _bad_pw_keys = [
                         "your account or password is incorrect", "password is incorrect",
                         "that password is incorrect", "incorrect password",
-                    ]):
-                        return False, "Microsoft says the PASSWORD is incorrect for this ID. Update it in Admin → M365 → Sessions.", discovered_secret
-                    if any(k in _low_pw for k in [
+                        "account or password is incorrect", "try again or reset",
+                    ]
+                    _verify_keys = [
                         "unusual", "verify your identity", "help us protect", "protect your account",
                         "verify it's you", "we need to verify", "prove you're not a robot",
-                        "let's prove", "solve the puzzle", "press and hold",
-                    ]):
+                        "let's prove", "solve the puzzle", "press and hold", "enter the characters",
+                        "we noticed", "suspicious", "confirm your identity",
+                    ]
+                    _seen = ""
+                    _verdict = None
+                    for _i in range(8):
+                        page.wait_for_timeout(600)
+                        _t = _page_text(page, 400)
+                        _tl = _t.lower()
+                        if _t and "email or phone" not in _tl:
+                            _seen = _t  # remember the most informative non-email screen
+                        if any(k in _tl for k in _bad_pw_keys):
+                            _verdict = "bad_pw"; break
+                        if any(k in _tl for k in _verify_keys):
+                            _verdict = "verify"; break
+                        try:
+                            _lo = (page.url or "").lower()
+                        except Exception:
+                            _lo = ""
+                        # OTP prompt, passkey, or stay-signed-in -> let main loop handle it
+                        if _vis(OTP_SEL, 200) or _text_vis("Stay signed in", 200) or "fido" in _lo:
+                            break
+                        # Left the sign-in hosts -> success
+                        if _lo and not ("login.live.com" in _lo or "login.microsoftonline" in _lo or "login.microsoft.com" in _lo):
+                            break
+                    _log(f"login: password submitted (#{passwords}) verdict={_verdict} url={_short_url(page)} :: {_seen[:200]}")
+                    if _verdict == "bad_pw":
+                        return False, "Microsoft says the PASSWORD is incorrect for this ID. Update it in Admin → M365 → Sessions.", discovered_secret
+                    if _verdict == "verify":
                         return False, ("Microsoft is asking for EXTRA VERIFICATION after the password (unusual-activity / "
                                        "identity or robot check) — automated login cannot pass this. Use the session-upload "
                                        "method for this ID: sign in once manually, then upload its session file."), discovered_secret
