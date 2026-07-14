@@ -160,6 +160,35 @@ def _extract_totp_secret(page):
     return None
 
 
+def _human_type(box, page, text):
+    """Type like a person: click, clear, then key-by-key with small delays.
+    Falls back to a plain fill if anything about the slow path errors out."""
+    import random
+    try:
+        box.click(timeout=8000)
+    except Exception:
+        pass
+    try:
+        box.fill("", timeout=5000)
+    except Exception:
+        pass
+    try:
+        for ch in str(text):
+            box.type(ch, delay=random.randint(45, 140))
+        try:
+            page.wait_for_timeout(random.randint(180, 420))
+        except Exception:
+            pass
+        return
+    except Exception:
+        pass
+    # Fallback: guarantee the value is present even if slow typing failed.
+    try:
+        box.fill(str(text), timeout=8000)
+    except Exception:
+        pass
+
+
 def _short_url(page):
     try:
         return (page.url or "")[:100]
@@ -290,7 +319,7 @@ def _do_login(page, email, password, totp_secret):
                     return False, "password step kept looping (likely wrong password)", discovered_secret
                 try:
                     box = page.locator(PW_SEL).first
-                    box.fill(password, timeout=12000)
+                    _human_type(box, page, password)
                     if not _click_any(page, ["Sign in", "Next", "Submit"]):
                         try: box.press("Enter")
                         except Exception: pass
@@ -360,7 +389,7 @@ def _do_login(page, email, password, totp_secret):
                     except Exception:
                         cur_val = ""
                     if email.lower() not in (cur_val or "").lower():
-                        box.fill(email, timeout=10000)
+                        _human_type(box, page, email)
                     if not _click_any(page, ["Next", "Sign in"]):
                         try: box.press("Enter")
                         except Exception: pass
@@ -513,7 +542,42 @@ _CHROMIUM_ARGS = [
     "--mute-audio",
     "--hide-scrollbars",
     "--no-first-run",
+    "--start-maximized",
+    "--disable-features=IsolateOrigins,site-per-process,AutomationControlled",
+    "--disable-infobars",
 ]
+
+# Injected into every page/frame BEFORE any site script runs. Removes the
+# obvious "this is an automated browser" tells that Microsoft's login checks
+# for (navigator.webdriver, missing plugins, headless language list, etc.).
+_STEALTH_JS = r"""
+(() => {
+  try { Object.defineProperty(navigator, 'webdriver', {get: () => undefined}); } catch (e) {}
+  try { Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']}); } catch (e) {}
+  try { Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]}); } catch (e) {}
+  try { Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8}); } catch (e) {}
+  try { Object.defineProperty(navigator, 'deviceMemory', {get: () => 8}); } catch (e) {}
+  try { window.chrome = window.chrome || { runtime: {} }; } catch (e) {}
+  try {
+    const orig = navigator.permissions && navigator.permissions.query;
+    if (orig) {
+      navigator.permissions.query = (p) => (
+        p && p.name === 'notifications'
+          ? Promise.resolve({ state: Notification.permission })
+          : orig(p)
+      );
+    }
+  } catch (e) {}
+  try {
+    const gp = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function (param) {
+      if (param === 37445) return 'Intel Inc.';
+      if (param === 37446) return 'Intel Iris OpenGL Engine';
+      return gp.call(this, param);
+    };
+  } catch (e) {}
+})();
+"""
 
 # Resource types to block (images/media/fonts) to slash memory + load time.
 # CSS/stylesheets are kept so element visibility checks stay accurate.
@@ -691,12 +755,28 @@ def send_family_invite_sync(email: str):
             context = browser.new_context(
                 **_ctx_kwargs,
                 viewport={"width": 1280, "height": 800},
+                screen={"width": 1920, "height": 1080},
+                device_scale_factor=1,
+                is_mobile=False,
+                has_touch=False,
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
                 ),
                 locale="en-US",
+                timezone_id="America/New_York",
+                extra_http_headers={
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Sec-Ch-Ua": '"Chromium";v="149", "Not.A/Brand";v="24", "Google Chrome";v="149"',
+                    "Sec-Ch-Ua-Mobile": "?0",
+                    "Sec-Ch-Ua-Platform": '"Windows"',
+                },
             )
+            # Apply the stealth patches to every page/frame before site JS runs.
+            try:
+                context.add_init_script(_STEALTH_JS)
+            except Exception as _sj_exc:
+                _log(f"stealth init_script failed (non-fatal): {repr(_sj_exc)[:120]}")
             # Block heavy resources to keep memory low (prevents OOM hangs).
             try:
                 context.route("**/*", _block_heavy_resources)
