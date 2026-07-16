@@ -21,8 +21,9 @@ def main():
         app.job_queue.run_repeating(run_scheduled_broadcasts, interval=60, first=10)
     if app.job_queue:
         # M365 keep-alive refresher + early-warning + queued-order auto-deliver.
-        # Runs every 3 hours; first pass 2 min after boot.
-        app.job_queue.run_repeating(run_m365_maintenance, interval=10800, first=120)
+        # Runs hourly; first pass 1 min after boot (frequent refresh keeps
+        # Microsoft sessions alive longer and reduces idle expiries).
+        app.job_queue.run_repeating(run_m365_maintenance, interval=3600, first=60)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin))

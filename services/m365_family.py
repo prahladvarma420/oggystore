@@ -313,6 +313,43 @@ def _install_chromium(with_deps: bool = False):
 
 # ---------------------------------------------------------------- core automation
 
+def _confirmation_screenshot(page):
+    """Screenshot of JUST the 'Your invite has been sent' confirmation dialog,
+    NOT the whole page — so the subscription/expiry details behind it are never
+    shown to the customer.
+    """
+    try:
+        # Prefer the modal dialog container if Microsoft rendered one.
+        for sel in ('div[role="dialog"]', '[role="dialog"]', 'div[role="alertdialog"]'):
+            try:
+                dlg = page.locator(sel).first
+                if dlg.is_visible(timeout=2000):
+                    shot = dlg.screenshot(timeout=5000)
+                    if shot:
+                        return shot
+            except Exception:
+                continue
+        # Fallback: locate the confirmation text and climb to its box.
+        el = page.get_by_text("invite has been sent", exact=False).first
+        if not el.is_visible(timeout=3000):
+            return None
+        for xp in (
+            "xpath=ancestor::*[@role='dialog'][1]",
+            "xpath=ancestor::*[.//button][1]",
+            "xpath=..",
+        ):
+            try:
+                box = el.locator(xp).first
+                shot = box.screenshot(timeout=5000)
+                if shot:
+                    return shot
+            except Exception:
+                continue
+        return el.screenshot(timeout=5000)
+    except Exception:
+        return None
+
+
 def send_family_invite_sync(email: str, forced_session=None):
     """Send a Microsoft 365 Family invite to `email`.
 
@@ -752,7 +789,13 @@ def send_family_invite_sync(email: str, forced_session=None):
             ok = any(marker in body_text for marker in success_markers)
             _log(f"confirmation check: ok={ok}")
 
-            screenshot = _snap()
+            if ok:
+                # Customer proof: JUST the 'Your invite has been sent' box, so
+                # the subscription/expiry info behind it is never exposed.
+                cropped = _confirmation_screenshot(page)
+                screenshot = cropped or _snap()
+            else:
+                screenshot = _snap()
 
             # Persist refreshed cookies so the session lives longer.
             try:
@@ -1023,6 +1066,18 @@ async def process_invite(bot, invite_id: int):
             )
         except Exception:
             pass
+
+        # Send the customer a proof screenshot cropped to JUST the
+        # 'Your invite has been sent' box (no subscription/expiry details).
+        if screenshot:
+            try:
+                await bot.send_photo(
+                    chat_id=user_id,
+                    photo=io.BytesIO(screenshot),
+                    caption="📸 Proof — your Microsoft 365 invite was sent.",
+                )
+            except Exception:
+                pass
 
         try:
             await bot.send_message(
