@@ -2747,7 +2747,7 @@ Example:
         cur.execute("SELECT id, name, price, stock, active, validity, warranty, max_per_order FROM products ORDER BY id DESC")
         rows = cur.fetchall()
 
-        text = "📦 <b>Product Management</b>\n\n🔎 Use Search Product for quick lookup.\n⚠️ LOW means stock ≤ 5.\n\n"
+        text = "📦 <b>Product Management</b>\n\n🔎 Use Search Product for quick lookup.\n���️ LOW means stock ≤ 5.\n\n"
 
         if not rows:
             text += "😕 <i>No products added yet.</i>"
@@ -2958,7 +2958,7 @@ Choose an order to view details:""",
                 text += (
                     f"🎫 <b>Ticket #{ticket_id}</b>\n"
                     f"👤 {first_name or 'User'} / {username_text}\n"
-                    f"🆔 <code>{user_id}</code>\n"
+                    f"��� <code>{user_id}</code>\n"
                     f"📌 <b>{subject}</b>\n"
                     f"📝 {short_msg}\n"
                     f"🕒 <code>{created}</code>\n"
@@ -5117,7 +5117,7 @@ Suggested:
             validity = data.get("validity", "Not mentioned")
             warranty = data.get("warranty", "No warranty")
             rules = data.get("rules", "No rules mentioned")
-            redeem_link = data.get( "Not required")
+            redeem_link = data.get("redeem_link") or "Not required"
             max_per_order = int(text)
 
             if max_per_order < 1:

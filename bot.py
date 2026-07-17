@@ -42,11 +42,12 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.add_error_handler(global_error_handler)
 
-    app.job_queue.run_repeating(
-        check_payments,
-        interval=PAYMENT_CHECK_INTERVAL_SECONDS,
-        first=10,
-    )
+    if app.job_queue:
+        app.job_queue.run_repeating(
+            check_payments,
+            interval=PAYMENT_CHECK_INTERVAL_SECONDS,
+            first=10,
+        )
 
     print("Bot Running...")
     print("Auto-payment checker enabled using RPC/Web3. No BscScan API key needed.")

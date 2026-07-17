@@ -175,6 +175,12 @@ def init_db():
     _safe_add_column("products", "warranty", "TEXT DEFAULT 'No warranty'")
     _safe_add_column("products", "rules", "TEXT DEFAULT 'No rules mentioned'")
     _safe_add_column("products", "redeem_link", "TEXT DEFAULT 'Not required'")
+    # Repair rows saved by an old Add Product bug that stored NULL redeem links.
+    try:
+        cur.execute("UPDATE products SET redeem_link='Not required' WHERE redeem_link IS NULL OR redeem_link=''")
+        conn.commit()
+    except Exception:
+        pass
     _safe_add_column("products", "max_per_order", "INTEGER DEFAULT 1")
     _safe_add_column("products", "flash_price", "REAL")
     _safe_add_column("products", "flash_ends_at", "TEXT")
@@ -1177,7 +1183,7 @@ def simplify_default_message_templates():
         "welcome": "👋 Welcome to {store}\n\nChoose an option below 👇",
         "delivery_success": "✅ Payment Successful!\n\n🧾 Order ID: #{order_id}\n📦 Product: {product}\n\n🔑 Code:\n{code}\n\n💰 Paid: {paid}\n💼 Balance: {balance}\n\nThank you for your purchase ❤️",
         "coupon_broadcast": "🎟 New Coupon Available!\n\n💝 Discount: {discount}\n🎫 Code: {code}\n⏳ Validity: {validity}\n🔥 Limit: {limit}\n\nUse it before checkout 👇",
-        "flash_sale_broadcast": "🔥 FLASH SALE!\n\n📦 {product}\n\n💰 Was: {old_price}\n⚡ Now: {new_price}\n🎁 Discount: {discount}\n\n��� {validity}\n\nBuy before it ends 👇",
+        "flash_sale_broadcast": "🔥 FLASH SALE!\n\n📦 {product}\n\n💰 Was: {old_price}\n⚡ Now: {new_price}\n🎁 Discount: {discount}\n\n����� {validity}\n\nBuy before it ends 👇",
         "restock_alert": "🔔 Back In Stock!\n\n📦 {product}\n📊 Available: {stock}\n\nTap below to buy now 👇",
         "deposit_success": "✅ Deposit Confirmed\n\n���� Amount: {amount} USDT\n\nYour wallet balance has been updated."
     }

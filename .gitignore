@@ -3,6 +3,16 @@
 *.env
 .env.*
 
+# Microsoft/Canva login sessions (cookies = full account access!)
+m365_session.json
+tools/m365_session.json
+canva_session.json
+tools/canva_session.json
+
+# Runtime logs
+logs/
+*.log
+
 # ===== Local database (users, orders, balances, encrypted secrets) =====
 shopbot.db
 shopbot.db-wal
