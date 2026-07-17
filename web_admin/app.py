@@ -1166,6 +1166,17 @@ def api_product_update(pid):
     ex("UPDATE products SET {} WHERE id=?".format(", ".join(fields)), tuple(vals))
     log_action("edit_product", "#{} -> {}".format(pid, list(d.keys())))
 
+    # Auto-scale bulk (tier) prices by the same ratio as the base price.
+    if old_price is not None:
+        try:
+            new_price = float(d["price"])
+            if old_price > 0 and new_price > 0 and abs(new_price - old_price) >= 0.005:
+                ratio = new_price / old_price
+                for _tid, tier_qty, tier_price in botdb.get_product_price_tiers(pid):
+                    botdb.set_product_price_tier(pid, int(tier_qty), round(float(tier_price) * ratio, 2))
+        except Exception:
+            pass
+
     # Auto-broadcast price changes to all bot users instantly.
     if old_price is not None:
         try:

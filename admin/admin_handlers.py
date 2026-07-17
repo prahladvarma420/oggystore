@@ -14,12 +14,16 @@ from database.db import get_pending_replacements, get_replacement, set_replaceme
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
-from utils.premium_emoji import premium_html, strip_premium, first_premium_id, sanitize_premium_name, button_premium
+from utils.premium_emoji import premium_html, strip_premium, first_premium_id, sanitize_premium_name, button_premium, premium_safe
 
 
 def _admin_name(value):
-    """Strip premium/custom emoji tags and HTML-escape a product name for safe display."""
-    return html.escape(strip_premium(str(value)), quote=False)
+    """HTML-safe product name that KEEPS premium/custom emoji tags.
+
+    Previously this stripped <tg-emoji> tags, which is why premium emojis
+    disappeared from broadcasts (price drop, new offer, refunds, etc.).
+    premium_safe() escapes everything else so HTML parsing never breaks."""
+    return premium_safe(str(value))
 from keyboards.menus import MAIN_MENU_BUTTONS
 from utils.states import user_state
 from utils.timezone import now, now_text, today_prefix, month_prefix
@@ -804,7 +808,7 @@ async def broadcast_product_update(context, product_id: int, product_name: str, 
         msg = render_message_template(
             tpl_key,
             default_msg,
-            product_name=html.escape(strip_premium(product_name), quote=False),
+            product_name=premium_safe(product_name),
             added=added,
             available=available,
             price=f"${float(price or 0):.2f}",
@@ -4294,9 +4298,20 @@ You must include the confirmation word <code>DELETE</code>.""",
                     old_price = float(product[1] or 0)
                     new_price = float(value)
                     if abs(new_price - old_price) >= 0.005:
+                        # Auto-scale bulk (tier) prices by the same ratio as the base price.
+                        try:
+                            if old_price > 0 and new_price > 0:
+                                tiers = get_product_price_tiers(product_id)
+                                ratio = new_price / old_price
+                                for _tier_id, tier_qty, tier_price in tiers:
+                                    set_product_price_tier(product_id, int(tier_qty), round(float(tier_price) * ratio, 2))
+                                if tiers:
+                                    broadcast_note += f"\n\U0001f4e6 Bulk prices auto-updated (<b>{len(tiers)}</b> tiers)"
+                        except Exception:
+                            broadcast_note += "\n\u26a0\ufe0f Bulk price auto-update failed"
                         available = get_available_stock_count(product_id)
                         sent, failed = await broadcast_price_change(context, product_id, str(product[0]), old_price, new_price, available)
-                        broadcast_note = f"\n\U0001f4e2 Price broadcast sent to <b>{sent}</b> users"
+                        broadcast_note += f"\n\U0001f4e2 Price broadcast sent to <b>{sent}</b> users"
                 except Exception:
                     broadcast_note = "\n\u26a0\ufe0f Price broadcast failed"
 
