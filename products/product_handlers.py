@@ -684,8 +684,10 @@ async def buy_product(q, uid: int, pid: int, quantity: int = 1):
         quantity = 1
 
     # Hard safety limit even if callback data is manipulated.
-    if quantity > 50:
-        quantity = 50
+    # Kept high so genuine bulk orders (e.g. 100+) are charged and
+    # delivered in full; stock and balance checks below do the real limiting.
+    if quantity > 1000:
+        quantity = 1000
 
     lock_key = f"{uid}:{pid}"
 
