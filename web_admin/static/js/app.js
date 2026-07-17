@@ -151,7 +151,30 @@ async function viewDashboard() {
       <div class="panel glass"><h3>\ud83d\udc65 User Growth \u2014 14 days</h3><div class="chart-box"><canvas id="ugChart"></canvas></div></div>
       <div class="panel glass"><h3>\u23f0 Busiest Hours (orders)</h3><div class="chart-box"><canvas id="hrChart"></canvas></div></div>
     </div>
-    <div class="panel glass" id="lowStockPanel"><h3>\u26a0\ufe0f Low Stock</h3><div class="muted">Loading\u2026</div></div>`;
+    <div class="panel glass" id="lowStockPanel"><h3>\u26a0\ufe0f Low Stock</h3><div class="muted">Loading\u2026</div></div>
+    <div class="panel glass"><h3>\u267b\ufe0f Revenue Reset</h3>
+      <div class="muted" style="margin-bottom:10px">${d.revenue_reset_at
+        ? "Stats are counting from: " + esc(d.revenue_reset_at) + " (UTC). Order history is never deleted."
+        : "Showing all-time stats. Resetting makes every revenue counter start from 0 \u2014 order history is never deleted and you can restore anytime."}</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-red" id="btnRevReset">\u267b\ufe0f Reset Revenue</button>
+        ${d.revenue_reset_at ? '<button class="btn btn-ghost" id="btnRevRestore">\u21a9\ufe0f Restore All-Time Stats</button>' : ""}
+      </div>
+    </div>`;
+
+  const rBtn = $("#btnRevReset");
+  if (rBtn) rBtn.onclick = async () => {
+    if (!confirm("Reset revenue stats from now?\n\nAll revenue counters restart from 0. Order history is NOT deleted and you can restore all-time stats anytime.")) return;
+    const r = await post("/api/revenue/reset", {});
+    if (r.ok) { toast("\u267b\ufe0f Revenue reset \u2014 stats now count from 0"); render(); }
+    else toast(r.error || "Reset failed", "err");
+  };
+  const uBtn = $("#btnRevRestore");
+  if (uBtn) uBtn.onclick = async () => {
+    const r = await post("/api/revenue/restore", {});
+    if (r.ok) { toast("\u21a9\ufe0f All-time stats restored"); render(); }
+    else toast(r.error || "Restore failed", "err");
+  };
 
   if (window.Chart) {
     const ctx = $("#revChart");

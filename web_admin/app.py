@@ -959,31 +959,55 @@ def index():
 @login_required
 def api_dashboard():
     stats = botdb.smart_dashboard_stats()
+    # Revenue reset marker (UTC, same clock as orders.created). Empty = all-time.
+    reset_setting = botdb.get_setting("revenue_reset_at", "") or ""
+    reset_at = reset_setting or "1970-01-01 00:00:00"
     # 7-day revenue series
     series = []
     for i in range(6, -1, -1):
         day = (now() - dt.timedelta(days=i)).strftime("%Y-%m-%d")
         row = q("SELECT COALESCE(SUM(price),0) AS rev, COUNT(*) AS cnt "
-                "FROM orders WHERE DATE(created)=?", (day,), one=True)
+                "FROM orders WHERE DATE(created)=? AND created >= ?", (day, reset_at), one=True)
         series.append({"date": day, "revenue": round(row["rev"] or 0, 2),
                        "orders": row["cnt"] or 0})
     totals = {
         "users": (q("SELECT COUNT(*) c FROM users", one=True) or {}).get("c", 0),
         "products": (q("SELECT COUNT(*) c FROM products", one=True) or {}).get("c", 0),
         "active_products": (q("SELECT COUNT(*) c FROM products WHERE active=1", one=True) or {}).get("c", 0),
-        "deposits": (q("SELECT COALESCE(SUM(amount),0) s FROM deposits WHERE status='paid'", one=True) or {}).get("s", 0),
+        "deposits": (q("SELECT COALESCE(SUM(amount),0) s FROM deposits WHERE status='paid' AND created >= ?", (reset_at,), one=True) or {}).get("s", 0),
         "blocked": (q("SELECT COUNT(*) c FROM users WHERE blocked=1", one=True) or {}).get("c", 0),
         "pending_withdrawals": (q("SELECT COUNT(*) c FROM withdrawal_requests WHERE status='pending'", one=True) or {}).get("c", 0),
     }
     # top sellers
     top = q("SELECT product_name, COUNT(*) sold, COALESCE(SUM(price),0) revenue "
-            "FROM orders GROUP BY product_name ORDER BY sold DESC LIMIT 5")
+            "FROM orders WHERE created >= ? GROUP BY product_name ORDER BY sold DESC LIMIT 5", (reset_at,))
     recent = q("SELECT o.id, o.user_id, o.product_name, o.price, o.created, "
                "u.first_name, u.username FROM orders o LEFT JOIN users u "
                "ON o.user_id=u.user_id ORDER BY o.id DESC LIMIT 8")
     return jsonify({"ok": True, "stats": stats, "series": series,
                     "totals": totals, "top": top, "recent": recent,
+                    "revenue_reset_at": reset_setting,
                     "bot_connected": bool(TELEGRAM_API)})
+
+
+@app.route("/api/revenue/reset", methods=["POST"])
+@login_required
+def api_revenue_reset():
+    """Reset revenue stats from now. Non-destructive: only stores a marker,
+    order history is never deleted and the reset can be undone anytime."""
+    stamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    botdb.set_setting("revenue_reset_at", stamp)
+    log_action("revenue_reset", stamp)
+    return jsonify({"ok": True, "reset_at": stamp})
+
+
+@app.route("/api/revenue/restore", methods=["POST"])
+@login_required
+def api_revenue_restore():
+    """Undo the revenue reset and show all-time stats again."""
+    botdb.set_setting("revenue_reset_at", "")
+    log_action("revenue_restore", "all-time stats restored")
+    return jsonify({"ok": True})
 
 
 # =============================================================== API: PRODUCTS
