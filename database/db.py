@@ -1377,15 +1377,19 @@ def ensure_m365_table():
         created TEXT DEFAULT CURRENT_TIMESTAMP
     )
     """)
+    try:
+        cur.execute("ALTER TABLE m365_invites ADD COLUMN warranty TEXT")
+    except Exception:
+        pass
     conn.commit()
     _M365_TABLE_READY = True
 
 
-def create_m365_invite(user_id: int, order_id: int, email: str) -> int:
+def create_m365_invite(user_id: int, order_id: int, email: str, warranty: str = "") -> int:
     ensure_m365_table()
     cur.execute(
-        "INSERT INTO m365_invites(user_id, order_id, email, status) VALUES(?,?,?,'pending')",
-        (user_id, order_id, email),
+        "INSERT INTO m365_invites(user_id, order_id, email, status, warranty) VALUES(?,?,?,'pending',?)",
+        (user_id, order_id, email, str(warranty or "")),
     )
     conn.commit()
     return cur.lastrowid
@@ -1404,6 +1408,17 @@ def get_m365_invite(invite_id: int):
         (invite_id,),
     )
     return cur.fetchone()
+
+
+def get_m365_invite_warranty(invite_id: int) -> str:
+    """Warranty group recorded for an invite: '' (any), '6m' or '1y'."""
+    ensure_m365_table()
+    try:
+        cur.execute("SELECT COALESCE(warranty,'') FROM m365_invites WHERE id=?", (invite_id,))
+        row = cur.fetchone()
+        return str(row[0] or "") if row else ""
+    except Exception:
+        return ""
 
 
 def list_m365_invites(limit: int = 10):
@@ -1430,6 +1445,19 @@ def is_m365_product(product_id) -> bool:
         return int(product_id) in get_m365_product_ids()
     except Exception:
         return False
+
+
+def get_m365_product_warranty(product_id) -> str:
+    """Warranty group an M365 product's invites should use: '' (any), '6m' or '1y'."""
+    try:
+        return str(get_setting(f"m365_warranty_{int(product_id)}", "") or "")
+    except Exception:
+        return ""
+
+
+def set_m365_product_warranty(product_id, warranty):
+    """Tag an M365 product so its invites are sent only from matching-warranty IDs."""
+    set_setting(f"m365_warranty_{int(product_id)}", str(warranty or ""))
 
 
 def toggle_m365_product(product_id: int) -> bool:
@@ -1748,14 +1776,18 @@ conn.commit()
 _safe_add_column("m365_sessions", "login_email", "TEXT")
 _safe_add_column("m365_sessions", "login_password", "TEXT")
 _safe_add_column("m365_sessions", "totp_secret", "TEXT")
+# Warranty group tag: '' (any), '6m' (6-Month warranty IDs) or '1y' (1-Year warranty IDs).
+_safe_add_column("m365_sessions", "warranty", "TEXT")
 conn.commit()
 
 
-def add_m365_session(label, state_json):
-    """Store a new Microsoft session (encrypted). Returns the new session id."""
+def add_m365_session(label, state_json, warranty=""):
+    """Store a new Microsoft session (encrypted). Returns the new session id.
+
+    `warranty` tags the ID's group: '' (any), '6m' or '1y'."""
     cur.execute(
-        "INSERT INTO m365_sessions (label, state, invites_used, status, created) VALUES (?, ?, 0, 'active', ?)",
-        (str(label or ""), encrypt_text(state_json), now_text()),
+        "INSERT INTO m365_sessions (label, state, invites_used, status, created, warranty) VALUES (?, ?, 0, 'active', ?, ?)",
+        (str(label or ""), encrypt_text(state_json), now_text(), str(warranty or "")),
     )
     conn.commit()
     return cur.lastrowid
@@ -1860,10 +1892,10 @@ def delete_m365_session(session_id):
 
 def list_m365_sessions():
     try:
-        cur.execute("SELECT id, label, invites_used, status, created, CASE WHEN login_email IS NOT NULL AND login_email != '' THEN 1 ELSE 0 END FROM m365_sessions ORDER BY id ASC")
+        cur.execute("SELECT id, label, invites_used, status, created, CASE WHEN login_email IS NOT NULL AND login_email != '' THEN 1 ELSE 0 END, COALESCE(warranty,'') FROM m365_sessions ORDER BY id ASC")
         return cur.fetchall()
     except Exception:
-        cur.execute("SELECT id, label, invites_used, status, created, 0 FROM m365_sessions ORDER BY id ASC")
+        cur.execute("SELECT id, label, invites_used, status, created, 0, '' FROM m365_sessions ORDER BY id ASC")
         return cur.fetchall()
 
 
@@ -1884,10 +1916,22 @@ def get_m365_session(session_id):
     return (row[0], row[1], state, int(row[3] or 0))
 
 
-def list_active_m365_sessions():
-    """Return [(id, label, invites_used), ...] for every non-full, non-expired ID."""
-    cur.execute("SELECT id, label, invites_used FROM m365_sessions WHERE status='active' ORDER BY id ASC")
+def list_active_m365_sessions(warranty=None):
+    """Return [(id, label, invites_used), ...] for every non-full, non-expired ID.
+
+    When `warranty` is given ('6m' or '1y'), only IDs tagged with that warranty
+    group are returned, so 6-Month orders never consume a 1-Year ID and vice versa."""
+    if warranty:
+        cur.execute("SELECT id, label, invites_used FROM m365_sessions WHERE status='active' AND COALESCE(warranty,'')=? ORDER BY id ASC", (str(warranty),))
+    else:
+        cur.execute("SELECT id, label, invites_used FROM m365_sessions WHERE status='active' ORDER BY id ASC")
     return [(r[0], r[1], int(r[2] or 0)) for r in cur.fetchall()]
+
+
+def set_m365_session_warranty(session_id, warranty):
+    """Tag a Microsoft ID with a warranty group: '' (any), '6m' or '1y'."""
+    cur.execute("UPDATE m365_sessions SET warranty=? WHERE id=?", (str(warranty or ""), session_id))
+    conn.commit()
 
 
 def mark_m365_session_expired(session_id):

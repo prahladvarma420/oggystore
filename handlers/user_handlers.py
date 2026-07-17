@@ -1030,10 +1030,12 @@ async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
     state = user_state.get(uid)
 
     if state and state.startswith("m365_email:"):
+        _m365_parts = state.split(":")
         try:
-            m365_order_id = int(state.split(":")[1])
+            m365_order_id = int(_m365_parts[1])
         except Exception:
             m365_order_id = 0
+        m365_warranty = _m365_parts[2] if len(_m365_parts) > 2 else ""
 
         email = text.strip()
 
@@ -1049,7 +1051,7 @@ async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
         from database.db import create_m365_invite
         from utils.crypto import encrypt_text
 
-        invite_id = create_m365_invite(uid, m365_order_id, email)
+        invite_id = create_m365_invite(uid, m365_order_id, email, m365_warranty)
 
         try:
             cur.execute(
@@ -1757,7 +1759,8 @@ async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
     uid = user.id
     state = user_state.get(uid)
 
-    if state == "admin_upload_m365_session" and is_admin(uid):
+    if state and str(state).startswith("admin_upload_m365_session") and is_admin(uid):
+        _sess_warranty = "6m" if str(state).endswith(":6m") else ("1y" if str(state).endswith(":1y") else "")
         try:
             doc = update.message.document
             if not doc.file_name.lower().endswith(".json"):
@@ -1773,8 +1776,9 @@ async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
 
             from database.db import add_m365_session, rename_m365_session, list_m365_sessions
             caption = (update.message.caption or "").strip()
-            new_sess_id = add_m365_session("", state_json)
-            sess_label = caption[:60] if caption else "ID #" + str(new_sess_id)
+            new_sess_id = add_m365_session("", state_json, _sess_warranty)
+            _w_prefix = {"6m": "6M ", "1y": "1Y "}.get(_sess_warranty, "")
+            sess_label = caption[:60] if caption else _w_prefix + "ID #" + str(new_sess_id)
             rename_m365_session(new_sess_id, sess_label)
             total_sessions = len(list_m365_sessions())
 
@@ -1783,7 +1787,8 @@ async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "✅ <b>Microsoft session saved (encrypted).</b>\n\n"
                 f"🆔 Stored as: <b>{html.escape(sess_label, quote=False)}</b>\n"
-                f"📂 Total IDs stored: <b>{total_sessions}</b>\n\n"
+                + ({"6m": "🏷 Warranty group: <b>6-Month</b> — used only for 6-Month invite products.\n", "1y": "🏷 Warranty group: <b>1-Year</b> — used only for 1-Year invite products.\n"}.get(_sess_warranty, ""))
+                + f"📂 Total IDs stored: <b>{total_sessions}</b>\n\n"
                 "✏️ Now send the <b>Microsoft account email/name</b> for this ID so rotation alerts are easy to read — or send <code>-</code> to keep the automatic name.\n\n"
                 "🧪 Then use Admin Panel → 📩 M365 Auto-Invite → Test Invite to verify it works.\n\n"
                 "💡 For safety, delete <code>m365_session.json</code> from your PC after this.",

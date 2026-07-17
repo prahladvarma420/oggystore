@@ -92,8 +92,9 @@ def pop_rotation_note():
     return note
 
 
-def _load_active_session(skip_ids=None):
+def _load_active_session(skip_ids=None, warranty=None):
     """Return (session_id, label, state_json) for the first usable Microsoft ID
+    of the requested warranty group ('6m'/'1y'; None/'' = any active ID).
     (active status + real uploaded cookies), skipping any ids in `skip_ids`.
 
     `skip_ids` powers the order safety-net: when one ID turns out to be expired
@@ -109,7 +110,7 @@ def _load_active_session(skip_ids=None):
             list_m365_sessions,
             add_m365_session,
         )
-        for sid, label, _used in list_active_m365_sessions():
+        for sid, label, _used in list_active_m365_sessions(warranty):
             if sid in skip_ids:
                 continue
             row = get_m365_session(sid)
@@ -119,7 +120,7 @@ def _load_active_session(skip_ids=None):
             if state and not str(state).startswith("[encrypted:"):
                 return _sid, str(_label or f"ID #{_sid}"), state
         # No usable rows in the sessions table -> migrate a legacy upload.
-        if not list_m365_sessions():
+        if not list_m365_sessions() and not warranty:
             legacy = load_session()
             if legacy:
                 new_sid = add_m365_session("ID #1", legacy)
@@ -350,7 +351,7 @@ def _confirmation_screenshot(page):
         return None
 
 
-def send_family_invite_sync(email: str, forced_session=None):
+def send_family_invite_sync(email: str, forced_session=None, warranty=None):
     """Send a Microsoft 365 Family invite to `email`.
 
     Returns (ok: bool, message: str, screenshot: bytes | None).
@@ -362,7 +363,7 @@ def send_family_invite_sync(email: str, forced_session=None):
     global _ROTATION_NOTE, _LAST_SESSION_ID, _LAST_SESSION_EXPIRED
     _ROTATION_NOTE = None
     _LAST_SESSION_EXPIRED = False
-    _session = forced_session or _load_active_session()
+    _session = forced_session or _load_active_session(warranty=warranty)
     if not _session:
         try:
             from database.db import list_m365_sessions
@@ -824,7 +825,7 @@ def send_family_invite_sync(email: str, forced_session=None):
             pass
 
 
-def _invite_with_failover_sync(email: str):
+def _invite_with_failover_sync(email: str, warranty=None):
     """Order safety-net driver: try each active Microsoft ID in turn.
 
     If an ID's cookies turn out to be expired, mark it expired (so the owner is
@@ -841,7 +842,7 @@ def _invite_with_failover_sync(email: str):
     last_msg = None
     last_shot = None
     for _ in range(8):
-        sess = _load_active_session(skip_ids=tried)
+        sess = _load_active_session(skip_ids=tried, warranty=warranty)
         if not sess:
             break
         sid = sess[0]
@@ -861,9 +862,14 @@ def _invite_with_failover_sync(email: str):
         return False, msg, shot, False
     # Every usable ID is exhausted (all expired, or none uploaded) -> queue it.
     if last_msg is None:
+        _wl = {"6m": "6-Month warranty", "1y": "1-Year warranty"}.get(str(warranty or ""), "")
+        _who = (
+            f"No usable Microsoft session in the {_wl} group right now. "
+            if _wl else "No usable Microsoft session right now. "
+        )
         last_msg = (
-            "No usable Microsoft session right now. "
-            "Upload a fresh session: Admin → 📩 M365 Auto-Invite → 🔑 Upload Session."
+            _who
+            + "Upload a fresh session: Admin → 📩 M365 Auto-Invite → 🔑 Upload Session."
         )
     return False, last_msg, last_shot, True
 
@@ -1000,7 +1006,7 @@ def _keepalive_sessions_sync():
     return newly_expired
 
 
-async def send_family_invite_ex(email: str):
+async def send_family_invite_ex(email: str, warranty=None):
     """Async wrapper around the failover driver.
 
     Returns (ok, message, screenshot, queueable). Runs the blocking Playwright
@@ -1009,7 +1015,7 @@ async def send_family_invite_ex(email: str):
     """
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(_invite_with_failover_sync, email),
+            asyncio.to_thread(_invite_with_failover_sync, email, warranty),
             timeout=300,
         )
     except asyncio.TimeoutError:
@@ -1042,8 +1048,15 @@ async def process_invite(bot, invite_id: int):
     _id, user_id, order_id, email, _status, _error, _created = invite
     safe_email = html.escape(str(email), quote=False)
 
+    # Route the invite through the session group matching the product's warranty.
     try:
-        ok, message, screenshot, queueable = await send_family_invite_ex(email)
+        from database.db import get_m365_invite_warranty
+        warranty = get_m365_invite_warranty(invite_id)
+    except Exception:
+        warranty = ""
+
+    try:
+        ok, message, screenshot, queueable = await send_family_invite_ex(email, warranty)
     except Exception as exc:
         ok, message, screenshot, queueable = False, f"Unexpected error: {str(exc).strip()[:400]}", None, True
 
@@ -1250,6 +1263,15 @@ async def run_m365_maintenance(context):
                 _log(f"queue flush: {len(queued)} queued invite(s) to retry")
             for inv in queued:
                 try:
+                    # Only retry when a session of the invite's warranty group exists,
+                    # so customers don't get repeated 'queued' notices meanwhile.
+                    try:
+                        from database.db import get_m365_invite_warranty, list_active_m365_sessions
+                        _w = get_m365_invite_warranty(inv[0])
+                        if _w and not list_active_m365_sessions(_w):
+                            continue
+                    except Exception:
+                        pass
                     await process_invite(bot, inv[0])
                 except Exception as pexc:
                     _log(f"queue flush invite #{inv[0]} error: {repr(pexc)[:120]}")

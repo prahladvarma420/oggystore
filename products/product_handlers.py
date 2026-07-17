@@ -7,7 +7,7 @@ import time
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 from utils.premium_emoji import strip_premium, first_premium_id, button_premium, premium_safe
-from database.db import render_message_template,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items, is_m365_product, is_canva_product
+from database.db import render_message_template,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items, is_m365_product, is_canva_product, get_m365_product_warranty
 from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
 from utils.crypto import encrypt_text
 from utils.ui import edit_or_send
@@ -871,7 +871,11 @@ Deposit exactly what's missing with one tap below.""",
                 remaining_slots,
             )
 
-            user_state[uid] = f"m365_email:{order_id}"
+            try:
+                _m365_w = get_m365_product_warranty(pid) or ""
+            except Exception:
+                _m365_w = ""
+            user_state[uid] = f"m365_email:{order_id}:{_m365_w}"
 
             invite_prompt = (
                 "✅ <b>Payment Successful!</b>\n"

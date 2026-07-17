@@ -8,7 +8,7 @@ import os
 import shutil
 from datetime import datetime, timedelta
 
-from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, render_message_template, cur, conn, is_admin, is_owner, add_admin, remove_admin, get_admins, add_balance, add_stock_items, get_available_stock_count, get_sold_stock_count, get_total_stock_count, restock_product, block_user, unblock_user, log_admin_action, get_admin_logs, update_product_details, get_open_tickets, get_ticket, reply_ticket, close_ticket, get_pending_withdrawals, update_withdrawal_status, set_setting, get_setting, set_product_featured, remove_product_image, get_product_price_tiers, set_product_price_tier, delete_product_price_tier, clear_product_price_tiers, validate_coupon, list_message_templates, get_message_template, set_message_template, smart_dashboard_stats, clear_admin_logs, create_backup_zip, restore_backup_zip, create_bundle, get_all_bundles, get_bundle_items, delete_bundle, get_m365_product_ids, toggle_m365_product, list_m365_invites, get_m365_invite, set_m365_invite_status, get_canva_product_ids, toggle_canva_product, list_canva_invites, get_canva_invite, set_canva_invite_status
+from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, render_message_template, cur, conn, is_admin, is_owner, add_admin, remove_admin, get_admins, add_balance, add_stock_items, get_available_stock_count, get_sold_stock_count, get_total_stock_count, restock_product, block_user, unblock_user, log_admin_action, get_admin_logs, update_product_details, get_open_tickets, get_ticket, reply_ticket, close_ticket, get_pending_withdrawals, update_withdrawal_status, set_setting, get_setting, set_product_featured, remove_product_image, get_product_price_tiers, set_product_price_tier, delete_product_price_tier, clear_product_price_tiers, validate_coupon, list_message_templates, get_message_template, set_message_template, smart_dashboard_stats, clear_admin_logs, create_backup_zip, restore_backup_zip, create_bundle, get_all_bundles, get_bundle_items, delete_bundle, get_m365_product_ids, toggle_m365_product, list_m365_invites, get_m365_invite, set_m365_invite_status, get_canva_product_ids, toggle_canva_product, list_canva_invites, get_canva_invite, set_canva_invite_status, get_m365_product_warranty, set_m365_product_warranty, set_m365_session_warranty
 from utils.crypto import decrypt_text
 from database.db import get_pending_replacements, get_replacement, set_replacement_status, set_warranty_ban, is_warranty_banned, count_recent_replacements, reserve_stock_item, create_gift_code, list_gift_codes, rename_m365_session, list_m365_sessions, get_current_m365_session, reset_m365_session, delete_m365_session
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
@@ -3048,7 +3048,8 @@ Choose an order to view details:""",
             "bot opens your Microsoft account (saved session) and sends the Family invite automatically.",
             InlineKeyboardMarkup([
                 [InlineKeyboardButton("📦 Choose Products", callback_data="admin_m365_products")],
-                [InlineKeyboardButton("🔑 Upload Session", callback_data="admin_m365_upload"), InlineKeyboardButton("🧪 Test Invite", callback_data="admin_m365_test")],
+                [InlineKeyboardButton("🔑 Upload 6-Month ID", callback_data="admin_m365_upload_6m"), InlineKeyboardButton("🔑 Upload 1-Year ID", callback_data="admin_m365_upload_1y")],
+                [InlineKeyboardButton("🔑 Upload Session (any)", callback_data="admin_m365_upload"), InlineKeyboardButton("🧪 Test Invite", callback_data="admin_m365_test")],
                 [InlineKeyboardButton("📂 Sessions", callback_data="admin_m365_sessions")],
                 [InlineKeyboardButton("🧾 All Invites", callback_data="admin_m365_invites")],
                 [InlineKeyboardButton("⬅️ Admin Home", callback_data="admin_panel")],
@@ -3056,11 +3057,17 @@ Choose an order to view details:""",
         )
         return True
 
-    if data == "admin_m365_upload":
-        user_state[uid] = "admin_upload_m365_session"
+    if data in ("admin_m365_upload", "admin_m365_upload_6m", "admin_m365_upload_1y"):
+        _w = "6m" if data.endswith("_6m") else ("1y" if data.endswith("_1y") else "")
+        user_state[uid] = "admin_upload_m365_session" + ((":" + _w) if _w else "")
+        _w_line = {
+            "6m": "🏷 <b>This ID will serve: 6-MONTH WARRANTY invites</b>\n\n",
+            "1y": "🏷 <b>This ID will serve: 1-YEAR WARRANTY invites</b>\n\n",
+        }.get(_w, "🏷 <b>This ID will serve: ANY invite</b> (no warranty group)\n\n")
         await edit_or_send(
             q,
             "🔑 <b>Upload Microsoft Session</b>\n\n"
+            + _w_line +
             "Do this ONCE on your own PC:\n\n"
             "1️⃣ <code>pip install playwright</code>\n"
             "2️⃣ <code>python -m playwright install chromium</code>\n"
@@ -3084,10 +3091,18 @@ Choose an order to view details:""",
         )
         return True
 
-    if data == "admin_m365_products" or data.startswith("admin_m365_toggle_"):
+    if data == "admin_m365_products" or data.startswith("admin_m365_toggle_") or data.startswith("admin_m365_warr_"):
         if data.startswith("admin_m365_toggle_"):
             try:
                 toggle_m365_product(int(data.replace("admin_m365_toggle_", "")))
+            except Exception:
+                pass
+        if data.startswith("admin_m365_warr_"):
+            try:
+                _wpid = int(data.replace("admin_m365_warr_", ""))
+                _next = {"": "6m", "6m": "1y", "1y": ""}.get(get_m365_product_warranty(_wpid) or "", "6m")
+                set_m365_product_warranty(_wpid, _next)
+                log_admin_action(uid, "M365_PRODUCT_WARRANTY", f"Product #{_wpid} -> {_next or 'any'}")
             except Exception:
                 pass
 
@@ -3100,6 +3115,10 @@ Choose an order to view details:""",
             label_name = strip_premium(str(prod_name))[:35]
             mark = "✅" if prod_id in enabled_ids else "⬜"
             rows.append([InlineKeyboardButton(f"{mark} #{prod_id} {label_name}", callback_data=f"admin_m365_toggle_{prod_id}")])
+            if prod_id in enabled_ids:
+                _pw = get_m365_product_warranty(prod_id) or ""
+                _pwl = {"6m": "6-Month IDs", "1y": "1-Year IDs"}.get(_pw, "Any ID")
+                rows.append([InlineKeyboardButton(f"      🏷 sends from: {_pwl} — tap to change", callback_data=f"admin_m365_warr_{prod_id}")])
         rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_m365")])
 
         await edit_or_send(
@@ -3145,7 +3164,8 @@ Choose an order to view details:""",
         except Exception:
             per_id = 5
         text = "📂 <b>Microsoft Sessions</b>\n\n"
-        text += f"Each ID sends <b>{per_id}</b> family invites, then the bot rotates to the next ID automatically and alerts you.\n\n"
+        text += f"Each ID sends <b>{per_id}</b> family invites, then the bot rotates to the next ID automatically and alerts you.\n"
+        text += "🏷 Tap 🏷 to set an ID's warranty group: Any → 6-Month → 1-Year.\n\n"
         kb = []
         if not sess_rows:
             text += "No sessions uploaded yet."
@@ -3154,6 +3174,8 @@ Choose an order to view details:""",
             current_id = sess_current[0] if sess_current else None
             for row in sess_rows:
                 sid, sess_label, sess_used, sess_status = row[0], row[1], row[2], row[3]
+                sess_w = str(row[6] or "") if len(row) > 6 else ""
+                sess_w_tag = {"6m": " 🏷6M", "1y": " 🏷1Y"}.get(sess_w, "")
                 if sess_status == "active":
                     icon = "🟢" if sid == current_id else "🕒"
                     marker = " ← current" if sid == current_id else " (queued)"
@@ -3163,14 +3185,30 @@ Choose an order to view details:""",
                 else:
                     icon = "🔴"
                     marker = " (FULL)"
-                text += f"{icon} <b>#{sid}</b> {html.escape(str(sess_label), quote=False)} — <code>{sess_used}/{per_id}</code>{marker}\n"
+                text += f"{icon} <b>#{sid}</b> {html.escape(str(sess_label), quote=False)}{sess_w_tag} — <code>{sess_used}/{per_id}</code>{marker}\n"
                 kb.append([
+                    InlineKeyboardButton(f"🏷 #{sid}", callback_data=f"admin_m365_sess_warr_{sid}"),
                     InlineKeyboardButton(f"🔄 Reset #{sid}", callback_data=f"admin_m365_sess_reset_{sid}"),
                     InlineKeyboardButton(f"🗑 Delete #{sid}", callback_data=f"admin_m365_sess_del_{sid}"),
                 ])
         kb.append([InlineKeyboardButton("⏳ Invites Per ID", callback_data="admin_m365_sess_limit"), InlineKeyboardButton("🔑 Upload Session", callback_data="admin_m365_upload")])
         kb.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_m365")])
         await edit_or_send(q, text, InlineKeyboardMarkup(kb))
+        return True
+
+    if data.startswith("admin_m365_sess_warr_"):
+        sess_id = int(data.replace("admin_m365_sess_warr_", ""))
+        try:
+            cur.execute("SELECT COALESCE(warranty,'') FROM m365_sessions WHERE id=?", (sess_id,))
+            _row = cur.fetchone()
+            _cur_w = str(_row[0] or "") if _row else ""
+        except Exception:
+            _cur_w = ""
+        _next_w = {"": "6m", "6m": "1y", "1y": ""}.get(_cur_w, "6m")
+        set_m365_session_warranty(sess_id, _next_w)
+        log_admin_action(uid, "M365_SESSION_WARRANTY", f"session #{sess_id} -> {_next_w or 'any'}")
+        _next_label = {"6m": "6-Month", "1y": "1-Year"}.get(_next_w, "Any (no group)")
+        await edit_or_send(q, f"🏷 <b>Session #{sess_id} warranty group: {_next_label}</b>\n\nInvites for products tagged with this group are sent ONLY from matching IDs.", InlineKeyboardMarkup([[InlineKeyboardButton("📂 Back to Sessions", callback_data="admin_m365_sessions")]]))
         return True
 
     if data.startswith("admin_m365_sess_reset_"):
