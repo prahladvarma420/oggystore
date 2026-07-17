@@ -2221,7 +2221,7 @@ Send:
         status = "🚫 Blocked" if blocked else "✅ Active"
         await edit_or_send(q, f"""👤 <b>User Detail</b>
 
-🆔 <b>ID:</b> <code>{user_id}</code>
+���� <b>ID:</b> <code>{user_id}</code>
 👤 <b>Name:</b> {first_name or 'User'}
 🔗 <b>Username:</b> {uname}
 💼 <b>Balance:</b> <code>${float(balance or 0):.2f}</code>
@@ -4053,7 +4053,8 @@ async def handle_admin_message(update, context, uid, text, state):
         return True
 
     if state == "admin_add_product_name" and is_admin(uid):
-        admin_temp_data.setdefault(uid, {})["name"] = text
+        # Preserve Telegram premium emojis in the name as <tg-emoji> HTML tags.
+        admin_temp_data.setdefault(uid, {})["name"] = sanitize_premium_name(premium_html(update, text).strip())
         user_state[uid] = "admin_add_product_price"
         await update.message.reply_text(
             "💰 <b>Step 2/7</b>\n\nSend product price.\n\nExample:\n<code>0.70</code>",
@@ -4950,7 +4951,8 @@ Now send the image/photo.""",
         return True
 
     if state == "admin_add_product_name" and is_admin(uid):
-        admin_temp_data.setdefault(uid, {})["name"] = text
+        # Preserve Telegram premium emojis in the name as <tg-emoji> HTML tags.
+        admin_temp_data.setdefault(uid, {})["name"] = sanitize_premium_name(premium_html(update, text).strip())
         user_state[uid] = "admin_add_product_price"
 
         await update.message.reply_text(
