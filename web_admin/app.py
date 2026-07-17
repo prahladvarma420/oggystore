@@ -2067,7 +2067,8 @@ def api_analytics():
         total_u = (q("SELECT COUNT(*) c FROM users WHERE DATE(joined)<=?", (day,), one=True) or {}).get("c", 0)
         user_growth.append({"date": day, "new": new_u or 0, "total": total_u or 0})
     busy = [0] * 24
-    for r in q("SELECT CAST(strftime('%H', created) AS INTEGER) h, COUNT(*) c FROM orders GROUP BY h"):
+    # Portable hour extraction (SQLite + Postgres): created is 'YYYY-MM-DD HH:MM:SS' text.
+    for r in q("SELECT CAST(substr(created, 12, 2) AS INTEGER) h, COUNT(*) c FROM orders GROUP BY h"):
         h = r.get("h")
         if h is not None and 0 <= h < 24:
             busy[h] = r.get("c", 0)

@@ -1,10 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import re as _re
 import sqlite3
 from config import DB_PATH, ADMIN_ID
 import os
 from utils.crypto import encrypt_text, decrypt_text
-from utils.timezone import now_text
+from utils.timezone import now_text, now as ist_now
 
 from database.pgcompat import connect as _compat_connect  # SQLite/Postgres switch
 conn = _compat_connect(DB_PATH)
@@ -1694,33 +1694,41 @@ def set_warranty_ban(user_id: int, banned: bool):
 def get_warranty_orders(user_id: int):
     """Orders inside the warranty window, with a known product and no replacement yet."""
     hours = int(float(get_setting("warranty_hours", "24") or 24))
+    # Portable time filter (works on SQLite AND Postgres): compute the UTC
+    # cutoff in Python and compare as text. orders.created is stored in UTC.
+    cutoff = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
     cur.execute(
         "SELECT o.id, o.product_name, o.product_id, o.created FROM orders o "
         "WHERE o.user_id=? AND o.product_id IS NOT NULL "
-        "AND datetime(o.created) >= datetime('now', ?) "
+        "AND o.created >= ? "
         "AND NOT EXISTS (SELECT 1 FROM replacements r WHERE r.order_id = o.id) "
         "ORDER BY o.id DESC LIMIT 10",
-        (user_id, "-" + str(hours) + " hours")
+        (user_id, cutoff)
     )
     return cur.fetchall()
 
 
 def get_order_for_warranty(order_id: int, user_id: int):
     hours = int(float(get_setting("warranty_hours", "24") or 24))
+    # Portable time filter (works on SQLite AND Postgres). orders.created is UTC.
+    cutoff = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
     cur.execute(
         "SELECT o.id, o.product_id, o.product_name, o.delivery FROM orders o "
         "WHERE o.id=? AND o.user_id=? AND o.product_id IS NOT NULL "
-        "AND datetime(o.created) >= datetime('now', ?) "
+        "AND o.created >= ? "
         "AND NOT EXISTS (SELECT 1 FROM replacements r WHERE r.order_id = o.id)",
-        (order_id, user_id, "-" + str(hours) + " hours")
+        (order_id, user_id, cutoff)
     )
     return cur.fetchone()
 
 
 def count_recent_replacements(user_id: int, days: int = 7) -> int:
+    # Portable time filter. replacements.created is written with now_text() (IST),
+    # so compute the cutoff in IST as well.
+    cutoff = (ist_now() - timedelta(days=int(days))).strftime("%Y-%m-%d %H:%M:%S")
     cur.execute(
-        "SELECT COUNT(*) FROM replacements WHERE user_id=? AND datetime(created) >= datetime('now', ?)",
-        (user_id, "-" + str(int(days)) + " days")
+        "SELECT COUNT(*) FROM replacements WHERE user_id=? AND created >= ?",
+        (user_id, cutoff)
     )
     row = cur.fetchone()
     return row[0] if row else 0
