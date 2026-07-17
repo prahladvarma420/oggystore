@@ -1177,7 +1177,7 @@ def simplify_default_message_templates():
         "welcome": "👋 Welcome to {store}\n\nChoose an option below 👇",
         "delivery_success": "✅ Payment Successful!\n\n🧾 Order ID: #{order_id}\n📦 Product: {product}\n\n🔑 Code:\n{code}\n\n💰 Paid: {paid}\n💼 Balance: {balance}\n\nThank you for your purchase ❤️",
         "coupon_broadcast": "🎟 New Coupon Available!\n\n💝 Discount: {discount}\n🎫 Code: {code}\n⏳ Validity: {validity}\n🔥 Limit: {limit}\n\nUse it before checkout 👇",
-        "flash_sale_broadcast": "🔥 FLASH SALE!\n\n📦 {product}\n\n💰 Was: {old_price}\n⚡ Now: {new_price}\n🎁 Discount: {discount}\n\n⏳ {validity}\n\nBuy before it ends 👇",
+        "flash_sale_broadcast": "🔥 FLASH SALE!\n\n📦 {product}\n\n💰 Was: {old_price}\n⚡ Now: {new_price}\n🎁 Discount: {discount}\n\n��� {validity}\n\nBuy before it ends 👇",
         "restock_alert": "🔔 Back In Stock!\n\n📦 {product}\n📊 Available: {stock}\n\nTap below to buy now 👇",
         "deposit_success": "✅ Deposit Confirmed\n\n���� Amount: {amount} USDT\n\nYour wallet balance has been updated."
     }
@@ -1263,8 +1263,9 @@ def clear_admin_logs():
 
 
 def smart_dashboard_stats():
+    reset_at = get_setting("revenue_reset_at", "") or "1970-01-01 00:00:00"
     try:
-        cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE DATE(created)=DATE('now')")
+        cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE DATE(created)=DATE('now') AND created >= ?", (reset_at,))
         today_revenue, today_orders = cur.fetchone()
     except Exception:
         today_revenue, today_orders = 0, 0
@@ -1288,7 +1289,7 @@ def smart_dashboard_stats():
         low_stock = 0
 
     try:
-        cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders")
+        cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE created >= ?", (reset_at,))
         total_revenue, total_orders = cur.fetchone()
     except Exception:
         total_revenue, total_orders = 0, 0

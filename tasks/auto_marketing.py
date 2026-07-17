@@ -4,6 +4,19 @@ from config import ADMIN_ID
 
 
 async def run_auto_marketing(context):
+    # Auto-expire flash sales every hour so product prices return to normal
+    # on time, even if the admin never presses the manual Cleanup button.
+    try:
+        cur.execute(
+            "UPDATE products SET flash_price=NULL, flash_ends_at=NULL "
+            "WHERE flash_ends_at IS NOT NULL AND flash_ends_at < ?",
+            (now_text(),),
+        )
+        if cur.rowcount:
+            conn.commit()
+    except Exception:
+        pass
+
     try:
         coupon = get_setting("inactive_coupon", "")
         days = int(get_setting("inactive_days", "7") or 7)

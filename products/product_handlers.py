@@ -297,10 +297,12 @@ def get_effective_price(price, flash_price=None, flash_ends_at=None):
     """Apply flash sale price only while the flash sale is active."""
     try:
         if flash_price is not None and flash_ends_at:
-            end_time = datetime.strptime(str(flash_ends_at), "%Y-%m-%d %H:%M:%S")
-            current_time = datetime.strptime(now().strftime("%Y-%m-%d %H:%M:%S"), "%Y-%m-%d %H:%M:%S")
+            # Compare as sortable text ("YYYY-MM-DD HH:MM:SS") — robust against
+            # timezone-aware/naive mismatches and 'T'-separated formats.
+            ends_text = str(flash_ends_at).replace("T", " ")[:19]
+            current_text = now().strftime("%Y-%m-%d %H:%M:%S")
 
-            if end_time > current_time:
+            if ends_text > current_text:
                 return float(flash_price), True
     except Exception:
         pass

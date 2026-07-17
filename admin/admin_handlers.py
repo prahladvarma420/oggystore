@@ -14,13 +14,12 @@ from database.db import get_pending_replacements, get_replacement, set_replaceme
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
-from utils.premium_emoji import premium_html, strip_premium, first_premium_id, sanitize_premium_name, button_premium, premium_safe
+from utils.premium_emoji import premium_html, strip_premium, first_premium_id, sanitize_premium_name, button_premium
 
 
 def _admin_name(value):
-    """Product name for HTML messages: KEEP premium (custom) emoji as <tg-emoji>
-    tags so they render, while HTML-escaping everything else for safe display."""
-    return premium_safe(str(value))
+    """Strip premium/custom emoji tags and HTML-escape a product name for safe display."""
+    return html.escape(strip_premium(str(value)), quote=False)
 from keyboards.menus import MAIN_MENU_BUTTONS
 from utils.states import user_state
 from utils.timezone import now, now_text, today_prefix, month_prefix
@@ -83,20 +82,35 @@ def scheduled_broadcast_keyboard():
     ])
 
 
+def _revenue_reset_at():
+    """Revenue stats only count orders created after this timestamp.
+
+    Stored in UTC because orders.created uses CURRENT_TIMESTAMP (UTC).
+    Empty setting = all-time stats (never reset).
+    """
+    return get_setting("revenue_reset_at", "") or "1970-01-01 00:00:00"
+
+
+def _utc_now_text():
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def sales_analytics_text():
-    cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders")
+    reset_at = _revenue_reset_at()
+    cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE created >= ?", (reset_at,))
     total_revenue, total_orders = cur.fetchone()
     cur.execute("SELECT COUNT(*) FROM users")
     users_count = cur.fetchone()[0]
-    cur.execute("SELECT COALESCE(SUM(amount),0), COUNT(*) FROM deposits WHERE status='paid'")
+    cur.execute("SELECT COALESCE(SUM(amount),0), COUNT(*) FROM deposits WHERE status='paid' AND created >= ?", (reset_at,))
     dep_total, dep_count = cur.fetchone()
     cur.execute("""
         SELECT product_name, COUNT(*) c, COALESCE(SUM(price),0) r
         FROM orders
+        WHERE created >= ?
         GROUP BY product_name
         ORDER BY r DESC
         LIMIT 5
-    """)
+    """, (reset_at,))
     products = cur.fetchall()
 
     product_text = ""
@@ -275,7 +289,7 @@ def product_analytics_text(product_id: int):
         return None
     name, price, stock = p
     live_stock = get_available_stock_count(product_id)
-    cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE product_name LIKE ?", (f"%{name}%",))
+    cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE product_name LIKE ? AND created >= ?", (f"%{name}%", _revenue_reset_at()))
     orders, revenue = cur.fetchone()
     cur.execute("SELECT COUNT(*) FROM product_stock WHERE product_id=? AND sold=1", (product_id,))
     sold_stock = cur.fetchone()[0]
@@ -298,10 +312,11 @@ def top_sellers_text():
     cur.execute("""
         SELECT product_name, COUNT(*) c, COALESCE(SUM(price),0) r
         FROM orders
+        WHERE created >= ?
         GROUP BY product_name
         ORDER BY c DESC, r DESC
         LIMIT 10
-    """)
+    """, (_revenue_reset_at(),))
     rows = cur.fetchall()
 
     text = "🏆 <b>Top Selling Products</b>\n\n"
@@ -316,7 +331,7 @@ def top_sellers_text():
 def cleanup_report_text():
     cur.execute("DELETE FROM user_coupons WHERE code NOT IN (SELECT code FROM coupons)")
     orphan_coupons = cur.rowcount
-    cur.execute("UPDATE products SET flash_price=NULL, flash_ends_at=NULL WHERE flash_ends_at IS NOT NULL AND flash_ends_at < datetime('now')")
+    cur.execute("UPDATE products SET flash_price=NULL, flash_ends_at=NULL WHERE flash_ends_at IS NOT NULL AND flash_ends_at < ?", (now_text(),))
     expired_sales = cur.rowcount
     conn.commit()
 
@@ -347,7 +362,9 @@ def flash_sale_text(product_id: int):
     status = "OFF"
     if flash_price and flash_ends_at:
         try:
-            if datetime.strptime(flash_ends_at, "%Y-%m-%d %H:%M:%S") > now():
+            # Sortable-text comparison; comparing strptime() with the timezone-aware
+            # now() raised TypeError, so status always showed OFF.
+            if str(flash_ends_at).replace("T", " ")[:19] > now_text():
                 status = "🔥 ACTIVE"
         except Exception:
             pass
@@ -431,11 +448,12 @@ async def broadcast_flash_sale(context, product_id: int, name: str, old_price: f
 def admin_stats_text():
     today = today_prefix()
     month = month_prefix()
-    cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders")
+    reset_at = _revenue_reset_at()
+    cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE created >= ?", (reset_at,))
     total_revenue, total_orders = cur.fetchone()
-    cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE created LIKE ?", (today + "%",))
+    cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE created LIKE ? AND created >= ?", (today + "%", reset_at))
     today_revenue, today_orders = cur.fetchone()
-    cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE created LIKE ?", (month + "%",))
+    cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE created LIKE ? AND created >= ?", (month + "%", reset_at))
     month_revenue, month_orders = cur.fetchone()
     cur.execute("SELECT COUNT(*) FROM users")
     total_users = cur.fetchone()[0]
@@ -443,9 +461,9 @@ def admin_stats_text():
     active_products = cur.fetchone()[0]
     cur.execute("SELECT COALESCE(SUM(stock),0) FROM products WHERE active=1")
     visible_stock = cur.fetchone()[0] or 0
-    cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM deposits WHERE status='paid'")
+    cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM deposits WHERE status='paid' AND created >= ?", (reset_at,))
     paid_deposits, deposit_value = cur.fetchone()
-    cur.execute("SELECT product_name, COUNT(*) c, COALESCE(SUM(price),0) r FROM orders GROUP BY product_name ORDER BY c DESC LIMIT 5")
+    cur.execute("SELECT product_name, COUNT(*) c, COALESCE(SUM(price),0) r FROM orders WHERE created >= ? GROUP BY product_name ORDER BY c DESC LIMIT 5", (reset_at,))
     top = cur.fetchall()
 
     top_text = ""
@@ -480,6 +498,7 @@ def admin_stats_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Refresh", callback_data="admin_stats_dashboard")],
         [InlineKeyboardButton("⚠️ Low Stock", callback_data="admin_low_stock")],
+        [InlineKeyboardButton("♻️ Reset Revenue", callback_data="admin_revenue_reset")],
         [InlineKeyboardButton("⬅️ System Menu", callback_data="admin_section_system")],
     ])
 
@@ -785,7 +804,7 @@ async def broadcast_product_update(context, product_id: int, product_name: str, 
         msg = render_message_template(
             tpl_key,
             default_msg,
-            product_name=premium_safe(product_name),
+            product_name=html.escape(strip_premium(product_name), quote=False),
             added=added,
             available=available,
             price=f"${float(price or 0):.2f}",
@@ -986,9 +1005,10 @@ async def show_admin_panel(q, uid):
     users_count = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM products WHERE active=1")
     products_count = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM orders")
+    reset_at = _revenue_reset_at()
+    cur.execute("SELECT COUNT(*) FROM orders WHERE created >= ?", (reset_at,))
     orders_count = cur.fetchone()[0]
-    cur.execute("SELECT COALESCE(SUM(price),0) FROM orders")
+    cur.execute("SELECT COALESCE(SUM(price),0) FROM orders WHERE created >= ?", (reset_at,))
     sales = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM product_stock WHERE sold=0")
     available_stock = cur.fetchone()[0]
@@ -1508,7 +1528,7 @@ Examples:
         rows = cur.fetchall()
         bio = _csv_bytes(["user_id", "first_name", "username", "balance", "blocked", "joined"], rows)
         bio.name = "users_export.csv"
-        await q.message.reply_document(document=bio, filename="users_export.csv", caption="�� Users export")
+        await q.message.reply_document(document=bio, filename="users_export.csv", caption="📤 Users export")
         log_admin_action(uid, "EXPORT_USERS", f"{len(rows)} rows")
         return True
 
@@ -1595,35 +1615,38 @@ Example:
         week_ago = (current_time - timedelta(days=7)).strftime("%Y-%m-%d")
         month_ago = (current_time - timedelta(days=30)).strftime("%Y-%m-%d")
 
-        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders")
+        reset_at = _revenue_reset_at()
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE created >= ?", (reset_at,))
         total_orders, total_sales = cur.fetchone()
 
-        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE DATE(created)=DATE(?)", (today,))
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE DATE(created)=DATE(?) AND created >= ?", (today, reset_at))
         today_orders, today_sales = cur.fetchone()
 
-        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE DATE(created)>=DATE(?)", (week_ago,))
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE DATE(created)>=DATE(?) AND created >= ?", (week_ago, reset_at))
         week_orders, week_sales = cur.fetchone()
 
-        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE DATE(created)>=DATE(?)", (month_ago,))
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE DATE(created)>=DATE(?) AND created >= ?", (month_ago, reset_at))
         month_orders, month_sales = cur.fetchone()
 
         cur.execute("""
             SELECT product_name, COUNT(*) c, COALESCE(SUM(price),0) s
             FROM orders
+            WHERE created >= ?
             GROUP BY product_name
             ORDER BY c DESC, s DESC
             LIMIT 5
-        """)
+        """, (reset_at,))
         top_products = cur.fetchall()
 
         cur.execute("""
             SELECT u.user_id, u.first_name, u.username, COUNT(o.id) c, COALESCE(SUM(o.price),0) s
             FROM orders o
             LEFT JOIN users u ON o.user_id=u.user_id
+            WHERE o.created >= ?
             GROUP BY o.user_id, u.user_id, u.first_name, u.username
             ORDER BY s DESC
             LIMIT 5
-        """)
+        """, (reset_at,))
         top_buyers = cur.fetchall()
 
         text = f"""📈 <b>Sales Statistics</b>
@@ -2263,6 +2286,37 @@ Example:
         conn.commit()
         log_admin_action(uid, "FLASH_SALE_STOP", f"Product #{product_id}")
         await edit_or_send(q, "✅ <b>Flash sale stopped.</b>", flash_sale_keyboard(product_id))
+        return True
+
+    if data == "admin_revenue_reset":
+        reset_at = get_setting("revenue_reset_at", "")
+        last_text = f"\n\n🗓 <b>Last reset (UTC):</b> <code>{reset_at}</code>" if reset_at else ""
+        await edit_or_send(
+            q,
+            "♻️ <b>Reset Revenue Statistics?</b>\n\n"
+            "All revenue and order counters will restart from <b>0</b> right now.\n\n"
+            "✅ Order history and delivered products are <b>NOT deleted</b> — "
+            "statistics simply start counting again from this moment.\n"
+            "↩️ You can restore all-time statistics anytime." + last_text,
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Yes — Reset Now", callback_data="admin_revenue_reset_yes")],
+                [InlineKeyboardButton("↩️ Restore All-Time Stats", callback_data="admin_revenue_reset_undo")],
+                [InlineKeyboardButton("⬅️ Back", callback_data="admin_stats_dashboard")],
+            ])
+        )
+        return True
+
+    if data == "admin_revenue_reset_yes":
+        stamp = _utc_now_text()
+        set_setting("revenue_reset_at", stamp)
+        log_admin_action(uid, "REVENUE_RESET", f"Revenue stats reset at {stamp} UTC")
+        await edit_or_send(q, "✅ <b>Revenue reset done.</b> Statistics now count from this moment.\n\n" + admin_stats_text(), admin_stats_keyboard())
+        return True
+
+    if data == "admin_revenue_reset_undo":
+        set_setting("revenue_reset_at", "")
+        log_admin_action(uid, "REVENUE_RESET_UNDO", "Restored all-time revenue stats")
+        await edit_or_send(q, "↩️ <b>All-time statistics restored.</b>\n\n" + admin_stats_text(), admin_stats_keyboard())
         return True
 
     if data == "admin_stats_dashboard":
