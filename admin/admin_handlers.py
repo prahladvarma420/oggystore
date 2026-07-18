@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, render_message_template, cur, conn, is_admin, is_owner, add_admin, remove_admin, get_admins, add_balance, add_stock_items, get_available_stock_count, get_sold_stock_count, get_total_stock_count, restock_product, block_user, unblock_user, log_admin_action, get_admin_logs, update_product_details, get_open_tickets, get_ticket, reply_ticket, close_ticket, get_pending_withdrawals, update_withdrawal_status, set_setting, get_setting, set_product_featured, remove_product_image, get_product_price_tiers, set_product_price_tier, delete_product_price_tier, clear_product_price_tiers, validate_coupon, list_message_templates, get_message_template, set_message_template, smart_dashboard_stats, clear_admin_logs, create_backup_zip, restore_backup_zip, create_bundle, get_all_bundles, get_bundle_items, delete_bundle, get_m365_product_ids, toggle_m365_product, list_m365_invites, get_m365_invite, set_m365_invite_status, get_canva_product_ids, toggle_canva_product, list_canva_invites, get_canva_invite, set_canva_invite_status, get_m365_product_warranty, set_m365_product_warranty, set_m365_session_warranty
 from utils.crypto import decrypt_text
+from database.db import get_display_stock
 from database.db import get_pending_replacements, get_replacement, set_replacement_status, set_warranty_ban, is_warranty_banned, count_recent_replacements, reserve_stock_item, create_gift_code, list_gift_codes, rename_m365_session, list_m365_sessions, get_current_m365_session, reset_m365_session, delete_m365_session
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
 from config import DB_PATH, ADMIN_ID
@@ -795,6 +796,13 @@ Choose what you want to edit:"""
 async def broadcast_product_update(context, product_id: int, product_name: str, price: float, added: int, available: int, mode: str = "stock"):
     """Broadcast new product/new stock alert to all users."""
     try:
+        # Never show 'Available: 0' when the product actually has stock
+        # (e.g. manual-stock products with no uploaded codes).
+        try:
+            if not available or int(available) <= 0:
+                available = get_display_stock(product_id)
+        except Exception:
+            pass
         cur.execute("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
         users = cur.fetchall()
 
@@ -855,7 +863,7 @@ async def broadcast_new_offer(context, product_id: int):
         if not tiers:
             return 0, 0
 
-        available = get_available_stock_count(product_id)
+        available = get_display_stock(product_id)
 
         offer_lines = []
         for _tid, qty, tier_price in tiers:
@@ -907,6 +915,14 @@ async def broadcast_new_offer(context, product_id: int):
 async def broadcast_price_change(context, product_id: int, product_name: str, old_price: float, new_price: float, available: int):
     """Broadcast a price change alert to all users."""
     try:
+        # Always recompute the stock shown to customers so a stale/zero
+        # caller value can never appear in the announcement.
+        try:
+            fresh = get_display_stock(product_id)
+            if fresh > 0 or not available:
+                available = fresh
+        except Exception:
+            pass
         cur.execute("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
         users = cur.fetchall()
 
@@ -2747,7 +2763,7 @@ Example:
         cur.execute("SELECT id, name, price, stock, active, validity, warranty, max_per_order FROM products ORDER BY id DESC")
         rows = cur.fetchall()
 
-        text = "📦 <b>Product Management</b>\n\n🔎 Use Search Product for quick lookup.\n���️ LOW means stock ≤ 5.\n\n"
+        text = "📦 <b>Product Management</b>\n\n🔎 Use Search Product for quick lookup.\n�����️ LOW means stock ≤ 5.\n\n"
 
         if not rows:
             text += "😕 <i>No products added yet.</i>"

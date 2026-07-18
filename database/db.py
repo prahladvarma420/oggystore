@@ -361,7 +361,7 @@ def init_db():
         ),
         "wallet_message": (
             "My Wallet Message",
-            "💼 <b>My Wallet</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💰 <b>Available Balance:</b> <b>{balance} USDT</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n🧾 <b>Paid Deposits:</b> <b>{deposits}</b>\n\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💸 <b>Total Spent:</b> <b>{spent} USDT</b>\n\n🎁 <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n⭐ <b>Loyalty Points:</b> <b>{loyalty_points}</b>\n🏆 <b>VIP Rank:</b> <b>{vip_rank}</b>\n\nUse Deposit to add balance, then pay directly from wallet during checkout."
+            "💼 <b>My Wallet</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💰 <b>Available Balance:</b> <b>{balance} USDT</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n🧾 <b>Paid Deposits:</b> <b>{deposits}</b>\n\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💸 <b>Total Spent:</b> <b>{spent} USDT</b>\n\n��� <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n⭐ <b>Loyalty Points:</b> <b>{loyalty_points}</b>\n🏆 <b>VIP Rank:</b> <b>{vip_rank}</b>\n\nUse Deposit to add balance, then pay directly from wallet during checkout."
         ),
         "support_prompt": (
             "Support Ticket Message",
@@ -571,6 +571,25 @@ def get_available_stock_count(product_id: int) -> int:
     cur.execute("SELECT COUNT(*) FROM product_stock WHERE product_id=? AND sold=0", (product_id,))
     row = cur.fetchone()
     return row[0] if row else 0
+
+
+def get_display_stock(product_id: int) -> int:
+    """Stock number for customer-facing broadcasts/messages.
+
+    Uses the live unsold-codes count; falls back to products.stock for
+    products whose stock is tracked manually (no uploaded codes), matching
+    the behavior of the buy screen. Prevents 'Available Stock: 0' bugs in
+    price/stock/offer broadcasts.
+    """
+    live = get_available_stock_count(product_id)
+    if live > 0:
+        return live
+    try:
+        cur.execute("SELECT stock FROM products WHERE id=?", (product_id,))
+        row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
+    except Exception:
+        return 0
 
 
 def reserve_stock_item(product_id: int, user_id: int):
@@ -1211,7 +1230,7 @@ def queue_price_change_broadcast(product_id: int, old_price: float, new_price: f
         if not row:
             return None
         name = row[0]
-        available = get_available_stock_count(product_id)
+        available = get_display_stock(product_id)
 
         if new_price < old_price:
             pct = round((old_price - new_price) / old_price * 100) if old_price > 0 else 0

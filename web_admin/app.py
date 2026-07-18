@@ -1078,7 +1078,7 @@ def _publish_offer_alert(pid):
         tiers = botdb.get_product_price_tiers(pid)
         if not prow or not tiers:
             return 0, 0
-        available = botdb.get_available_stock_count(pid)
+        available = botdb.get_display_stock(pid)
         msg = _offer_alert_message(prow[0]["name"], prow[0]["price"], tiers, available)
         sent, failed = _broadcast_to_all(msg, pid=pid, button_text="\U0001f6d2 Tap to Buy Now")
         log_action("offer_broadcast", "#{} sent={} failed={}".format(pid, sent, failed))
@@ -1154,7 +1154,7 @@ def api_product_create():
     sent = failed = 0
     if int(bool(d.get("active", 1))):
         try:
-            available = botdb.get_available_stock_count(pid)
+            available = botdb.get_display_stock(pid)
             msg = _product_alert_message(name, price, added, available, "product")
             sent, failed = _broadcast_to_all(msg, pid=pid, button_text="\U0001f6d2 Tap to Buy Now")
             log_action("product_broadcast", "#{} sent={} failed={}".format(pid, sent, failed))
@@ -1208,7 +1208,7 @@ def api_product_update(pid):
             if abs(new_price - old_price) >= 0.005:
                 prod = q("SELECT name FROM products WHERE id=?", (pid,), one=True)
                 pname = prod["name"] if prod else "Product"
-                available = botdb.get_available_stock_count(pid)
+                available = botdb.get_display_stock(pid)
                 msg = _price_change_message(pname, old_price, new_price, available)
                 sent, failed = _broadcast_to_all(msg, pid=pid, button_text="\U0001f6d2 Buy Now")
                 if sent == 0 and failed > 0:
