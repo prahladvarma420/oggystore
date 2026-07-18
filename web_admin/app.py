@@ -1174,6 +1174,33 @@ def api_product_create():
 def api_product_update(pid):
     d = request.get_json(force=True)
     fields, vals = [], []
+    # Preserve premium emoji on rename: the web form can only submit plain
+    # text, so without this every web edit silently wiped the <tg-emoji>
+    # tag from the stored name (and ALL later broadcasts lost the premium
+    # emoji, even ones sent from the Telegram admin).
+    name_kept_premium = False
+    if "name" in d and d["name"] is not None:
+        try:
+            new_name = str(d["name"]).strip()
+            prev_row = q("SELECT name FROM products WHERE id=?", (pid,), one=True)
+            old_name = str(prev_row["name"]) if prev_row else ""
+            if "<tg-emoji" in old_name and "<tg-emoji" not in new_name:
+                if strip_tg_emoji(old_name).strip() == new_name:
+                    # Text unchanged -> keep the stored premium version.
+                    d.pop("name")
+                    name_kept_premium = True
+                else:
+                    # Text changed -> re-attach the premium tag to the same
+                    # fallback emoji character if it is still in the name.
+                    m = TG_EMOJI_RE.search(old_name)
+                    if m and m.group(2) and m.group(2) in new_name:
+                        d["name"] = new_name.replace(
+                            m.group(2),
+                            '<tg-emoji emoji-id="{}">{}</tg-emoji>'.format(m.group(1), m.group(2)),
+                            1,
+                        )
+        except Exception:
+            pass
     allowed = {"name": str, "price": float, "delivery": str, "active": int,
                "featured": int, "description": str, "validity": str,
                "warranty": str, "rules": str, "redeem_link": str,
@@ -1183,6 +1210,8 @@ def api_product_update(pid):
             fields.append("{}=?".format(k))
             vals.append(caster(d[k]) if caster != str else str(d[k]))
     if not fields:
+        if name_kept_premium:
+            return jsonify({"ok": True, "unchanged": True})
         return jsonify({"ok": False, "error": "Nothing to update"}), 400
 
     old_price = None

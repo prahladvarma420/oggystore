@@ -675,7 +675,7 @@ def add_product_preview_text(uid: int):
 📌 <b>Validity:</b> {validity}
 🛡 <b>Warranty:</b> {warranty}
 
-📜 <b>Rules:</b>
+��� <b>Rules:</b>
 {rules}
 
 Choose what you want to do:"""
