@@ -57,6 +57,7 @@ except Exception:
 
 from utils.crypto import encrypt_text, decrypt_text
 from utils.timezone import now_text, now
+from utils.premium_emoji import premium_safe
 import database.db as botdb
 
 # Ensure all tables / migrations exist (safe + idempotent)
@@ -1064,7 +1065,7 @@ def _product_alert_message(name, price, added, available, mode):
     return botdb.render_message_template(
         key,
         default_msg,
-        product_name=name,
+        product_name=premium_safe(name),
         added=added,
         available=available,
         price="${:.2f}".format(float(price or 0)),
@@ -1098,7 +1099,7 @@ def _offer_alert_message(name, price, tiers, available):
             "\u2705 <b>Available:</b> <b>{}</b>\n\n"
             "\U0001f381 <b>BULK DISCOUNT ACTIVE</b>\n{}\n\n"
             "\u26a1 <i>Grab this deal before it\u2019s gone!</i>").format(
-        name, float(price or 0), available, "\n".join(lines))
+        premium_safe(name), float(price or 0), available, "\n".join(lines))
 
 
 def _price_change_message(name, old_price, new_price, available):
@@ -1123,7 +1124,7 @@ def _price_change_message(name, old_price, new_price, available):
             "\U0001f4ca <b>Available Stock:</b> <b>{}</b>\n\n"
             "{}\n"
             "{}").format(
-        title, bar, name, old_price, new_price, change_line, available, bar, tail)
+        title, bar, premium_safe(name), old_price, new_price, change_line, available, bar, tail)
 
 
 @app.route("/api/products/create", methods=["POST"])

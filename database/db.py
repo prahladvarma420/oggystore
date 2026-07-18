@@ -1229,7 +1229,8 @@ def queue_price_change_broadcast(product_id: int, old_price: float, new_price: f
         row = cur.fetchone()
         if not row:
             return None
-        name = row[0]
+        from utils.premium_emoji import premium_safe
+        name = premium_safe(row[0])
         available = get_display_stock(product_id)
 
         if new_price < old_price:
