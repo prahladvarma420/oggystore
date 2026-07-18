@@ -1242,6 +1242,10 @@ def queue_price_change_broadcast(product_id: int, old_price: float, new_price: f
             change_line = f"\U0001f4c8 <b>Price Increased:</b> <b>+{pct}%</b>"
 
         bar = "\u2501" * 18
+        if available and int(available) > 0:
+            tail = "\U0001f6cd <i>Open the Shop in the bot to grab it now!</i>"
+        else:
+            tail = "\u23f3 <i>Out of stock \u2014 restocking soon!</i> \U0001f514"
         msg = (f"{title}\n{bar}\n\n"
                f"\U0001f4e6 <b>{name}</b>\n\n"
                f"\U0001f4b0 <b>Old Price:</b> <s>${old_price:.2f}</s>\n"
@@ -1249,7 +1253,7 @@ def queue_price_change_broadcast(product_id: int, old_price: float, new_price: f
                f"{change_line}\n"
                f"\U0001f4ca <b>Available Stock:</b> <b>{available}</b>\n\n"
                f"{bar}\n"
-               f"\U0001f6cd <i>Open the Shop in the bot to grab it now!</i>")
+               f"{tail}")
 
         return create_scheduled_broadcast(msg, now_text())
     except Exception:

@@ -936,6 +936,19 @@ async def broadcast_price_change(context, product_id: int, product_name: str, ol
             change_line = f"\U0001f4c8 <b>Price Increased:</b> <b>+{pct}%</b>"
 
         bar = "\u2501" * 18
+
+        # Out-of-stock products: don't push "Buy Now" — offer a restock alert instead.
+        try:
+            in_stock = int(available or 0) > 0
+        except Exception:
+            in_stock = False
+        if in_stock:
+            tail_line = "\U0001f6cd <i>Tap below to grab it now!</i> \U0001f447"
+            action_button = InlineKeyboardButton("\U0001f6d2 Buy Now", callback_data=f"product_{product_id}")
+        else:
+            tail_line = "\u23f3 <i>Out of stock \u2014 restocking soon!</i> \U0001f514"
+            action_button = InlineKeyboardButton("\U0001f514 Notify Me When Back", callback_data=f"notify_stock_{product_id}")
+
         msg = (f"{title}\n{bar}\n\n"
                f"\U0001f4e6 <b>{_admin_name(product_name)}</b>\n\n"
                f"\U0001f4b0 <b>Old Price:</b> <s>${old_price:.2f}</s>\n"
@@ -943,11 +956,9 @@ async def broadcast_price_change(context, product_id: int, product_name: str, ol
                f"{change_line}\n"
                f"\U0001f4ca <b>Available Stock:</b> <b>{available}</b>\n\n"
                f"{bar}\n"
-               f"\U0001f6cd <i>Tap below to grab it now!</i> \U0001f447")
+               f"{tail_line}")
 
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("\U0001f6d2 Buy Now", callback_data=f"product_{product_id}")]
-        ])
+        kb = InlineKeyboardMarkup([[action_button]])
 
         sent = 0
         failed = 0

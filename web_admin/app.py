@@ -1035,11 +1035,11 @@ def api_products():
     return jsonify({"ok": True, "products": [product_row(p) for p in rows]})
 
 
-def _broadcast_to_all(msg, pid=None, button_text=None):
+def _broadcast_to_all(msg, pid=None, button_text=None, button_callback=None):
     """Send a message to every eligible bot user directly from the web admin."""
     kb = None
     if pid and button_text:
-        kb = {"inline_keyboard": [[{"text": button_text, "callback_data": "product_{}".format(pid), "style": "primary"}]]}
+        kb = {"inline_keyboard": [[{"text": button_text, "callback_data": button_callback or "product_{}".format(pid), "style": "primary"}]]}
     sent = failed = 0
     try:
         users = q("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
@@ -1111,6 +1111,10 @@ def _price_change_message(name, old_price, new_price, available):
         title = "\U0001f4e2 <b>PRICE UPDATE!</b>"
         change_line = "\U0001f4c8 <b>Price Increased:</b> <b>+{}%</b>".format(pct)
     bar = "\u2501" * 18
+    if available and int(available) > 0:
+        tail = "\U0001f6d2 <i>Tap below to grab it now!</i> \U0001f447"
+    else:
+        tail = "\u23f3 <i>Out of stock \u2014 restocking soon!</i> \U0001f514"
     return ("{}\n{}\n\n"
             "\U0001f4e6 <b>{}</b>\n\n"
             "\U0001f4b0 <b>Old Price:</b> <s>${:.2f}</s>\n"
@@ -1118,8 +1122,8 @@ def _price_change_message(name, old_price, new_price, available):
             "{}\n"
             "\U0001f4ca <b>Available Stock:</b> <b>{}</b>\n\n"
             "{}\n"
-            "\U0001f6d2 <i>Tap below to grab it now!</i> \U0001f447").format(
-        title, bar, name, old_price, new_price, change_line, available, bar)
+            "{}").format(
+        title, bar, name, old_price, new_price, change_line, available, bar, tail)
 
 
 @app.route("/api/products/create", methods=["POST"])
@@ -1210,7 +1214,11 @@ def api_product_update(pid):
                 pname = prod["name"] if prod else "Product"
                 available = botdb.get_display_stock(pid)
                 msg = _price_change_message(pname, old_price, new_price, available)
-                sent, failed = _broadcast_to_all(msg, pid=pid, button_text="\U0001f6d2 Buy Now")
+                if available and int(available) > 0:
+                    btn_text, btn_cb = "\U0001f6d2 Buy Now", None
+                else:
+                    btn_text, btn_cb = "\U0001f514 Notify Me When Back", "notify_stock_{}".format(pid)
+                sent, failed = _broadcast_to_all(msg, pid=pid, button_text=btn_text, button_callback=btn_cb)
                 if sent == 0 and failed > 0:
                     # Web admin couldn't reach Telegram - let the bot send it within ~1 min instead.
                     botdb.queue_price_change_broadcast(pid, old_price, new_price)
