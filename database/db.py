@@ -370,6 +370,10 @@ def init_db():
         "deposit_success": (
             "Deposit Success Message",
             "✅ <b>DEPOSIT CONFIRMED</b>\n\n🧾 <b>Invoice:</b> <code>#{invoice_id}</code>\n💵 <b>Paid:</b> <code>{paid} USDT</code>\n💰 <b>Balance Added:</b> <code>{amount} USDT</code>\n💼 <b>New Balance:</b> <code>{balance} USDT</code>\n🔗 <b>TX:</b> {tx}\n\n🛍 <i>You can now buy products from Shop.</i>"
+        ),
+        "new_offer_broadcast": (
+            "New Offer Alert Broadcast",
+            "🔥 <b>NEW OFFER ALERT!</b>\n\n📦 <b>{product}</b>\n💰 <b>Price:</b> <code>{price}</code> / code\n✅ <b>Available:</b> <code>{available}</code>\n\n🎁 <b>BULK DISCOUNT ACTIVE</b>\n{offers}\n\n⚡ <i>Grab this deal before it’s gone!</i>"
         )
     }
 
@@ -442,6 +446,10 @@ def ensure_user(user):
         "deposit_success": (
             "Deposit Success Message",
             "✅ <b>DEPOSIT CONFIRMED</b>\n\n🧾 <b>Invoice:</b> <code>#{invoice_id}</code>\n💵 <b>Paid:</b> <code>{paid} USDT</code>\n💰 <b>Balance Added:</b> <code>{amount} USDT</code>\n💼 <b>New Balance:</b> <code>{balance} USDT</code>\n🔗 <b>TX:</b> {tx}\n\n🛍 <i>You can now buy products from Shop.</i>"
+        ),
+        "new_offer_broadcast": (
+            "New Offer Alert Broadcast",
+            "🔥 <b>NEW OFFER ALERT!</b>\n\n📦 <b>{product}</b>\n💰 <b>Price:</b> <code>{price}</code> / code\n✅ <b>Available:</b> <code>{available}</code>\n\n🎁 <b>BULK DISCOUNT ACTIVE</b>\n{offers}\n\n⚡ <i>Grab this deal before it’s gone!</i>"
         )
     }
 
@@ -1168,6 +1176,7 @@ def render_message_template(key: str, default: str = "", **kwargs):
         "tx": kwargs.get("tx", ""),
         "added": kwargs.get("added", ""),
         "available": kwargs.get("available", ""),
+        "offers": kwargs.get("offers", ""),
         "price": kwargs.get("price", ""),
         "user_id": kwargs.get("user_id", ""),
         "username": kwargs.get("username", ""),

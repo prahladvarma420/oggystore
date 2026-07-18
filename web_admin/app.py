@@ -1089,17 +1089,31 @@ def _publish_offer_alert(pid):
 
 
 def _offer_alert_message(name, price, tiers, available):
+    # Show exactly what the buy flow charges for each quantity (same math as
+    # the bot's calculate_total_price), so the alert can never advertise
+    # stale or contradictory prices.
+    base = float(price or 0)
     lines = []
     for _tid, qty, tier_price in tiers:
-        each = tier_price / qty if qty else tier_price
-        lines.append("\u2022 <b>{}</b> for <b>${:.2f}</b> (${:.2f} each)".format(qty, tier_price, each))
-    return ("\U0001f525 <b>NEW OFFER ALERT!</b>\n\n"
-            "\U0001f4e6 <b>{}</b>\n"
-            "\U0001f4b0 <b>Price:</b> <b>${:.2f}</b> / code\n"
-            "\u2705 <b>Available:</b> <b>{}</b>\n\n"
-            "\U0001f381 <b>BULK DISCOUNT ACTIVE</b>\n{}\n\n"
-            "\u26a1 <i>Grab this deal before it\u2019s gone!</i>").format(
-        premium_safe(name), float(price or 0), available, "\n".join(lines))
+        qty = int(qty)
+        best_unit = base if base > 0 else (float(tier_price) / qty if qty else float(tier_price))
+        for _t2, q2, p2 in tiers:
+            q2 = int(q2)
+            if 0 < q2 <= qty:
+                unit = float(p2) / q2
+                if unit < best_unit:
+                    best_unit = unit
+        shown_total = round(best_unit * qty, 2)
+        each = shown_total / qty if qty else shown_total
+        lines.append("\u2022 <b>{}</b> for <b>${:.2f}</b> (${:.2f} each)".format(qty, shown_total, each))
+    return botdb.render_message_template(
+        "new_offer_broadcast",
+        "\U0001f525 <b>NEW OFFER ALERT!</b>\n\n\U0001f4e6 <b>{product}</b>\n\U0001f4b0 <b>Price:</b> <code>{price}</code> / code\n\u2705 <b>Available:</b> <code>{available}</code>\n\n\U0001f381 <b>BULK DISCOUNT ACTIVE</b>\n{offers}\n\n\u26a1 <i>Grab this deal before it\u2019s gone!</i>",
+        product_name=premium_safe(name),
+        price="${:.2f}".format(base),
+        available=available,
+        offers="\n".join(lines),
+    )
 
 
 def _price_change_message(name, old_price, new_price, available):
@@ -1231,7 +1245,9 @@ def api_product_update(pid):
             if old_price > 0 and new_price > 0 and abs(new_price - old_price) >= 0.005:
                 ratio = new_price / old_price
                 for _tid, tier_qty, tier_price in botdb.get_product_price_tiers(pid):
-                    botdb.set_product_price_tier(pid, int(tier_qty), round(float(tier_price) * ratio, 2))
+                    # qty-1 offers always follow the base price exactly.
+                    scaled = new_price if int(tier_qty) == 1 else round(float(tier_price) * ratio, 2)
+                    botdb.set_product_price_tier(pid, int(tier_qty), scaled)
         except Exception:
             pass
 
@@ -1399,10 +1415,16 @@ def api_stock_delete(stock_id):
 @login_required
 def api_tier_set(pid):
     d = request.get_json(force=True)
-    botdb.set_product_price_tier(pid, int(d["quantity"]), float(d["price"]))
-    log_action("set_tier", "#{} q{} ${}".format(pid, d["quantity"], d["price"]))
+    qty = int(d["quantity"])
+    price = float(d["price"])
+    existing = {int(t[1]): float(t[2]) for t in botdb.get_product_price_tiers(pid)}
+    unchanged = qty in existing and abs(existing[qty] - price) < 0.005
+    botdb.set_product_price_tier(pid, qty, price)
+    log_action("set_tier", "#{} q{} ${}".format(pid, qty, price))
     sent = failed = 0
-    if d.get("notify", True):
+    # Only broadcast when something actually changed - prevents re-sending
+    # stale offer alerts when a form re-submits old values.
+    if d.get("notify", True) and not unchanged:
         sent, failed = _publish_offer_alert(pid)
     return jsonify({"ok": True, "sent": sent, "failed": failed})
 
@@ -1413,22 +1435,28 @@ def api_tier_bulk_set(pid):
     """Save multiple price offers at once, then publish a single broadcast."""
     d = request.get_json(force=True)
     items = d.get("tiers") or []
+    existing = {int(t[1]): float(t[2]) for t in botdb.get_product_price_tiers(pid)}
     saved = 0
+    changed = 0
     for it in items:
         try:
             qty = int(it["quantity"])
             price = float(it["price"])
             if qty <= 0 or price <= 0:
                 continue
+            if qty not in existing or abs(existing[qty] - price) >= 0.005:
+                changed += 1
             botdb.set_product_price_tier(pid, qty, price)
             saved += 1
         except Exception:
             continue
     if not saved:
         return jsonify({"ok": False, "error": "No valid offers"}), 400
-    log_action("set_tiers_bulk", "#{} saved={}".format(pid, saved))
+    log_action("set_tiers_bulk", "#{} saved={} changed={}".format(pid, saved, changed))
     sent = failed = 0
-    if d.get("notify", True):
+    # Only broadcast when something actually changed - prevents re-sending
+    # stale offer alerts when a form re-submits old values.
+    if d.get("notify", True) and changed:
         sent, failed = _publish_offer_alert(pid)
     return jsonify({"ok": True, "saved": saved, "sent": sent, "failed": failed})
 

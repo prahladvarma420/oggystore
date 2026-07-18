@@ -420,7 +420,7 @@ async def broadcast_flash_sale(context, product_id: int, name: str, old_price: f
             discount_text=f"{discount}% OFF" if discount else "SALE",
             discount_percent=f"-{discount}" if discount else "SALE",
             validity=ends_text,
-            stock=get_available_stock_count(product_id),
+            stock=get_display_stock(product_id),
         )
 
         kb = InlineKeyboardMarkup([
@@ -865,22 +865,33 @@ async def broadcast_new_offer(context, product_id: int):
 
         available = get_display_stock(product_id)
 
+        # Show exactly what the buy flow charges for each quantity (same math
+        # as calculate_total_price), so the alert can never advertise stale
+        # or contradictory prices.
+        base = float(price or 0)
         offer_lines = []
         for _tid, qty, tier_price in tiers:
-            each = tier_price / qty if qty else tier_price
-            offer_lines.append(f"• <b>{qty}</b> for <b>${tier_price:.2f}</b> (${each:.2f} each)")
+            qty = int(qty)
+            best_unit = base if base > 0 else (float(tier_price) / qty if qty else float(tier_price))
+            for _t2, q2, p2 in tiers:
+                q2 = int(q2)
+                if 0 < q2 <= qty:
+                    unit = float(p2) / q2
+                    if unit < best_unit:
+                        best_unit = unit
+            shown_total = round(best_unit * qty, 2)
+            each = shown_total / qty if qty else shown_total
+            offer_lines.append(f"• <b>{qty}</b> for <b>${shown_total:.2f}</b> (${each:.2f} each)")
         offers_block = "\n".join(offer_lines)
 
-        msg = f"""🔥 <b>NEW OFFER ALERT!</b>
-
-📦 <b>{_admin_name(product_name)}</b>
-💰 <b>Price:</b> <code>${float(price or 0):.2f}</code> / code
-✅ <b>Available:</b> <code>{available}</code>
-
-🎁 <b>BULK DISCOUNT ACTIVE</b>
-{offers_block}
-
-⚡ <i>Grab this deal before it’s gone!</i>"""
+        msg = render_message_template(
+            "new_offer_broadcast",
+            "🔥 <b>NEW OFFER ALERT!</b>\n\n📦 <b>{product}</b>\n💰 <b>Price:</b> <code>{price}</code> / code\n✅ <b>Available:</b> <code>{available}</code>\n\n🎁 <b>BULK DISCOUNT ACTIVE</b>\n{offers}\n\n⚡ <i>Grab this deal before it’s gone!</i>",
+            product_name=_admin_name(product_name),
+            price=f"${base:.2f}",
+            available=available,
+            offers=offers_block,
+        )
 
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🛒 Tap to Buy Now", callback_data=f"product_{product_id}")]
@@ -4370,7 +4381,9 @@ You must include the confirmation word <code>DELETE</code>.""",
                                 tiers = get_product_price_tiers(product_id)
                                 ratio = new_price / old_price
                                 for _tier_id, tier_qty, tier_price in tiers:
-                                    set_product_price_tier(product_id, int(tier_qty), round(float(tier_price) * ratio, 2))
+                                    # qty-1 offers always follow the base price exactly.
+                                    scaled = new_price if int(tier_qty) == 1 else round(float(tier_price) * ratio, 2)
+                                    set_product_price_tier(product_id, int(tier_qty), scaled)
                                 if tiers:
                                     broadcast_note += f"\n\U0001f4e6 Bulk prices auto-updated (<b>{len(tiers)}</b> tiers)"
                         except Exception:
