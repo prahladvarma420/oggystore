@@ -190,12 +190,25 @@ def bulk_discount_lines(product_id: int, display_price, stock: int) -> str:
                 original_base = float(tp)
                 break
 
+        # Flash sale: offers are shown as simple multiples of the flash
+        # price (e.g. flash $2.50 -> 5 for $12.50), matching the charge.
+        _is_flash = False
+        try:
+            cur.execute("SELECT price, flash_price, flash_ends_at FROM products WHERE id=?", (product_id,))
+            _row = cur.fetchone()
+            if _row:
+                _, _is_flash = get_effective_price(float(_row[0] or 0), _row[1], _row[2])
+        except Exception:
+            _is_flash = False
+
         lines = []
         for _, tq, tp in tiers:
             tq = int(tq)
             if stock >= tq:
                 final_tp = float(tp)
-                if original_base and original_base > 0:
+                if _is_flash:
+                    final_tp = round(float(display_price) * tq, 2)
+                elif original_base and original_base > 0:
                     final_tp = round(float(tp) * (float(display_price) / original_base), 2)
                 lines.append(f"{tq} for <b>{format_price(final_tp)}</b>")
 
@@ -278,16 +291,17 @@ def calculate_total_price(product_id: int, base_price: float, quantity: int) -> 
     quantity = int(quantity)
     base_price = float(base_price)
 
-    # Always charge the flash-sale price while a flash sale is active, even
-    # if the caller passed the normal price (e.g. base $4 with a $2.50 flash
-    # sale must never charge $4).
+    # Flash sale: every quantity is charged as a simple multiple of the
+    # flash price (e.g. flash $2.50 -> 1 for $2.50, 5 for $12.50, 13 for
+    # $32.50). Bulk offer discounts are suspended while the flash sale is
+    # active and come back automatically when it ends.
     try:
         cur.execute("SELECT price, flash_price, flash_ends_at FROM products WHERE id=?", (product_id,))
         _row = cur.fetchone()
         if _row:
             _effective, _is_flash = get_effective_price(float(_row[0] or 0), _row[1], _row[2])
-            if _is_flash and float(_effective) > 0 and float(_effective) < base_price:
-                base_price = float(_effective)
+            if _is_flash and float(_effective) > 0:
+                return round(float(_effective) * quantity, 2)
     except Exception:
         pass
 
@@ -445,7 +459,7 @@ async def show_order_preview(q, uid: int, product_id: int, quantity: int):
 🛒 <b>Checkout Preview</b>
 
 Quantity: <b>{quantity}</b> code{'s' if quantity != 1 else ''}
-💰 Rate Used: <b>${unit_price:.2f}</b> each
+��� Rate Used: <b>${unit_price:.2f}</b> each
 💵 Original Total: <b>${original_total:.2f}</b>
 💼 Final Total: <b>${total_price:.2f}</b>
 👛 Wallet Balance: <b>{balance:.2f} USDT</b>

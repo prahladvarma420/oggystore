@@ -187,9 +187,30 @@ def support_menu():
 
 
 
+def _flash_sale_price(product_id):
+    """Active flash-sale price for this product, or None."""
+    try:
+        cur.execute("SELECT flash_price, flash_ends_at FROM products WHERE id=?", (product_id,))
+        row = cur.fetchone()
+        if row and row[0] is not None and row[1]:
+            from utils.timezone import now
+            ends_text = str(row[1]).replace("T", " ")[:19]
+            if ends_text > now().strftime("%Y-%m-%d %H:%M:%S"):
+                return float(row[0])
+    except Exception:
+        pass
+    return None
+
+
 def _scaled_offer_button_price(product_id, base_price, tier_qty, tier_price):
     """Display offer buttons with prices scaled from current product price."""
     try:
+        # Flash sale: offer buttons are simple multiples of the flash price
+        # (e.g. flash $2.50 -> 5 for $12.50), matching what is charged.
+        flash = _flash_sale_price(product_id)
+        if flash and flash > 0:
+            return round(flash * int(tier_qty), 2)
+
         tiers = get_product_price_tiers(product_id)
         original_base_price = None
 
