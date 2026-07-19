@@ -278,12 +278,37 @@ def calculate_total_price(product_id: int, base_price: float, quantity: int) -> 
     quantity = int(quantity)
     base_price = float(base_price)
 
+    # Always charge the flash-sale price while a flash sale is active, even
+    # if the caller passed the normal price (e.g. base $4 with a $2.50 flash
+    # sale must never charge $4).
+    try:
+        cur.execute("SELECT price, flash_price, flash_ends_at FROM products WHERE id=?", (product_id,))
+        _row = cur.fetchone()
+        if _row:
+            _effective, _is_flash = get_effective_price(float(_row[0] or 0), _row[1], _row[2])
+            if _is_flash and float(_effective) > 0 and float(_effective) < base_price:
+                base_price = float(_effective)
+    except Exception:
+        pass
+
     tiers = get_product_price_tiers(product_id)
     best_unit_price = base_price
+
+    # Bulk offers scale with the current (flash/discounted) price using the
+    # same math as the offer buttons (_scaled_offer_button_price), so the
+    # customer is charged exactly what the button says: with offers
+    # 1 for $4 / 5 for $17 and a $2.50 flash sale, 5 costs $10.63 - not $17.
+    original_base = None
+    for _, _tq, _tp in tiers:
+        if int(_tq) == 1 and float(_tp) > 0:
+            original_base = float(_tp)
+            break
 
     for _, tier_qty, tier_price in tiers:
         tier_qty = int(tier_qty)
         tier_price = float(tier_price)
+        if original_base:
+            tier_price = round(tier_price * (base_price / original_base), 2)
         if tier_qty <= quantity and tier_qty > 0:
             unit_price = tier_price / tier_qty
             if unit_price < best_unit_price:
@@ -715,7 +740,7 @@ async def buy_product(q, uid: int, pid: int, quantity: int = 1):
 
         cur.execute(
             """
-            SELECT name, price, stock, delivery, validity, warranty, redeem_link, max_per_order
+            SELECT name, price, stock, delivery, validity, warranty, redeem_link, max_per_order, flash_price, flash_ends_at
             FROM products
             WHERE id=? AND active=1
             """,
@@ -731,9 +756,12 @@ async def buy_product(q, uid: int, pid: int, quantity: int = 1):
             )
             return
 
-        name, price, old_stock, fallback_delivery, validity, warranty, redeem_link, max_per_order = p
+        name, price, old_stock, fallback_delivery, validity, warranty, redeem_link, max_per_order, flash_price, flash_ends_at = p
         raw_name = str(name)
-        name = html.escape(raw_name, quote=False)
+        # Premium-emoji safe: never show raw/escaped <tg-emoji> code to users.
+        name = premium_safe(raw_name)
+        # Flash sale: charge and display the discounted price while active.
+        price, _flash_active = get_effective_price(price, flash_price, flash_ends_at)
         validity = clean(validity)
         warranty = clean(warranty, "No warranty")
         redeem_link = clean(redeem_link, "Not required")
@@ -784,17 +812,18 @@ Please select a lower quantity or check again later.""",
         if balance < total_price:
             need = total_price - balance
 
+            msg = render_message_template(
+                "insufficient_balance",
+                "❌ <b>Insufficient Balance</b>\n\n📦 <b>Product:</b> {product}\n🔢 <b>Quantity:</b> {quantity}\n💰 <b>Total:</b> {total} USDT\n👛 <b>Your Balance:</b> {balance} USDT\n➕ <b>Need More:</b> {need} USDT\n\nDeposit exactly what's missing with one tap below.",
+                product_name=name,
+                quantity=quantity,
+                total=f"{total_price:.2f}",
+                balance=f"{balance:.2f}",
+                need=f"{math.ceil(need * 100) / 100:.2f}",
+            )
             await edit_or_send(
                 q,
-                f"""❌ <b>Insufficient Balance</b>
-
-📦 <b>Product:</b> {name}
-🔢 <b>Quantity:</b> {quantity}
-💰 <b>Total:</b> {total_price:.2f} USDT
-👛 <b>Your Balance:</b> {balance:.2f} USDT
-➕ <b>Need More:</b> {math.ceil(need * 100) / 100:.2f} USDT
-
-Deposit exactly what's missing with one tap below.""",
+                msg,
                 InlineKeyboardMarkup([
                     [InlineKeyboardButton(f"💰 Deposit ${math.ceil(need * 100) / 100:.2f} Now", callback_data=f"depneed_{math.ceil(need * 100) / 100:.2f}")],
                     [InlineKeyboardButton("💰 Deposit Custom Amount", callback_data="deposit")],

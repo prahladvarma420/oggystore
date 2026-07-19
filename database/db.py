@@ -378,6 +378,10 @@ def init_db():
         "new_offer_broadcast": (
             "New Offer Alert Broadcast",
             "🔥 <b>NEW OFFER ALERT!</b>\n\n📦 <b>{product}</b>\n💰 <b>Price:</b> <code>{price}</code> / code\n✅ <b>Available:</b> <code>{available}</code>\n\n🎁 <b>BULK DISCOUNT ACTIVE</b>\n{offers}\n\n⚡ <i>Grab this deal before it’s gone!</i>"
+        ),
+        "insufficient_balance": (
+            "Insufficient Balance (Checkout)",
+            "❌ <b>Insufficient Balance</b>\n\n📦 <b>Product:</b> {product}\n🔢 <b>Quantity:</b> {quantity}\n💰 <b>Total:</b> {total} USDT\n👛 <b>Your Balance:</b> {balance} USDT\n➕ <b>Need More:</b> {need} USDT\n\nDeposit exactly what's missing with one tap below."
         )
     }
 
@@ -454,6 +458,10 @@ def ensure_user(user):
         "new_offer_broadcast": (
             "New Offer Alert Broadcast",
             "🔥 <b>NEW OFFER ALERT!</b>\n\n📦 <b>{product}</b>\n💰 <b>Price:</b> <code>{price}</code> / code\n✅ <b>Available:</b> <code>{available}</code>\n\n🎁 <b>BULK DISCOUNT ACTIVE</b>\n{offers}\n\n⚡ <i>Grab this deal before it’s gone!</i>"
+        ),
+        "insufficient_balance": (
+            "Insufficient Balance (Checkout)",
+            "❌ <b>Insufficient Balance</b>\n\n📦 <b>Product:</b> {product}\n🔢 <b>Quantity:</b> {quantity}\n💰 <b>Total:</b> {total} USDT\n👛 <b>Your Balance:</b> {balance} USDT\n➕ <b>Need More:</b> {need} USDT\n\nDeposit exactly what's missing with one tap below."
         )
     }
 
@@ -1215,6 +1223,9 @@ def render_message_template(key: str, default: str = "", **kwargs):
         "notifications": kwargs.get("notifications", ""),
         "loyalty_points": kwargs.get("loyalty_points", ""),
         "vip_rank": kwargs.get("vip_rank", ""),
+        "quantity": kwargs.get("quantity", ""),
+        "total": kwargs.get("total", ""),
+        "need": kwargs.get("need", ""),
         "min": kwargs.get("min", ""),
         "max": kwargs.get("max", ""),
     }
