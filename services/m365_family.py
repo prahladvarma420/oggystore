@@ -592,6 +592,7 @@ def send_family_invite_sync(email: str, forced_session=None, warranty=None):
             # is_visible() returns immediately (no waiting), so this poll is
             # fast and bounded: ~10 x 1.5s = 15s max, capped by the deadline.
             sharing_ui_found = False
+            login_dead = False
             for poll_i in range(10):
                 if time.monotonic() > _deadline:
                     _log("poll aborted: internal deadline")
@@ -602,7 +603,14 @@ def send_family_invite_sync(email: str, forced_session=None, warranty=None):
                     cur_url = ""
                 _log(f"poll {poll_i}: url={cur_url[:120]}")
                 if "login.live.com" in cur_url or "login.microsoftonline" in cur_url:
-                    break
+                    verdict = _login_interstitial_verdict(page)
+                    _log(f"login interstitial verdict: {verdict}")
+                    if verdict == "dead":
+                        login_dead = True
+                        break
+                    if verdict == "unknown":
+                        break
+                    continue  # alive: bounced back to the account page - re-probe
                 for probe in ("Share", "Start sharing", "Invite", "Manage sharing"):
                     try:
                         if page.get_by_role("button", name=probe, exact=False).first.is_visible():
@@ -628,7 +636,10 @@ def send_family_invite_sync(email: str, forced_session=None, warranty=None):
             # Login page shown -> the uploaded session cookies have expired.
             # Flag it so the failover driver skips this ID and tries the next,
             # and so the keep-alive job can alert the owner early.
-            if "login.live.com" in cur_url or "login.microsoftonline" in cur_url:
+            if login_dead or (
+                ("login.live.com" in cur_url or "login.microsoftonline" in cur_url)
+                and _login_interstitial_verdict(page) == "dead"
+            ):
                 _LAST_SESSION_EXPIRED = True
                 _log(f"session '{session_label}' expired (login screen shown)")
                 browser.close()
@@ -874,6 +885,63 @@ def _invite_with_failover_sync(email: str, warranty=None):
     return False, last_msg, last_shot, True
 
 
+def _login_interstitial_verdict(page):
+    """When a page lands on login.live.com / login.microsoftonline, decide
+    whether the session is really dead or just passing through a silent SSO
+    redirect or a "Stay signed in?" / passkey interstitial.
+
+    Microsoft routinely bounces VALID sessions through login.live.com, so a
+    login URL alone must never be treated as an expiry.
+    Returns 'alive' | 'dead' | 'unknown'.
+    """
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
+        try:
+            low = (page.url or "").lower()
+        except Exception:
+            low = ""
+        if low and "login.live.com" not in low and "login.microsoftonline" not in low:
+            return "alive"  # silent SSO bounce finished on its own
+        # "Stay signed in?" and passkey nags appear on login.* while the
+        # session is perfectly alive - click through them and re-check.
+        clicked = False
+        for sel in (
+            "#idSIButton9",
+            "#acceptButton",
+            "#iShowSkip",
+            "#iCancel",
+            "button:has-text('Yes')",
+            "button:has-text('Skip for now')",
+            "button:has-text('Not now')",
+        ):
+            try:
+                el = page.locator(sel).first
+                if el.is_visible():
+                    el.click(timeout=3000)
+                    clicked = True
+                    break
+            except Exception:
+                continue
+        if clicked:
+            try:
+                page.wait_for_timeout(2500)
+            except Exception:
+                pass
+            continue
+        # Only a real credential form means the cookies are genuinely dead.
+        for sel in ("input[name='loginfmt']", "input[name='passwd']", "#i0116", "#i0118"):
+            try:
+                if page.locator(sel).first.is_visible():
+                    return "dead"
+            except Exception:
+                continue
+        try:
+            page.wait_for_timeout(1200)
+        except Exception:
+            pass
+    return "unknown"
+
+
 def _refresh_session_sync(session_id, state_json):
     """Keep-alive: open a session's cookies, visit the account page and either
     re-save refreshed cookies (Microsoft extends a session every time it is
@@ -940,8 +1008,13 @@ def _refresh_session_sync(session_id, state_json):
                     cur_url = ""
                 low = (cur_url or "").lower()
                 if "login.live.com" in low or "login.microsoftonline" in low:
-                    expired = True
-                    break
+                    verdict = _login_interstitial_verdict(page)
+                    if verdict == "dead":
+                        expired = True
+                        break
+                    if verdict == "alive":
+                        continue  # bounced back - re-probe the account page
+                    break  # unknown -> inconclusive, never mark expired
                 for probe in ("Share", "Start sharing", "Invite", "Manage sharing"):
                     try:
                         if (
@@ -992,6 +1065,11 @@ def _keepalive_sessions_sync():
         if not state or str(state).startswith("[encrypted:"):
             continue
         status = _refresh_session_sync(sid, state)
+        if status == "expired":
+            # Never kill a session on a single verdict - a Microsoft login
+            # bounce can look like an expiry. Re-check once from scratch and
+            # only mark it dead if BOTH checks agree.
+            status = _refresh_session_sync(sid, state)
         if status == "expired":
             try:
                 mark_m365_session_expired(sid)
