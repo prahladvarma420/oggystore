@@ -199,6 +199,10 @@ def init_db():
         UNIQUE(product_id, quantity)
     )
     """)
+    try:
+        cur.execute("ALTER TABLE product_price_tiers ADD COLUMN updated TEXT")
+    except Exception:
+        pass
 
     
     cur.execute("""
@@ -977,14 +981,34 @@ def get_product_price_tiers(product_id: int):
     return cur.fetchall()
 
 
-def set_product_price_tier(product_id: int, quantity: int, price: float):
+def set_product_price_tier(product_id: int, quantity: int, price: float, manual: bool = True):
+    """Save one bulk offer. manual=True (hand-typed by an admin) stamps the
+    row so base-price auto-scaling knows not to clobber freshly entered
+    offers."""
     quantity = int(quantity)
     price = float(price)
+    stamp = now_text() if manual else None
     cur.execute("""
-        INSERT OR REPLACE INTO product_price_tiers(product_id, quantity, price)
-        VALUES(?,?,?)
-    """, (product_id, quantity, price))
+        INSERT OR REPLACE INTO product_price_tiers(product_id, quantity, price, updated)
+        VALUES(?,?,?,?)
+    """, (product_id, quantity, price, stamp))
     conn.commit()
+
+
+def tiers_recently_edited(product_id: int, minutes: int = 5) -> bool:
+    """True if any bulk offer for this product was hand-edited within the
+    last N minutes. Used to stop base-price auto-scaling from overwriting
+    offers the admin just typed."""
+    try:
+        cur.execute("SELECT updated FROM product_price_tiers WHERE product_id=?", (product_id,))
+        rows = cur.fetchall()
+        cutoff = (ist_now() - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        for r in rows:
+            if r and r[0] and str(r[0]).replace("T", " ")[:19] >= cutoff:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def delete_product_price_tier(product_id: int, quantity: int):

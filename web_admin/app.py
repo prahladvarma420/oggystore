@@ -1242,12 +1242,19 @@ def api_product_update(pid):
     if old_price is not None:
         try:
             new_price = float(d["price"])
-            if old_price > 0 and new_price > 0 and abs(new_price - old_price) >= 0.005:
+            if (
+                old_price > 0
+                and new_price > 0
+                and abs(new_price - old_price) >= 0.005
+                and not botdb.tiers_recently_edited(pid, 5)
+            ):
+                # Offers hand-typed in the last few minutes are never rescaled
+                # - the admin's exact numbers always win over auto-scaling.
                 ratio = new_price / old_price
                 for _tid, tier_qty, tier_price in botdb.get_product_price_tiers(pid):
                     # qty-1 offers always follow the base price exactly.
                     scaled = new_price if int(tier_qty) == 1 else round(float(tier_price) * ratio, 2)
-                    botdb.set_product_price_tier(pid, int(tier_qty), scaled)
+                    botdb.set_product_price_tier(pid, int(tier_qty), scaled, manual=False)
         except Exception:
             pass
 

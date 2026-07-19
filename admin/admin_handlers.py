@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, render_message_template, cur, conn, is_admin, is_owner, add_admin, remove_admin, get_admins, add_balance, add_stock_items, get_available_stock_count, get_sold_stock_count, get_total_stock_count, restock_product, block_user, unblock_user, log_admin_action, get_admin_logs, update_product_details, get_open_tickets, get_ticket, reply_ticket, close_ticket, get_pending_withdrawals, update_withdrawal_status, set_setting, get_setting, set_product_featured, remove_product_image, get_product_price_tiers, set_product_price_tier, delete_product_price_tier, clear_product_price_tiers, validate_coupon, list_message_templates, get_message_template, set_message_template, smart_dashboard_stats, clear_admin_logs, create_backup_zip, restore_backup_zip, create_bundle, get_all_bundles, get_bundle_items, delete_bundle, get_m365_product_ids, toggle_m365_product, list_m365_invites, get_m365_invite, set_m365_invite_status, get_canva_product_ids, toggle_canva_product, list_canva_invites, get_canva_invite, set_canva_invite_status, get_m365_product_warranty, set_m365_product_warranty, set_m365_session_warranty
 from utils.crypto import decrypt_text
-from database.db import get_display_stock
+from database.db import get_display_stock, tiers_recently_edited
 from database.db import get_pending_replacements, get_replacement, set_replacement_status, set_warranty_ban, is_warranty_banned, count_recent_replacements, reserve_stock_item, create_gift_code, list_gift_codes, rename_m365_session, list_m365_sessions, get_current_m365_session, reset_m365_session, delete_m365_session
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
 from config import DB_PATH, ADMIN_ID
@@ -673,7 +673,7 @@ def add_product_preview_text(uid: int):
 {description}
 
 📌 <b>Validity:</b> {validity}
-🛡 <b>Warranty:</b> {warranty}
+�� <b>Warranty:</b> {warranty}
 
 ��� <b>Rules:</b>
 {rules}
@@ -1080,7 +1080,7 @@ async def show_admin_panel(q, uid):
 🛒 <b>Orders:</b> <code>{orders_count}</code>
 👥 <b>Users:</b> <code>{users_count}</code>
 📦 <b>Active Products:</b> <code>{products_count}</code>
-🔑 <b>Available Stock:</b> <code>{available_stock}</code>
+���� <b>Available Stock:</b> <code>{available_stock}</code>
 🎫 <b>Open Tickets:</b> <code>{open_tickets}</code>
 
 <b>Recent Orders</b>
@@ -4378,12 +4378,14 @@ You must include the confirmation word <code>DELETE</code>.""",
                         # Auto-scale bulk (tier) prices by the same ratio as the base price.
                         try:
                             if old_price > 0 and new_price > 0:
-                                tiers = get_product_price_tiers(product_id)
+                                # Offers hand-typed in the last few minutes are
+                                # never rescaled - the admin's numbers win.
+                                tiers = [] if tiers_recently_edited(product_id, 5) else get_product_price_tiers(product_id)
                                 ratio = new_price / old_price
                                 for _tier_id, tier_qty, tier_price in tiers:
                                     # qty-1 offers always follow the base price exactly.
                                     scaled = new_price if int(tier_qty) == 1 else round(float(tier_price) * ratio, 2)
-                                    set_product_price_tier(product_id, int(tier_qty), scaled)
+                                    set_product_price_tier(product_id, int(tier_qty), scaled, manual=False)
                                 if tiers:
                                     broadcast_note += f"\n\U0001f4e6 Bulk prices auto-updated (<b>{len(tiers)}</b> tiers)"
                         except Exception:
