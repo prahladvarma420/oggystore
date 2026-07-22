@@ -6,6 +6,7 @@ from config import BOT_TOKEN, PAYMENT_CHECK_INTERVAL_SECONDS, BACKUP_INTERVAL_SE
 from database.db import init_db
 from handlers.user_handlers import start, admin, buttons, message_handler, photo_handler, document_handler
 from payments.bep20_checker import check_payments
+from payments.trc20_checker import check_trc20_payments
 from admin.backup_handler import backup_command
 from admin.admin_handlers import block_command, unblock_command, add_admin_command, remove_admin_command, admins_command, reply_ticket_command, close_ticket_command
 from utils.backup import scheduled_backup
@@ -47,6 +48,11 @@ def main():
             check_payments,
             interval=PAYMENT_CHECK_INTERVAL_SECONDS,
             first=10,
+        )
+        app.job_queue.run_repeating(
+            check_trc20_payments,
+            interval=PAYMENT_CHECK_INTERVAL_SECONDS,
+            first=20,
         )
 
     print("Bot Running...")

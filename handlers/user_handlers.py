@@ -11,7 +11,7 @@ from utils.texts import welcome_text
 from utils.ui import edit_or_send
 from utils.states import user_state
 from products.product_handlers import show_shop, show_product, buy_product, show_order_preview, start_direct_checkout, show_quantity_menu, show_bundles, show_bundle_details, buy_bundle
-from payments.deposit_handlers import start_deposit, handle_deposit_amount, deposit_shortfall
+from payments.deposit_handlers import start_deposit, handle_deposit_amount, deposit_shortfall, create_deposit_invoice
 from admin.admin_handlers import show_admin_panel, handle_admin_callback, handle_admin_message
 from config import ADMIN_USERNAME, ADMIN_ID
 from database.db import create_gift_code, redeem_gift_code, get_user_gift_codes, get_warranty_orders, get_order_for_warranty, is_warranty_banned, count_recent_replacements, create_replacement, reserve_stock_item
@@ -475,6 +475,15 @@ Example:
         except Exception:
             need_amount = 0.0
         await deposit_shortfall(q, uid, need_amount)
+        return
+
+    if data.startswith("depmethod_"):
+        try:
+            _, method, amt = data.split("_", 2)
+            amount = float(amt)
+        except Exception:
+            method, amount = "bep20", 0.0
+        await create_deposit_invoice(q, uid, method, amount)
         return
 
     if data.startswith("canceldep_"):

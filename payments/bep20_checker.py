@@ -92,7 +92,7 @@ def _pending_deposits():
         """
         SELECT id, user_id, amount, unique_amount, checkout_product_id, checkout_quantity, checkout_done
         FROM deposits
-        WHERE status='pending' AND created >= ?
+        WHERE status='pending' AND (method IS NULL OR method='' OR method='bep20') AND created >= ?
         ORDER BY id ASC
         """,
         (cutoff,),
@@ -417,7 +417,7 @@ async def check_payments(context):
                                     f"🔗 <b>TX:</b> <a href='{tx_link}'>{short_tx}</a>\n\n"
                                     "🔑 <b>Code(s):</b>\n"
                                     f"<code>{delivery_text}</code>\n\n"
-                                    "━━━━━━━━━━━━━━━━━━━━\n"
+                                    "━━━━━━━━━━━━━��━━━━━━\n"
                                     "Thank you for your purchase! 🎉"
                                 ),
                                 parse_mode="HTML",

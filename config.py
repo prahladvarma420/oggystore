@@ -43,6 +43,14 @@ BSC_CHAIN_ID = 56
 USDT_BEP20_CONTRACT = "0x55d398326f99059fF775485246999027B3197955"
 USDT_DECIMALS = 18
 
+# USDT TRC20 (Tron) — set USDT_TRC20_ADDRESS in env to enable this payment
+# method (your Trust Wallet TRC20 receive address, starts with "T").
+USDT_TRC20_ADDRESS = os.getenv("USDT_TRC20_ADDRESS")
+USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+USDT_TRC20_DECIMALS = 6
+# Optional TronGrid API key for higher rate limits (works without one too).
+TRONGRID_API_KEY = os.getenv("TRONGRID_API_KEY")
+
 # Check payments every 30 seconds
 PAYMENT_CHECK_INTERVAL_SECONDS = 30
 
