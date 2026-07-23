@@ -9,11 +9,15 @@ No API key is required; set TRONGRID_API_KEY for higher rate limits.
 from datetime import timedelta
 from decimal import Decimal
 
+import html
+
 import httpx
 
+from utils.crypto import encrypt_text
+from utils.premium_emoji import strip_premium
 from utils.error_logger import log_error
 from utils.timezone import now, now_text
-from database.db import cur, conn, add_balance, get_balance, render_message_template
+from database.db import cur, conn, add_balance, get_balance, render_message_template, reserve_stock_items, get_available_stock_count
 from config import (
     ADMIN_ID,
     USDT_TRC20_ADDRESS,
@@ -44,7 +48,7 @@ def _pending_trc20_deposits():
     cutoff = (now() - timedelta(hours=DEPOSIT_EXPIRE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
     cur.execute(
         """
-        SELECT id, user_id, amount, unique_amount
+        SELECT id, user_id, amount, unique_amount, checkout_product_id, checkout_quantity, checkout_done
         FROM deposits
         WHERE status='pending' AND method='trc20' AND created >= ?
         ORDER BY id ASC
@@ -94,6 +98,117 @@ async def _recent_incoming_transfers():
     return transfers
 
 
+async def _deliver_trc20_checkout(context, deposit_id, user_id, base_amount, paid_amount, product_id, quantity, tx_id, tx_link, short_tx):
+    """Deliver a product bought directly via TRC20 checkout (mirrors BEP20)."""
+    cur.execute("SELECT name FROM products WHERE id=? AND active=1", (product_id,))
+    product = cur.fetchone()
+
+    if not product:
+        # Product no longer available -> credit the wallet instead.
+        add_balance(user_id, float(base_amount))
+        cur.execute(
+            "UPDATE deposits SET status='paid', tx_hash=?, paid_at=?, checkout_done=1 WHERE id=?",
+            (tx_id, now_text(), deposit_id),
+        )
+        cur.execute(
+            "INSERT OR IGNORE INTO processed_txs(tx_hash, deposit_id, user_id, amount) VALUES(?,?,?,?)",
+            (tx_id, deposit_id, user_id, float(paid_amount)),
+        )
+        conn.commit()
+        return
+
+    product_name = product[0]
+    deliveries = reserve_stock_items(product_id, user_id, quantity)
+
+    if deliveries:
+        delivery_text = "\n\n".join([str(x) for x in deliveries])
+        remaining_stock = get_available_stock_count(product_id)
+        cur.execute("UPDATE products SET stock=? WHERE id=?", (remaining_stock, product_id))
+        try:
+            from payments.bep20_checker import _maybe_low_stock_alert
+            await _maybe_low_stock_alert(context, product_id)
+        except Exception:
+            pass
+        cur.execute(
+            "INSERT INTO orders(user_id, product_name, price, delivery) VALUES(?,?,?,?)",
+            (user_id, f"{product_name} x{quantity}", float(base_amount), encrypt_text(delivery_text)),
+        )
+        order_id = cur.lastrowid
+        cur.execute(
+            "UPDATE deposits SET status='paid', tx_hash=?, paid_at=?, checkout_done=1 WHERE id=?",
+            (tx_id, now_text(), deposit_id),
+        )
+        cur.execute(
+            "INSERT OR IGNORE INTO processed_txs(tx_hash, deposit_id, user_id, amount) VALUES(?,?,?,?)",
+            (tx_id, deposit_id, user_id, float(paid_amount)),
+        )
+        conn.commit()
+
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "\u2705 <b>Payment Successful!</b>\n"
+                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+                    f"\U0001f9fe <b>Order ID:</b> <code>#{order_id}</code>\n\n"
+                    f"\U0001f4e6 <b>{html.escape(strip_premium(product_name), quote=False)}</b>\n"
+                    f"\U0001f522 <b>Quantity:</b> <code>{quantity}</code>\n"
+                    f"\U0001f4b0 <b>Paid:</b> <code>${float(base_amount):.2f}</code>\n"
+                    f"\U0001f517 <b>TX:</b> <a href='{tx_link}'>{short_tx}</a>\n\n"
+                    "\U0001f511 <b>Code(s):</b>\n"
+                    f"<code>{delivery_text}</code>\n\n"
+                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                    "Thank you for your purchase! \U0001f389"
+                ),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception as exc:
+            log_error("Failed to send TRC20 checkout delivery", exc, extra=f"user={user_id} deposit={deposit_id}")
+
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "\U0001f6d2 <b>DIRECT CHECKOUT CONFIRMED (TRC20)</b>\n\n"
+                    f"\U0001f464 User: <code>{user_id}</code>\n"
+                    f"\U0001f9fe Invoice: <code>#{deposit_id}</code>\n"
+                    f"\U0001f4e6 Product: <b>{html.escape(strip_premium(product_name), quote=False)}</b>\n"
+                    f"\U0001f522 Quantity: <code>{quantity}</code>\n"
+                    f"\U0001f4b0 Paid: <code>{float(base_amount):.2f} USDT</code>\n"
+                    f"\U0001f517 TX: <a href='{tx_link}'>{short_tx}</a>"
+                ),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            pass
+    else:
+        # Out of stock at delivery time -> credit the wallet instead.
+        add_balance(user_id, float(base_amount))
+        cur.execute(
+            "UPDATE deposits SET status='paid', tx_hash=?, paid_at=?, checkout_done=1 WHERE id=?",
+            (tx_id, now_text(), deposit_id),
+        )
+        cur.execute(
+            "INSERT OR IGNORE INTO processed_txs(tx_hash, deposit_id, user_id, amount) VALUES(?,?,?,?)",
+            (tx_id, deposit_id, user_id, float(paid_amount)),
+        )
+        conn.commit()
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "\u2705 <b>Payment Received</b>\n\n"
+                    "\u26a0\ufe0f Stock became unavailable before delivery.\n"
+                    f"\U0001f4b0 <b>{float(base_amount):.2f} USDT</b> was added to your wallet."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+
 async def check_trc20_payments(context):
     if not _config_ready():
         return
@@ -111,13 +226,26 @@ async def check_trc20_payments(context):
 
     print(f"[trc20scan] pending invoices: {[(d[0], d[3]) for d in pending]}", flush=True)
 
-    for deposit_id, user_id, base_amount, unique_amount in pending:
+    for deposit_id, user_id, base_amount, unique_amount, checkout_product_id, checkout_quantity, checkout_done in pending:
         for tx_id, paid_amount in transfers:
             if not tx_id or not _not_processed(tx_id):
                 continue
             if not _matches_amount(paid_amount, unique_amount):
                 continue
 
+            tx_link = TRONSCAN_TX_BASE + tx_id
+            short_tx = tx_id[:10] + "..." + tx_id[-8:]
+
+            # Direct product checkout paid with TRC20 -> deliver the codes.
+            if checkout_product_id and int(checkout_quantity or 0) > 0 and not checkout_done:
+                await _deliver_trc20_checkout(
+                    context, deposit_id, user_id, base_amount, paid_amount,
+                    int(checkout_product_id), int(checkout_quantity),
+                    tx_id, tx_link, short_tx,
+                )
+                break
+
+            # Plain wallet top-up.
             add_balance(user_id, float(base_amount))
             cur.execute(
                 "UPDATE deposits SET status='paid', tx_hash=?, paid_at=? WHERE id=? AND status='pending'",
@@ -128,9 +256,6 @@ async def check_trc20_payments(context):
                 (tx_id, deposit_id, user_id, float(paid_amount)),
             )
             conn.commit()
-
-            tx_link = TRONSCAN_TX_BASE + tx_id
-            short_tx = tx_id[:10] + "..." + tx_id[-8:]
 
             try:
                 await context.bot.send_message(

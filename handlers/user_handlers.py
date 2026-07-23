@@ -451,6 +451,13 @@ Example:
         )
         return
 
+    if data.startswith("directpaytrc_"):
+        parts = data.split("_")
+        pid = int(parts[1])
+        qty = int(parts[2]) if len(parts) > 2 else 1
+        await start_direct_checkout(q, uid, pid, qty, method="trc20")
+        return
+
     if data.startswith("directpay_"):
         parts = data.split("_")
         pid = int(parts[1])

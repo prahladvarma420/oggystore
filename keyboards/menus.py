@@ -4,7 +4,7 @@ from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 from database.db import get_product_price_tiers, cur, is_admin, get_setting
 from utils.premium_emoji import button_premium
-from config import ADMIN_ID
+from config import ADMIN_ID, USDT_BEP20_ADDRESS, USDT_TRC20_ADDRESS
 
 
 MAIN_MENU_BUTTONS = [
@@ -319,9 +319,15 @@ def order_preview_menu(product_id, quantity, balance=0, total_price=0, coupon_co
             InlineKeyboardButton("❌ Remove", callback_data=f"checkout_coupon_remove_{product_id}_{quantity}")
         ]
 
-    rows = [
+    pay_rows = [
         [InlineKeyboardButton(f"💚 Pay Wallet (${float(balance):.2f})", callback_data=f"buy_{product_id}_{quantity}")],
-        [InlineKeyboardButton("⚡ Pay USDT BEP20", callback_data=f"directpay_{product_id}_{quantity}")],
+    ]
+    if isinstance(USDT_BEP20_ADDRESS, str) and USDT_BEP20_ADDRESS.startswith("0x"):
+        pay_rows.append([InlineKeyboardButton("⚡ Pay USDT BEP20", callback_data=f"directpay_{product_id}_{quantity}")])
+    if isinstance(USDT_TRC20_ADDRESS, str) and USDT_TRC20_ADDRESS.startswith("T"):
+        pay_rows.append([InlineKeyboardButton("⚡ Pay USDT TRC20", callback_data=f"directpaytrc_{product_id}_{quantity}")])
+
+    rows = pay_rows + [
         coupon_row,
         [InlineKeyboardButton("🔢 Change Qty", callback_data=f"qtymenu_{product_id}")],
         [InlineKeyboardButton("⬅️ Back To Product", callback_data=f"product_{product_id}")],

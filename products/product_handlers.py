@@ -19,7 +19,7 @@ try:
 except Exception:
     def now():
         return datetime.now()
-from config import ADMIN_ID, LOW_STOCK_ALERT_THRESHOLD, USDT_BEP20_ADDRESS, DEPOSIT_EXPIRE_HOURS, STORE_NAME
+from config import ADMIN_ID, LOW_STOCK_ALERT_THRESHOLD, USDT_BEP20_ADDRESS, USDT_TRC20_ADDRESS, DEPOSIT_EXPIRE_HOURS, STORE_NAME
 
 
 # Prevents users from double-clicking Buy Now and buying twice at the same time.
@@ -632,8 +632,9 @@ Price: <b>{format_price(display_price)} / code</b>{sale_text}
 
 
 
-async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1):
-    """Create a direct USDT BEP20 checkout invoice for a product purchase."""
+async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1, method: str = "bep20"):
+    """Create a direct USDT (BEP20/TRC20) checkout invoice for a product purchase."""
+    method = "trc20" if str(method) == "trc20" else "bep20"
     product = get_product_basic(pid)
     if not product:
         await edit_or_send(q, "❌ <b>Product not found.</b>", back_home())
@@ -670,15 +671,24 @@ async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1):
 
     cur.execute(
         """
-        INSERT INTO deposits(user_id, amount, unique_amount, status, checkout_product_id, checkout_quantity, checkout_done)
-        VALUES(?,?,?,?,?,?,0)
+        INSERT INTO deposits(user_id, amount, unique_amount, status, checkout_product_id, checkout_quantity, checkout_done, method)
+        VALUES(?,?,?,?,?,?,0,?)
         """,
-        (uid, total_price, unique_amount, "pending", pid, quantity)
+        (uid, total_price, unique_amount, "pending", pid, quantity, method)
     )
     conn.commit()
 
     cur.execute("SELECT last_insert_rowid()")
     invoice_id = cur.fetchone()[0]
+
+    if method == "trc20":
+        _method_header = "⚡ <b>USDT TRC20 Auto Instant</b>"
+        _network_line = "🌐 <b>Network:</b> <b>Tron (TRC20)</b>"
+        _pay_address = USDT_TRC20_ADDRESS
+    else:
+        _method_header = "⚡ <b>USDT BEP20 Auto Instant</b>"
+        _network_line = "🌐 <b>Network:</b> <b>BNB Smart Chain (BEP20)</b>"
+        _pay_address = USDT_BEP20_ADDRESS
 
     await edit_or_send(
         q,
@@ -690,15 +700,15 @@ async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1):
 💰 <b>Total:</b> <code>${total_price:.2f}</code>
 
 ━━━━━━━━━━━━━━━━━━━━
-⚡ <b>USDT BEP20 Auto Instant</b>
+{_method_header}
 
 💎 <b>Send exactly:</b>
 <code>{unique_amount:.5f} USDT</code>
 
-🌐 <b>Network:</b> <b>BNB Smart Chain (BEP20)</b>
+{_network_line}
 
 🏧 <b>Wallet address:</b>
-<code>{USDT_BEP20_ADDRESS}</code>
+<code>{_pay_address}</code>
 
 🧾 <b>Invoice ID:</b> <code>#{invoice_id}</code>
 🟠 <b>Status:</b> Waiting for payment
