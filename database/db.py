@@ -174,6 +174,7 @@ def init_db():
     _safe_add_column("deposits", "checkout_product_id", "INTEGER")
     _safe_add_column("deposits", "checkout_quantity", "INTEGER DEFAULT 0")
     _safe_add_column("deposits", "checkout_done", "INTEGER DEFAULT 0")
+    _safe_add_column("deposits", "reminded", "INTEGER DEFAULT 0")
     _safe_add_column("products", "description", "TEXT DEFAULT ''")
     _safe_add_column("products", "validity", "TEXT DEFAULT 'Not mentioned'")
     _safe_add_column("products", "warranty", "TEXT DEFAULT 'No warranty'")
