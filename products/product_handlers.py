@@ -476,7 +476,7 @@ Quantity: <b>{quantity}</b> code{'s' if quantity != 1 else ''}
 
 
 async def show_shop(q):
-    cur.execute("SELECT id, name, price, stock, validity, featured FROM products WHERE active=1 ORDER BY featured DESC, id DESC")
+    cur.execute("SELECT id, name, price, stock, validity, featured, flash_price, flash_ends_at FROM products WHERE active=1 ORDER BY featured DESC, id DESC")
     products = cur.fetchall()
 
     if not products:
@@ -494,14 +494,22 @@ async def show_shop(q):
     kb = []
     visible_count = 0
 
-    for pid, name, price, old_stock, validity, featured in products:
+    for pid, name, price, old_stock, validity, featured, flash_price, flash_ends_at in products:
         live_stock = live_counts.get(pid, 0)
         stock = live_stock if live_stock > 0 else old_stock
+
+        # Show the active flash-sale price directly in the list (not just on the
+        # product detail page). Falls back to the normal price when no flash.
+        display_price, flash_active = get_effective_price(price, flash_price, flash_ends_at)
+        if flash_active:
+            price_label = f"\U0001f525 {format_price(display_price)} (was {format_price(price)})"
+        else:
+            price_label = format_price(display_price)
 
         visible_count += 1
         kb.append([
             InlineKeyboardButton(
-                f"{'����� ' if featured else ''}{button_premium(name)[0]} — {format_price(price)} (Stock: {stock})",
+                f"{'����� ' if featured else ''}{button_premium(name)[0]} — {price_label} (Stock: {stock})",
                 callback_data=f"product_{pid}",
                 style="danger" if int(stock or 0) <= 0 else "primary",
                 icon_custom_emoji_id=button_premium(name)[1]
