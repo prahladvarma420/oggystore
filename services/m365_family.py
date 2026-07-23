@@ -79,6 +79,98 @@ def load_session():
     return value
 
 
+# ------------------------------------------------- persistence heuristic
+
+# Microsoft auth cookies. ESTSAUTHPERSISTENT is the durable "Stay signed in"
+# token: when it is present with a real future expiry the login survives
+# browser restarts for weeks. ESTSAUTH alone (session-only, expires == -1)
+# usually dies within ~24h.
+_MS_PERSISTENT_COOKIE = "ESTSAUTHPERSISTENT"
+_MS_AUTH_COOKIES = ("ESTSAUTHPERSISTENT", "ESTSAUTH", "ESTSAUTHLIGHT")
+_MS_AUTH_DOMAIN_HINTS = ("login.microsoftonline.com", "login.live.com", "microsoft", "live.com")
+
+
+def analyze_session_persistence(state_json):
+    """Inspect an uploaded Playwright storage_state and decide whether the
+    Microsoft login looks *persistent* (survives browser close, lasts weeks)
+    or *session-only* (no "Stay signed in" token -> usually dies within ~24h).
+
+    Returns a dict:
+        {
+          "persistent": bool,
+          "reason": str,
+          "warning_html": str | None,  # admin-facing warning (None if durable)
+        }
+    Never raises: on any parsing problem it returns persistent=True with no
+    warning so it can never block a valid upload.
+    """
+    try:
+        data = json.loads(state_json) if isinstance(state_json, str) else (state_json or {})
+        cookies = data.get("cookies") or []
+    except Exception:
+        return {"persistent": True, "reason": "unparseable", "warning_html": None}
+
+    now = time.time()
+    day = 24 * 3600
+
+    def _ms_auth(c):
+        name = str(c.get("name") or "")
+        if name not in _MS_AUTH_COOKIES:
+            return None
+        dom = str(c.get("domain") or "").lower()
+        if dom and not any(h in dom for h in _MS_AUTH_DOMAIN_HINTS):
+            return None
+        try:
+            exp = float(c.get("expires", -1))
+        except Exception:
+            exp = -1.0
+        return name, exp
+
+    best = {}  # cookie name -> furthest-future expiry seen
+    for c in cookies:
+        try:
+            got = _ms_auth(c)
+        except Exception:
+            got = None
+        if not got:
+            continue
+        name, exp = got
+        if name not in best or exp > best[name]:
+            best[name] = exp
+
+    persistent_exp = best.get(_MS_PERSISTENT_COOKIE)
+    durable = persistent_exp is not None and persistent_exp > now + day
+
+    if durable:
+        days_left = max(1, int((persistent_exp - now) // day))
+        return {
+            "persistent": True,
+            "reason": f"ESTSAUTHPERSISTENT valid ~{days_left}d",
+            "warning_html": None,
+        }
+
+    if not best:
+        reason = "no Microsoft auth cookies found in this file"
+    elif _MS_PERSISTENT_COOKIE not in best:
+        reason = "no 'Stay signed in' token (ESTSAUTHPERSISTENT missing)"
+    elif persistent_exp is not None and persistent_exp <= 0:
+        reason = "'Stay signed in' token is session-only (expires == -1)"
+    else:
+        reason = "'Stay signed in' token expires within 24h"
+
+    warning_html = (
+        "\u26a0\ufe0f <b>Heads up \u2014 this session looks NON-PERSISTENT.</b>\n\n"
+        f"Reason: <i>{html.escape(reason, quote=False)}</i>\n\n"
+        "This login has <b>no long-term \"Stay signed in\" token</b>, so Microsoft "
+        "will most likely drop it <b>within ~24 hours</b> and the ID will show as expired.\n\n"
+        "\u2705 <b>To fix it:</b> re-export the session and make sure you <b>TICK "
+        "\"Stay signed in\" (Keep me signed in)</b> on the Microsoft sign-in page "
+        "<i>before</i> saving <code>m365_session.json</code>, then upload it again.\n\n"
+        "The ID has still been saved for now \u2014 but expect it to expire soon unless re-uploaded."
+    )
+    return {"persistent": False, "reason": reason, "warning_html": warning_html}
+
+
 # ------------------------------------------------- multi-session rotation
 
 _ROTATION_NOTE = None

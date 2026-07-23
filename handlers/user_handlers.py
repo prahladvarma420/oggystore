@@ -1783,6 +1783,14 @@ async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
             state_json = data.decode("utf-8")
             _json.loads(state_json)  # validate before storing
 
+            # Persistence check: warn if this looks like a short-lived
+            # (session-only) login that Microsoft will drop within ~24h.
+            try:
+                from services.m365_family import analyze_session_persistence
+                _persist = analyze_session_persistence(state_json)
+            except Exception:
+                _persist = None
+
             from database.db import add_m365_session, rename_m365_session, list_m365_sessions
             caption = (update.message.caption or "").strip()
             new_sess_id = add_m365_session("", state_json, _sess_warranty)
@@ -1800,7 +1808,8 @@ async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
                 + f"📂 Total IDs stored: <b>{total_sessions}</b>\n\n"
                 "✏️ Now send the <b>Microsoft account email/name</b> for this ID so rotation alerts are easy to read — or send <code>-</code> to keep the automatic name.\n\n"
                 "🧪 Then use Admin Panel → 📩 M365 Auto-Invite → Test Invite to verify it works.\n\n"
-                "💡 For safety, delete <code>m365_session.json</code> from your PC after this.",
+                + ((_persist["warning_html"] + "\n\n") if (_persist and _persist.get("warning_html")) else "")
+                + "💡 For safety, delete <code>m365_session.json</code> from your PC after this.",
                 reply_markup=main_menu(uid),
                 parse_mode="HTML"
             )
