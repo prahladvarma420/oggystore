@@ -156,7 +156,7 @@ async def _deliver_trc20_checkout(context, deposit_id, user_id, base_amount, pai
                     f"\U0001f4b0 <b>Paid:</b> <code>${float(base_amount):.2f}</code>\n"
                     f"\U0001f517 <b>TX:</b> <a href='{tx_link}'>{short_tx}</a>\n\n"
                     "\U0001f511 <b>Code(s):</b>\n"
-                    f"<code>{delivery_text}</code>\n\n"
+                    f"<code>{html.escape(delivery_text, quote=False)}</code>\n\n"
                     "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
                     "Thank you for your purchase! \U0001f389"
                 ),

@@ -416,7 +416,7 @@ async def check_payments(context):
                                     f"💰 <b>Paid:</b> <code>${float(base_amount):.2f}</code>\n"
                                     f"🔗 <b>TX:</b> <a href='{tx_link}'>{short_tx}</a>\n\n"
                                     "🔑 <b>Code(s):</b>\n"
-                                    f"<code>{delivery_text}</code>\n\n"
+                                    f"<code>{html.escape(delivery_text, quote=False)}</code>\n\n"
                                     "━━━━━━━━━━━━━��━━━━━━\n"
                                     "Thank you for your purchase! 🎉"
                                 ),
