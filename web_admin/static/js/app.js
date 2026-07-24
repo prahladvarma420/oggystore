@@ -356,12 +356,37 @@ async function manageStock(id) {
     <label class="field" style="margin-bottom:14px"><span>Add stock codes (one per line)</span>
       <textarea id="st_codes" placeholder="NEW-CODE-1\nNEW-CODE-2"></textarea></label>
     <div class="toolbar"><div class="grow"></div><button class="btn btn-glow" id="stAdd"><span>\u2795 Add Stock</span></button></div>
+
+    <div style="margin:22px 0 6px;border-top:1px solid rgba(255,255,255,.08);padding-top:16px">
+      <h4 style="margin:0 0 4px">\ud83d\udd10 Add account stock (Email \u00b7 Password \u00b7 2FA)</h4>
+      <p class="muted" style="margin:0 0 10px;font-size:13px">Each account becomes one stock item. The customer receives the email on line 1, password on line 2 and 2FA key on line 3.</p>
+    </div>
+    <label class="field" style="margin-bottom:10px"><span>Account format</span>
+      <select id="st_acc_delim">
+        <option value=":">email:password:2fa  (colon)</option>
+        <option value="|">email|password|2fa  (pipe)</option>
+        <option value=",">email,password,2fa  (comma)</option>
+        <option value="tab">Tab separated</option>
+        <option value="lines">3 lines per account (blank line between accounts)</option>
+      </select></label>
+    <label class="field" style="margin-bottom:14px"><span>Accounts (one per line)</span>
+      <textarea id="st_accounts" placeholder="user1@mail.com:Pass123:JBSWY3DPEHPK3PXP\nuser2@mail.com:Pass456:KRSXG5CTMVRXEZLU"></textarea></label>
+    <div class="toolbar"><div class="grow"></div><button class="btn btn-glow" id="stAddAcc"><span>\u2795 Add Accounts</span></button></div>
+
     <div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>ID</th><th>Code</th><th>Status</th><th>Sold to</th><th></th></tr></thead><tbody>${items || '<tr><td colspan=5 class="muted">No codes</td></tr>'}</tbody></table></div>`);
   $("#stAdd").onclick = async () => {
     const codes = val("st_codes");
     if (!codes) return toast("Enter codes", "err");
     const r = await post(`/api/products/${id}/stock/add`, { codes });
     if (r.ok) { toast("Added " + r.added + " codes"); manageStock(id); render(); } else toast("Failed", "err");
+  };
+  $("#stAddAcc").onclick = async () => {
+    const accounts = val("st_accounts");
+    const sel = $("#st_acc_delim");
+    const delimiter = sel ? sel.value : ":";
+    if (!accounts) return toast("Enter accounts", "err");
+    const r = await post(`/api/products/${id}/stock/add_accounts`, { accounts, delimiter });
+    if (r.ok) { toast("Added " + r.added + " accounts"); manageStock(id); render(); } else toast(r.error || "Failed", "err");
   };
 }
 async function delStock(stockId, pid, btn) {

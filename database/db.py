@@ -655,6 +655,95 @@ def restock_product(product_id: int, delivery_text: str) -> int:
     return added
 
 
+def _parse_account_blocks(accounts_text: str, delimiter: str = ":"):
+    """Parse pasted account stock into a list of (email, password, twofa).
+
+    delimiter:
+      - a single-char separator (":", "|", ",") or the names "tab"/"space":
+        one account per line, fields split by that separator. The password may
+        itself contain the separator -- the email is taken from before the
+        first separator and the 2FA key from after the last, so only the
+        middle (password) can hold extra separators.
+      - "lines": accounts are separated by blank lines (or, if none, grouped
+        every 3 lines), with email / password / 2FA on their own lines.
+    """
+    accounts = []
+    text = (accounts_text or "").replace("\r\n", "\n").replace("\r", "\n")
+
+    if delimiter == "lines":
+        lines = [ln.strip() for ln in text.split("\n")]
+        blocks, current = [], []
+        for ln in lines:
+            if ln == "":
+                if current:
+                    blocks.append(current)
+                    current = []
+            else:
+                current.append(ln)
+        if current:
+            blocks.append(current)
+        # Everything pasted with no blank lines -> group every 3 lines.
+        if len(blocks) == 1 and len(blocks[0]) > 3 and len(blocks[0]) % 3 == 0:
+            flat = blocks[0]
+            blocks = [flat[i:i + 3] for i in range(0, len(flat), 3)]
+        for b in blocks:
+            email = b[0] if len(b) > 0 else ""
+            password = b[1] if len(b) > 1 else ""
+            twofa = b[2] if len(b) > 2 else ""
+            if email:
+                accounts.append((email, password, twofa))
+        return accounts
+
+    delim_map = {"colon": ":", "pipe": "|", "comma": ",", "tab": "\t", "space": " "}
+    delim = delim_map.get(delimiter, delimiter or ":")
+
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(delim)]
+        if len(parts) >= 3:
+            email, twofa = parts[0], parts[-1]
+            password = delim.join(parts[1:-1]).strip()
+        elif len(parts) == 2:
+            email, password, twofa = parts[0], parts[1], ""
+        else:
+            email, password, twofa = parts[0], "", ""
+        if email:
+            accounts.append((email, password, twofa))
+    return accounts
+
+
+def format_account_delivery(email: str, password: str, twofa: str) -> str:
+    """Build the multi-line block a customer receives for one account.
+
+    Line 1 = email, line 2 = password, line 3 = 2FA key.
+    """
+    lines = [f"\U0001f4e7 Email: {email}", f"\U0001f511 Password: {password}"]
+    if twofa:
+        lines.append(f"\U0001f510 2FA Key: {twofa}")
+    return "\n".join(lines)
+
+
+def add_account_stock_items(product_id: int, accounts_text: str, delimiter: str = ":") -> int:
+    """Add account-style stock (email + password + 2FA). Each account is stored
+    as ONE stock unit whose delivery text keeps the three fields on separate
+    lines, so the customer receives them exactly that way."""
+    accounts = _parse_account_blocks(accounts_text, delimiter)
+    for email, password, twofa in accounts:
+        block = format_account_delivery(email, password, twofa)
+        cur.execute(
+            "INSERT INTO product_stock(product_id, delivery, sold) VALUES(?,?,0)",
+            (product_id, encrypt_text(block))
+        )
+    available = get_available_stock_count(product_id)
+    cur.execute("UPDATE products SET stock=? WHERE id=?", (available, product_id))
+    # Re-arm low-stock alerts after restock so the next drop alerts again.
+    cur.execute("UPDATE products SET low_stock_notified=0 WHERE id=?", (product_id,))
+    conn.commit()
+    return len(accounts)
+
+
 def is_blocked(user_id: int) -> bool:
     cur.execute("SELECT blocked FROM users WHERE user_id=?", (user_id,))
     row = cur.fetchone()

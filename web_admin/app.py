@@ -1392,6 +1392,35 @@ def api_stock_add(pid):
                     "broadcast_sent": sent, "broadcast_failed": failed})
 
 
+@app.route("/api/products/<int:pid>/stock/add_accounts", methods=["POST"])
+@login_required
+def api_stock_add_accounts(pid):
+    d = request.get_json(force=True)
+    accounts = (d.get("accounts") or "").strip()
+    delimiter = (d.get("delimiter") or ":").strip() or ":"
+    if not accounts:
+        return jsonify({"ok": False, "error": "No accounts provided"}), 400
+    added = botdb.add_account_stock_items(pid, accounts, delimiter)
+    if added == 0:
+        return jsonify({"ok": False,
+                        "error": "No valid accounts found - check the format / separator"}), 400
+    log_action("add_account_stock", "#{} +{}".format(pid, added))
+    available = botdb.get_available_stock_count(pid)
+
+    # Auto-broadcast new stock to all bot users (same as plain code stock).
+    sent = failed = 0
+    try:
+        prod = q("SELECT name, price, active FROM products WHERE id=?", (pid,), one=True)
+        if prod and int(prod["active"] or 0) == 1:
+            msg = _product_alert_message(prod["name"], prod["price"], added, available, "stock")
+            sent, failed = _broadcast_to_all(msg, pid=pid, button_text="\U0001f6d2 Tap to Buy Now")
+            log_action("stock_broadcast", "#{} sent={} failed={}".format(pid, sent, failed))
+    except Exception:
+        pass
+    return jsonify({"ok": True, "added": added, "available": available,
+                    "broadcast_sent": sent, "broadcast_failed": failed})
+
+
 @app.route("/api/products/<int:pid>/stock")
 @login_required
 def api_stock_list(pid):
