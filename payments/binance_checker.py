@@ -153,26 +153,6 @@ async def check_binance_payments(context):
         log_error("Binance Pay checker fetch error", exc)
         return
 
-    print(
-        f"[binancepay] pending={[(d[0], d[3]) for d in pending]} fetched_tx={len(txs)}",
-        flush=True,
-    )
-    # Dump what Binance actually returned so we can see the real field names,
-    # amounts, currencies and where the note/remark lives.
-    if txs:
-        print(f"[binancepay] sample tx keys={list(txs[0].keys())}", flush=True)
-    for _t in txs:
-        print(
-            "[binancepay] tx id={} type={} amt={} cur={} note={!r}".format(
-                _t.get("transactionId"),
-                _t.get("orderType"),
-                _t.get("amount"),
-                _t.get("currency"),
-                str(_t.get("note", ""))[:60],
-            ),
-            flush=True,
-        )
-
     tol = Decimal(str(PAYMENT_AMOUNT_TOLERANCE))
 
     for deposit_id, user_id, base_amount, note_code in pending:

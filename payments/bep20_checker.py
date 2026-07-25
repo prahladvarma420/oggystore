@@ -215,8 +215,6 @@ def _get_recent_incoming_usdt_logs(context, w3: Web3):
     if from_block > to_block:
         return [], None
 
-    print(f"[payscan] scanning blocks {from_block}-{to_block} (latest {latest_block})", flush=True)
-
     logs = []
     start = from_block
     chunks = 0
@@ -238,7 +236,6 @@ def _get_recent_incoming_usdt_logs(context, w3: Web3):
         start = end + 1
         chunks += 1
 
-    print(f"[payscan] scanned {chunks} chunk(s) up to block {scanned_to}, found {len(logs)} incoming transfer log(s)", flush=True)
     return logs, scanned_to
 
 
@@ -351,10 +348,6 @@ async def check_payments(context):
             log_error("Payment checker RPC/log scan error", exc)
     else:
         print("[payscan] log scan disabled after repeated failures; using balance check only", flush=True)
-
-    print(f"[payscan] pending invoices: {[(d[0], d[3]) for d in pending]}", flush=True)
-    for log in logs:
-        print(f"[payscan] log tx={_tx_hash_from_log(log)} amount={_amount_from_log(log)}", flush=True)
 
     credited_ids = set()
     for deposit_id, user_id, base_amount, unique_amount, checkout_product_id, checkout_quantity, checkout_done in pending:
@@ -631,7 +624,6 @@ async def check_payments(context):
 
         context.bot_data["last_wallet_balance"] = balance_now
         set_setting("last_wallet_balance", str(balance_now))
-        print(f"[payscan] wallet balance {balance_now} USDT", flush=True)
     except Exception as exc:
         log_error("Balance fallback check failed", exc)
 

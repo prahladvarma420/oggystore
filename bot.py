@@ -68,9 +68,11 @@ def main():
             first=120,
         )
 
-    print("Bot Running...")
-    print("Auto-payment checker enabled using RPC/Web3. No BscScan API key needed.")
-    app.run_polling()
+    print("[bot] Started — polling for updates. Payment auto-checker is running.", flush=True)
+    try:
+        app.run_polling()
+    finally:
+        print("[bot] Stopped.", flush=True)
 
 
 if __name__ == "__main__":

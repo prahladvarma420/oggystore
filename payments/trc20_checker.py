@@ -224,8 +224,6 @@ async def check_trc20_payments(context):
         log_error("TRC20 payment checker fetch error", exc)
         return
 
-    print(f"[trc20scan] pending invoices: {[(d[0], d[3]) for d in pending]}", flush=True)
-
     for deposit_id, user_id, base_amount, unique_amount, checkout_product_id, checkout_quantity, checkout_done in pending:
         for tx_id, paid_amount in transfers:
             if not tx_id or not _not_processed(tx_id):
