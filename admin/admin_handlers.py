@@ -2638,7 +2638,7 @@ Example:
 
 👤 User: <code>{user_id}</code>
 👤 Name: <b>{first_name or 'User'}</b> / <code>{username_text}</code>
-📌 Subject: <b>{subject or 'Support Ticket'}</b>
+��� Subject: <b>{subject or 'Support Ticket'}</b>
 📌 Status: <b>{status}</b>
 
 <b>User Message:</b>
@@ -5967,41 +5967,103 @@ Example:
         return True
 
     if state == "admin_broadcast" and is_admin(uid):
+        import asyncio
+        from telegram.error import RetryAfter, Forbidden, TelegramError
+
         text = premium_html(update, text)
-        cur.execute("SELECT user_id FROM users")
-        users = cur.fetchall()
-
-        sent = 0
-        failed = 0
-
-        for (target_id,) in users:
-            try:
-                await context.bot.send_message(
-                    chat_id=target_id,
-                    text=f"📢 <b>Announcement</b>\n\n{text}",
-                    parse_mode="HTML"
-                )
-                sent += 1
-            except Exception:
-                failed += 1
+        # Respect admin-blocked users and notification opt-outs (same as the
+        # automated broadcasts). Materialise the list now so we don't reuse the
+        # shared DB cursor across await points inside the background task.
+        cur.execute(
+            "SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1"
+        )
+        recipients = [row[0] for row in cur.fetchall()]
 
         user_state.pop(uid, None)
-        log_admin_action(uid, "BROADCAST", f"Sent {sent} | Failed {failed}")
 
-        await update.message.reply_text(
-            f"""✅ <b>Broadcast Completed</b>
+        total = len(recipients)
+        body = f"📢 <b>Announcement</b>\n\n{text}"
+        admin_chat_id = update.effective_chat.id
 
-
-
-📨 <b>Sent:</b> <code>{sent}</code>
-⚠️ <b>Failed:</b> <code>{failed}</code>
+        status_msg = await update.message.reply_text(
+            f"""📢 <b>Broadcast Started</b>
 
 
 
-<i>Broadcast process finished.</i>""",
+🎯 <b>Recipients:</b> <code>{total}</code>
+
+
+
+<i>Sending in the background — the bot stays fully responsive. You'll get a summary here when it finishes.</i>""",
             reply_markup=admin_menu(),
             parse_mode="HTML"
         )
+
+        async def _run_broadcast():
+            sent = 0
+            failed = 0
+            for idx, target_id in enumerate(recipients, 1):
+                try:
+                    await context.bot.send_message(
+                        chat_id=target_id,
+                        text=body,
+                        parse_mode="HTML"
+                    )
+                    sent += 1
+                except RetryAfter as exc:
+                    # Telegram flood control: wait the requested time, retry once.
+                    try:
+                        await asyncio.sleep(float(getattr(exc, "retry_after", 5)) + 1)
+                        await context.bot.send_message(
+                            chat_id=target_id,
+                            text=body,
+                            parse_mode="HTML"
+                        )
+                        sent += 1
+                    except Exception:
+                        failed += 1
+                except (Forbidden, TelegramError):
+                    failed += 1  # user blocked the bot / deactivated / bad chat
+                except Exception:
+                    failed += 1
+
+                # Yield to the event loop and stay well under Telegram's
+                # ~30 msg/sec global limit so the bot never appears frozen.
+                await asyncio.sleep(0.05)
+
+                # Best-effort live progress every 50 messages.
+                if idx % 50 == 0:
+                    try:
+                        await status_msg.edit_text(
+                            f"""📢 <b>Broadcasting…</b>
+
+📨 <b>Sent:</b> <code>{sent}</code>
+⚠️ <b>Failed:</b> <code>{failed}</code>
+⏳ <b>Progress:</b> <code>{idx}/{total}</code>""",
+                            parse_mode="HTML"
+                        )
+                    except Exception:
+                        pass
+
+            log_admin_action(uid, "BROADCAST", f"Sent {sent} | Failed {failed}")
+
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_chat_id,
+                    text=(
+                        "✅ <b>Broadcast Completed</b>\n\n\n\n"
+                        f"📨 <b>Sent:</b> <code>{sent}</code>\n"
+                        f"⚠️ <b>Failed:</b> <code>{failed}</code>\n"
+                        f"🎯 <b>Total:</b> <code>{total}</code>\n\n\n\n"
+                        "<i>Broadcast process finished.</i>"
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=admin_menu()
+                )
+            except Exception:
+                pass
+
+        context.application.create_task(_run_broadcast())
         return True
 
     return False
