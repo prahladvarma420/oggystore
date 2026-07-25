@@ -44,6 +44,11 @@ from config import (
 BINANCE_API_BASE = "https://api.binance.com"
 PAY_TX_PATH = "/sapi/v1/pay/transactions"
 
+# The ONLY asset the bot will ever credit. This is a strict whitelist: any
+# other token (PEPE, SHIB, BNB, BTC, USDC, unknown/empty, or a mixed payment)
+# is rejected. It is NOT a PEPE-specific blocklist.
+ACCEPTED_ASSET = "USDT"
+
 DEPOSIT_SUCCESS_DEFAULT = (
     "\u2705 <b>DEPOSIT CONFIRMED</b>\n\n\U0001f9fe <b>Invoice:</b> <code>#{invoice_id}</code>\n\U0001f4b5 <b>Paid:</b> <code>{paid} USDT</code>\n\U0001f4b0 <b>Balance Added:</b> <code>{amount} USDT</code>\n\U0001f4bc <b>New Balance:</b> <code>{balance} USDT</code>\n\U0001f517 <b>TX:</b> {tx}\n\n\U0001f6cd <i>You can now buy products from Shop.</i>"
 )
@@ -75,11 +80,20 @@ def _not_processed(tx_id: str) -> bool:
 
 
 def _is_usdt_only(tx) -> bool:
-    """True only if the whole transfer is USDT. Blocks PEPE/other-token spoofs."""
-    if str(tx.get("currency", "")).upper() != "USDT":
+    """Return True ONLY if every asset in this transfer is USDT.
+
+    Whitelist logic (not a PEPE-only exception): the transfer is accepted only
+    when its asset is exactly USDT. Everything else is rejected, including:
+      - any other token (PEPE, SHIB, BNB, BTC, USDC, etc.)
+      - an empty / missing / unknown currency
+      - a mixed "combination" payment where any part is not USDT
+    """
+    currency = str(tx.get("currency", "")).strip().upper()
+    if currency != ACCEPTED_ASSET:
         return False
+    # If Binance itemises the funding sources, every single one must be USDT.
     for f in (tx.get("fundsDetail") or []):
-        if str(f.get("currency", "")).upper() != "USDT":
+        if str(f.get("currency", "")).strip().upper() != ACCEPTED_ASSET:
             return False
     return True
 
