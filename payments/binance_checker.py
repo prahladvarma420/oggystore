@@ -23,6 +23,7 @@ permission is required.
 
 import hashlib
 import hmac
+import json
 import time
 from datetime import timedelta
 from decimal import Decimal
@@ -111,7 +112,10 @@ async def _recent_pay_transactions():
 
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(url, headers=headers)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            # Surface the real Binance error (e.g. -2015 invalid API-key/IP/permission)
+            print(f"[binancepay] HTTP {resp.status_code}: {resp.text[:300]}", flush=True)
+            resp.raise_for_status()
         data = resp.json()
 
     if not isinstance(data, dict) or not data.get("success"):
@@ -139,6 +143,21 @@ async def check_binance_payments(context):
         f"[binancepay] pending={[(d[0], d[3]) for d in pending]} fetched_tx={len(txs)}",
         flush=True,
     )
+    # Dump what Binance actually returned so we can see the real field names,
+    # amounts, currencies and where the note/remark lives.
+    if txs:
+        print(f"[binancepay] sample tx keys={list(txs[0].keys())}", flush=True)
+    for _t in txs:
+        print(
+            "[binancepay] tx id={} type={} amt={} cur={} note={!r}".format(
+                _t.get("transactionId"),
+                _t.get("orderType"),
+                _t.get("amount"),
+                _t.get("currency"),
+                str(_t.get("note", ""))[:60],
+            ),
+            flush=True,
+        )
 
     tol = Decimal(str(PAYMENT_AMOUNT_TOLERANCE))
 
@@ -157,11 +176,22 @@ async def check_binance_payments(context):
                     continue  # only incoming (positive) transfers
                 if not _is_usdt_only(tx):
                     continue  # USDT ONLY -- reject PEPE and every other token
-                note = str(tx.get("note", "") or "").upper()
-                if code not in note:
+                # Match the note code against the WHOLE transaction record, not
+                # just the `note` field. For Binance Pay "Send" (C2C) transfers
+                # the sender's remark can arrive under a differently-named field
+                # on the receiver side, so scanning the full record is far more
+                # robust. The code is a random 8-char string, so an accidental
+                # match is effectively impossible.
+                tx_blob = json.dumps(tx, default=str).upper()
+                if code not in tx_blob:
                     continue
                 if amount < (Decimal(str(base_amount)) - tol):
+                    print(
+                        f"[binancepay] code {code} matched tx {tx_id} but underpaid: got {amount} need {base_amount}",
+                        flush=True,
+                    )
                     continue  # underpaid -> do not credit
+                print(f"[binancepay] MATCH code {code} tx {tx_id} amount {amount}", flush=True)
             except Exception:
                 continue
 
