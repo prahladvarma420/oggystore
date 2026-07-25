@@ -38,12 +38,26 @@ from config import (
     BINANCE_API_KEY,
     BINANCE_API_SECRET,
     BINANCE_PAY_ID,
+    BINANCE_API_BASE,
+    BINANCE_HTTP_PROXY,
     DEPOSIT_EXPIRE_HOURS,
     PAYMENT_AMOUNT_TOLERANCE,
 )
 
-BINANCE_API_BASE = "https://api.binance.com"
 PAY_TX_PATH = "/sapi/v1/pay/transactions"
+
+
+def _make_async_client():
+    """httpx client, optionally routed through a proxy (to dodge geo-blocks).
+
+    Handles both new (proxy=) and old (proxies=) httpx signatures.
+    """
+    if BINANCE_HTTP_PROXY:
+        try:
+            return httpx.AsyncClient(timeout=20, proxy=BINANCE_HTTP_PROXY)
+        except TypeError:
+            return httpx.AsyncClient(timeout=20, proxies=BINANCE_HTTP_PROXY)
+    return httpx.AsyncClient(timeout=20)
 
 # The ONLY asset the bot will ever credit. This is a strict whitelist: any
 # other token (PEPE, SHIB, BNB, BTC, USDC, unknown/empty, or a mixed payment)
@@ -110,7 +124,7 @@ async def _recent_pay_transactions():
     url = f"{BINANCE_API_BASE}{PAY_TX_PATH}?{query}&signature={signature}"
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
 
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with _make_async_client() as client:
         resp = await client.get(url, headers=headers)
         if resp.status_code != 200:
             # Surface the real Binance error (e.g. -2015 invalid API-key/IP/permission)

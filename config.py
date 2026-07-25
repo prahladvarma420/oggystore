@@ -60,6 +60,12 @@ BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 # Your Binance Pay ID (the numeric ID customers send to).
 BINANCE_PAY_ID = os.getenv("BINANCE_PAY_ID")
+# Optional overrides to work around Binance geo-blocking (HTTP 451). If the
+# server's region/IP is blocked by Binance, either point this at an allowed
+# host and/or route requests through a proxy in an allowed region.
+BINANCE_API_BASE = os.getenv("BINANCE_API_BASE", "https://api.binance.com").rstrip("/")
+# e.g. http://user:pass@host:port  or  socks5://host:port (proxy in an allowed region)
+BINANCE_HTTP_PROXY = os.getenv("BINANCE_HTTP_PROXY", "").strip()
 # ================================================================
 
 # Check payments every 30 seconds
