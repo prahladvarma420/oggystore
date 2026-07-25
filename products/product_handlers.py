@@ -7,7 +7,7 @@ import time
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 from utils.premium_emoji import strip_premium, first_premium_id, button_premium, premium_safe
-from database.db import render_message_template,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items, is_m365_product, is_canva_product, get_m365_product_warranty
+from database.db import render_message_template, BUNDLE_DETAILS_DEFAULT,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items, is_m365_product, is_canva_product, get_m365_product_warranty
 from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
 from utils.crypto import encrypt_text
 from utils.ui import edit_or_send
@@ -1272,14 +1272,16 @@ async def show_bundle_details(q, uid: int, bundle_id: int):
 
     savings = max(0.0, total_value - bprice)
 
-    text = f"""🎁 <b>{bname}</b>
-
-{item_lines}
-💵 Total value: <s>${total_value:.2f}</s>
-💎 Bundle price: <b>${bprice:.2f}</b>
-🤑 You save: <b>${savings:.2f}</b>
-
-👛 Your balance: <b>{balance:.2f} USDT</b>"""
+    text = render_message_template(
+        "bundle_details",
+        BUNDLE_DETAILS_DEFAULT,
+        bundle_name=bname,
+        items=item_lines,
+        total_value=f"{total_value:.2f}",
+        bundle_price=f"{bprice:.2f}",
+        savings=f"{savings:.2f}",
+        balance=f"{balance:.2f}",
+    )
 
     kb = []
     if available:

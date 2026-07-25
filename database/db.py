@@ -22,6 +22,72 @@ def _safe_add_column(table: str, column: str, definition: str):
         cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+# ---- Editable deposit button labels + per-method invoice messages ----
+# These are seeded into message_templates so the owner can edit them from the
+# web admin. Button labels are plain text (Telegram buttons can't render HTML
+# or premium emoji). Invoice messages support full HTML and premium emoji via
+# <tg-emoji emoji-id="...">\U0001f4b0</tg-emoji> tags.
+BTN_BEP20_DEFAULT = "\U0001f7e1 USDT \u2014 BEP20 (BNB Chain)"
+BTN_TRC20_DEFAULT = "\U0001f534 USDT \u2014 TRC20 (Tron)"
+BTN_BINANCE_DEFAULT = "\U0001f7e8 USDT \u2014 Binance Pay"
+
+INVOICE_BEP20_DEFAULT = (
+    "\U0001fa99 <b>USDT BEP20</b>\n"
+    "<b>Auto-verification enabled</b>\n\n"
+    "\u269b\ufe0f Order: <b>${amount} USDT</b>\n\n"
+    "\U0001f7e2 Send EXACTLY: <code>{unique_amount}</code> <b>USDT</b>\n"
+    "<b>To Address (BEP20 (BNB Smart Chain)):</b>\n"
+    "<code>{address}</code>\n\n"
+    "\u26a0\ufe0f Send <b>exactly</b> this amount on the <b>BEP20 (BNB Smart Chain)</b> network \u2014 it must match to the <b>last decimal</b>, or your payment will NOT be matched automatically.\n"
+    "Expires in <b>{expire_hours} hours</b>.\n\n"
+    "Payment ID: <b>#{invoice_id}</b>\n"
+    "Payment will be verified and credited automatically."
+)
+
+INVOICE_TRC20_DEFAULT = (
+    "\U0001fa99 <b>USDT TRC20</b>\n"
+    "<b>Auto-verification enabled</b>\n\n"
+    "\u269b\ufe0f Order: <b>${amount} USDT</b>\n\n"
+    "\U0001f7e2 Send EXACTLY: <code>{unique_amount}</code> <b>USDT</b>\n"
+    "<b>To Address (TRC20 (Tron Network)):</b>\n"
+    "<code>{address}</code>\n\n"
+    "Works with <b>Trust Wallet</b>, Binance withdrawal, or any TRC20 wallet.\n\n"
+    "\u26a0\ufe0f Send <b>exactly</b> this amount on the <b>TRC20 (Tron)</b> network \u2014 it must match to the <b>last decimal</b>, or your payment will NOT be matched automatically.\n"
+    "Expires in <b>{expire_hours} hours</b>.\n\n"
+    "Payment ID: <b>#{invoice_id}</b>\n"
+    "Payment will be verified and credited automatically."
+)
+
+INVOICE_BINANCE_DEFAULT = (
+    "\U0001f7e8 <b>USDT \u2014 Binance Pay</b>\n"
+    "<b>Auto-verification enabled</b>\n\n"
+    "\u269b\ufe0f Order: <b>${amount} USDT</b>\n\n"
+    "<b>How to pay:</b>\n"
+    "1\ufe0f\u20e3 Open <b>Binance App</b> \u2192 <b>Pay</b> \u2192 <b>Send</b>.\n"
+    "2\ufe0f\u20e3 Send <b>{amount} USDT</b> to Binance ID: <code>{pay_id}</code>\n"
+    "3\ufe0f\u20e3 In the <b>Note / Remark</b> field, enter EXACTLY this code:\n"
+    "<code>{note_code}</code>\n\n"
+    "\u26a0\ufe0f Pay in <b>USDT only</b> \u2014 any other coin will <b>NOT</b> be credited.\n"
+    "\u26a0\ufe0f You must include the note code above, or your payment cannot be matched.\n"
+    "Expires in <b>{expire_hours} hours</b>.\n\n"
+    "Payment ID: <b>#{invoice_id}</b>\n"
+    "Payment will be verified and credited automatically."
+)
+
+# Bundle details message (Bundle Deals -> a specific bundle). Supports full
+# HTML and premium emoji. Product names may contain <tg-emoji> tags; they
+# render correctly because this message goes through render_message_template,
+# whose final step normalizes those tags.
+BUNDLE_DETAILS_DEFAULT = (
+    "\U0001f381 <b>{bundle_name}</b>\n\n"
+    "{items}\n"
+    "\U0001f4b5 Total value: <s>${total_value}</s>\n"
+    "\U0001f48e Bundle price: <b>${bundle_price}</b>\n"
+    "\U0001f911 You save: <b>${savings}</b>\n\n"
+    "\U0001f45b Your balance: <b>{balance} USDT</b>"
+)
+
+
 def init_db():
     cur.execute("""
     CREATE TABLE IF NOT EXISTS users(
@@ -258,6 +324,23 @@ def init_db():
         updated TEXT DEFAULT CURRENT_TIMESTAMP
     )
     """)
+
+    # Editable deposit button labels + per-method invoice messages. These show
+    # up in the web admin "Message Templates" editor so the owner can rename
+    # the buttons and reword each payment invoice (incl. premium emoji).
+    for _k, _title, _body in (
+        ("btn_bep20", "Button \u2014 BEP20 Method Label", BTN_BEP20_DEFAULT),
+        ("btn_trc20", "Button \u2014 TRC20 Method Label", BTN_TRC20_DEFAULT),
+        ("btn_binance", "Button \u2014 Binance Pay Method Label", BTN_BINANCE_DEFAULT),
+        ("invoice_bep20", "Invoice \u2014 BEP20 Deposit Message", INVOICE_BEP20_DEFAULT),
+        ("invoice_trc20", "Invoice \u2014 TRC20 Deposit Message", INVOICE_TRC20_DEFAULT),
+        ("invoice_binance", "Invoice \u2014 Binance Pay Deposit Message", INVOICE_BINANCE_DEFAULT),
+        ("bundle_details", "Bundle \u2014 Details Message", BUNDLE_DETAILS_DEFAULT),
+    ):
+        cur.execute(
+            "INSERT OR IGNORE INTO message_templates(key, title, body) VALUES(?,?,?)",
+            (_k, _title, _body),
+        )
 
     
     cur.execute("""
