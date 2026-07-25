@@ -87,6 +87,34 @@ BUNDLE_DETAILS_DEFAULT = (
     "\U0001f45b Your balance: <b>{balance} USDT</b>"
 )
 
+# Shop (Products) & Bundle Deals screen buttons. Plain text — Telegram button
+# labels can't render HTML or premium emoji (use the message templates above for
+# premium emoji instead).
+BTN_BUNDLE_DEALS_DEFAULT = "\U0001f381 Bundle Deals"
+BTN_BACK_TO_PRODUCTS_DEFAULT = "\u2b05\ufe0f Back To Products"
+BTN_BACK_TO_BUNDLES_DEFAULT = "\u2b05\ufe0f Back To Bundles"
+BTN_BUY_BUNDLE_DEFAULT = "\U0001f49a Buy Bundle (${price})"
+
+# Shop (Products) intro + Bundle Deals list/empty messages. Full HTML + premium
+# emoji supported (they go through render_message_template).
+SHOP_INTRO_DEFAULT = (
+    "\U0001f6cd\ufe0f <b>Products</b>\n\n"
+    "Browse products and get instant delivery.\n\n"
+    "\u26a1 Delivery: <b>Automatic</b>\n"
+    "\U0001f4b3 Payment: <b>Wallet Balance</b>\n\n"
+    "Select a product below:"
+)
+BUNDLES_INTRO_DEFAULT = (
+    "\U0001f381 <b>Bundle Deals</b>\n\n"
+    "Get more for less \u2014 combo packs at a special price.\n\n"
+    "Select a bundle below:"
+)
+BUNDLES_EMPTY_DEFAULT = (
+    "\U0001f381 <b>Bundle Deals</b>\n\n"
+    "No bundles available right now.\n\n"
+    "Check back soon!"
+)
+
 
 def init_db():
     cur.execute("""
@@ -336,6 +364,13 @@ def init_db():
         ("invoice_trc20", "Invoice \u2014 TRC20 Deposit Message", INVOICE_TRC20_DEFAULT),
         ("invoice_binance", "Invoice \u2014 Binance Pay Deposit Message", INVOICE_BINANCE_DEFAULT),
         ("bundle_details", "Bundle \u2014 Details Message", BUNDLE_DETAILS_DEFAULT),
+        ("shop_intro", "Message \u2014 Products (Shop) Screen", SHOP_INTRO_DEFAULT),
+        ("bundles_intro", "Message \u2014 Bundle Deals List", BUNDLES_INTRO_DEFAULT),
+        ("bundles_empty", "Message \u2014 Bundle Deals (Empty State)", BUNDLES_EMPTY_DEFAULT),
+        ("btn_bundle_deals", "Button \u2014 Bundle Deals", BTN_BUNDLE_DEALS_DEFAULT),
+        ("btn_back_to_products", "Button \u2014 Back To Products", BTN_BACK_TO_PRODUCTS_DEFAULT),
+        ("btn_back_to_bundles", "Button \u2014 Back To Bundles", BTN_BACK_TO_BUNDLES_DEFAULT),
+        ("btn_buy_bundle", "Button \u2014 Buy Bundle", BTN_BUY_BUNDLE_DEFAULT),
     ):
         cur.execute(
             "INSERT OR IGNORE INTO message_templates(key, title, body) VALUES(?,?,?)",

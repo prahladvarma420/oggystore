@@ -7,7 +7,7 @@ import time
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 from utils.premium_emoji import strip_premium, first_premium_id, button_premium, premium_safe
-from database.db import render_message_template, BUNDLE_DETAILS_DEFAULT,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items, is_m365_product, is_canva_product, get_m365_product_warranty
+from database.db import render_message_template, get_message_template, BUNDLE_DETAILS_DEFAULT, SHOP_INTRO_DEFAULT, BUNDLES_INTRO_DEFAULT, BUNDLES_EMPTY_DEFAULT, BTN_BUNDLE_DEALS_DEFAULT, BTN_BACK_TO_PRODUCTS_DEFAULT, BTN_BACK_TO_BUNDLES_DEFAULT, BTN_BUY_BUNDLE_DEFAULT,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items, is_m365_product, is_canva_product, get_m365_product_warranty
 from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
 from utils.crypto import encrypt_text
 from utils.ui import edit_or_send
@@ -518,7 +518,7 @@ async def show_shop(q):
 
     bundles = get_active_bundles()
     if bundles:
-        kb.insert(0, [InlineKeyboardButton("🎁 Bundle Deals", callback_data="bundles")])
+        kb.insert(0, [InlineKeyboardButton(get_message_template("btn_bundle_deals", BTN_BUNDLE_DEALS_DEFAULT), callback_data="bundles")])
 
     kb.append([
         InlineKeyboardButton("🔄 Refresh", callback_data="shop"),
@@ -527,14 +527,7 @@ async def show_shop(q):
 
     await edit_or_send(
         q,
-        """🛍 <b>Products</b>
-
-Browse products and get instant delivery.
-
-⚡ Delivery: <b>Automatic</b>
-💳 Payment: <b>Wallet Balance</b>
-
-Select a product below:""",
+        render_message_template("shop_intro", SHOP_INTRO_DEFAULT),
         InlineKeyboardMarkup(kb)
     )
 
@@ -816,7 +809,7 @@ async def buy_product(q, uid: int, pid: int, quantity: int = 1):
 Please select a lower quantity or check again later.""",
                 InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔄 Refresh Product", callback_data=f"product_{pid}")],
-                    [InlineKeyboardButton("⬅️ Back To Products", callback_data="shop")]
+                    [InlineKeyboardButton(get_message_template("btn_back_to_products", BTN_BACK_TO_PRODUCTS_DEFAULT), callback_data="shop")]
                 ])
             )
             return
@@ -859,7 +852,7 @@ Please select a lower quantity or check again later.""",
                 InlineKeyboardMarkup([
                     [InlineKeyboardButton(f"💰 Deposit ${math.ceil(need * 100) / 100:.2f} Now", callback_data=f"depneed_{math.ceil(need * 100) / 100:.2f}")],
                     [InlineKeyboardButton("💰 Deposit Custom Amount", callback_data="deposit")],
-                    [InlineKeyboardButton("⬅️ Back To Products", callback_data="shop")],
+                    [InlineKeyboardButton(get_message_template("btn_back_to_products", BTN_BACK_TO_PRODUCTS_DEFAULT), callback_data="shop")],
                 ]),
             )
             return
@@ -1222,19 +1215,19 @@ async def show_bundles(q):
     if not bundles:
         await edit_or_send(
             q,
-            "🎁 <b>Bundle Deals</b>\n\nNo bundles available right now.\n\nCheck back soon!",
-            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back To Products", callback_data="shop")]])
+            render_message_template("bundles_empty", BUNDLES_EMPTY_DEFAULT),
+            InlineKeyboardMarkup([[InlineKeyboardButton(get_message_template("btn_back_to_products", BTN_BACK_TO_PRODUCTS_DEFAULT), callback_data="shop")]])
         )
         return
 
     kb = []
     for bid, bname, bprice in bundles:
         kb.append([InlineKeyboardButton(f"🎁 {bname} • ${float(bprice):.2f}", callback_data=f"bundle_{bid}")])
-    kb.append([InlineKeyboardButton("⬅️ Back To Products", callback_data="shop")])
+    kb.append([InlineKeyboardButton(get_message_template("btn_back_to_products", BTN_BACK_TO_PRODUCTS_DEFAULT), callback_data="shop")])
 
     await edit_or_send(
         q,
-        "🎁 <b>Bundle Deals</b>\n\nGet more for less — combo packs at a special price.\n\nSelect a bundle below:",
+        render_message_template("bundles_intro", BUNDLES_INTRO_DEFAULT),
         InlineKeyboardMarkup(kb)
     )
 
@@ -1285,13 +1278,13 @@ async def show_bundle_details(q, uid: int, bundle_id: int):
 
     kb = []
     if available:
-        kb.append([InlineKeyboardButton(f"💚 Buy Bundle (${bprice:.2f})", callback_data=f"buybundle_{bundle_id}")])
+        kb.append([InlineKeyboardButton(render_message_template("btn_buy_bundle", BTN_BUY_BUNDLE_DEFAULT, price=f"{bprice:.2f}"), callback_data=f"buybundle_{bundle_id}")])
         if balance < bprice:
             need = math.ceil((bprice - balance) * 100) / 100.0
             kb.append([InlineKeyboardButton(f"💰 Deposit ${need:.2f} More", callback_data=f"depneed_{need:.2f}")])
     else:
         text += "\n\n🔴 <b>Some items are out of stock right now.</b>"
-    kb.append([InlineKeyboardButton("⬅️ Back To Bundles", callback_data="bundles")])
+    kb.append([InlineKeyboardButton(get_message_template("btn_back_to_bundles", BTN_BACK_TO_BUNDLES_DEFAULT), callback_data="bundles")])
 
     await edit_or_send(q, text, InlineKeyboardMarkup(kb))
 
@@ -1332,7 +1325,7 @@ async def buy_bundle(q, uid: int, bundle_id: int):
                 await edit_or_send(
                     q,
                     f"❌ <b>Not Enough Stock</b>\n\n<b>{html.escape(str(pname), quote=False)}</b> is out of stock for this bundle.",
-                    InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back To Bundles", callback_data="bundles")]])
+                    InlineKeyboardMarkup([[InlineKeyboardButton(get_message_template("btn_back_to_bundles", BTN_BACK_TO_BUNDLES_DEFAULT), callback_data="bundles")]])
                 )
                 return
 
@@ -1350,7 +1343,7 @@ async def buy_bundle(q, uid: int, bundle_id: int):
 ➕ <b>Need More:</b> {need:.2f} USDT""",
                 InlineKeyboardMarkup([
                     [InlineKeyboardButton(f"💰 Deposit ${need:.2f} Now", callback_data=f"depneed_{need:.2f}")],
-                    [InlineKeyboardButton("⬅️ Back To Bundles", callback_data="bundles")],
+                    [InlineKeyboardButton(get_message_template("btn_back_to_bundles", BTN_BACK_TO_BUNDLES_DEFAULT), callback_data="bundles")],
                 ]),
             )
             return
@@ -1365,7 +1358,7 @@ async def buy_bundle(q, uid: int, bundle_id: int):
                 await edit_or_send(
                     q,
                     "❌ <b>Purchase Failed</b>\n\nStock changed while processing. Please try again.",
-                    InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back To Bundles", callback_data="bundles")]])
+                    InlineKeyboardMarkup([[InlineKeyboardButton(get_message_template("btn_back_to_bundles", BTN_BACK_TO_BUNDLES_DEFAULT), callback_data="bundles")]])
                 )
                 return
             new_stock = get_available_stock_count(product_id)
