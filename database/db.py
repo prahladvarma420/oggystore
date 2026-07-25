@@ -86,6 +86,10 @@ def init_db():
         cur.execute("ALTER TABLE deposits ADD COLUMN method TEXT")
     except Exception:
         pass
+    try:
+        cur.execute("ALTER TABLE deposits ADD COLUMN note_code TEXT")
+    except Exception:
+        pass
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS processed_txs(

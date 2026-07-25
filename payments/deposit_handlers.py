@@ -1,4 +1,6 @@
 import random
+import secrets
+import string
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 from database.db import cur, conn, get_balance
@@ -10,6 +12,9 @@ from utils.states import user_state
 from config import (
     USDT_BEP20_ADDRESS,
     USDT_TRC20_ADDRESS,
+    BINANCE_API_KEY,
+    BINANCE_API_SECRET,
+    BINANCE_PAY_ID,
     DEPOSIT_EXPIRE_HOURS,
     STORE_NAME,
 )
@@ -74,6 +79,8 @@ def _available_methods():
         methods.append(("bep20", "\U0001f7e1 USDT \u2014 BEP20 (BNB Chain)"))
     if isinstance(USDT_TRC20_ADDRESS, str) and USDT_TRC20_ADDRESS.startswith("T"):
         methods.append(("trc20", "\U0001f534 USDT \u2014 TRC20 (Tron)"))
+    if BINANCE_API_KEY and BINANCE_API_SECRET and BINANCE_PAY_ID:
+        methods.append(("binance", "\U0001f7e8 USDT \u2014 Binance Pay"))
     return methods
 
 
@@ -94,8 +101,23 @@ def _method_menu(amount):
     return InlineKeyboardMarkup(rows)
 
 
+def _gen_note_code(length=8):
+    """Unique 8-char uppercase alphanumeric code for Binance Pay note matching."""
+    alphabet = string.ascii_uppercase + string.digits
+    code = "".join(secrets.choice(alphabet) for _ in range(length))
+    for _ in range(20):
+        cur.execute(
+            "SELECT 1 FROM deposits WHERE note_code=? AND status='pending'", (code,)
+        )
+        if cur.fetchone() is None:
+            return code
+        code = "".join(secrets.choice(alphabet) for _ in range(length))
+    return code
+
+
 def _create_invoice(uid, amount, method="bep20"):
-    """Cancel older pending invoices and create a fresh one. Returns (id, unique_amount)."""
+    """Cancel older pending invoices and create a fresh one.
+    Returns (invoice_id, unique_amount, note_code)."""
     # Cancel older pending invoices for the same user to avoid confusion.
     cur.execute(
         "UPDATE deposits SET status='cancelled' WHERE user_id=? AND status='pending'",
@@ -103,18 +125,19 @@ def _create_invoice(uid, amount, method="bep20"):
     )
 
     unique_amount = round(amount + random.randint(100, 999) / 100000, 5)
+    note_code = _gen_note_code() if method == "binance" else None
 
     # Set created explicitly in bot time (IST). The DB default is UTC,
     # which made invoices look ~5.5h old and expire after ~30 minutes.
     cur.execute(
-        "INSERT INTO deposits(user_id, amount, unique_amount, status, created, method) VALUES(?,?,?,?,?,?)",
-        (uid, amount, unique_amount, "pending", now_text(), method),
+        "INSERT INTO deposits(user_id, amount, unique_amount, status, created, method, note_code) VALUES(?,?,?,?,?,?,?)",
+        (uid, amount, unique_amount, "pending", now_text(), method, note_code),
     )
     conn.commit()
 
     cur.execute("SELECT last_insert_rowid()")
     invoice_id = cur.fetchone()[0]
-    return invoice_id, unique_amount
+    return invoice_id, unique_amount, note_code
 
 
 def _invoice_text(amount, unique_amount, invoice_id):
@@ -153,9 +176,31 @@ Payment ID: <b>#{invoice_id}</b>
 Payment will be verified and credited automatically."""
 
 
-def _invoice_text_for(method, amount, unique_amount, invoice_id):
+def _binance_invoice_text(amount, note_code, invoice_id):
+    return f"""\U0001f7e8 <b>USDT \u2014 Binance Pay</b>
+<b>Auto-verification enabled</b>
+
+\u269b\ufe0f Order: <b>${amount:.2f} USDT</b>
+
+<b>How to pay:</b>
+1\ufe0f\u20e3 Open <b>Binance App</b> \u2192 <b>Pay</b> \u2192 <b>Send</b>.
+2\ufe0f\u20e3 Send <b>{amount:.2f} USDT</b> to Binance ID: <code>{BINANCE_PAY_ID}</code>
+3\ufe0f\u20e3 In the <b>Note / Remark</b> field, enter EXACTLY this code:
+<code>{note_code}</code>
+
+\u26a0\ufe0f Pay in <b>USDT only</b> \u2014 any other coin will <b>NOT</b> be credited.
+\u26a0\ufe0f You must include the note code above, or your payment cannot be matched.
+Expires in <b>{DEPOSIT_EXPIRE_HOURS} hours</b>.
+
+Payment ID: <b>#{invoice_id}</b>
+Payment will be verified and credited automatically."""
+
+
+def _invoice_text_for(method, amount, unique_amount, invoice_id, note_code=None):
     if method == "trc20":
         return _trc20_invoice_text(amount, unique_amount, invoice_id)
+    if method == "binance":
+        return _binance_invoice_text(amount, note_code, invoice_id)
     return _invoice_text(amount, unique_amount, invoice_id)
 
 
@@ -173,10 +218,10 @@ async def create_deposit_invoice(q, uid, method, amount):
     except Exception:
         amount = 0.0
     amount = max(0.1, min(5000.0, amount))
-    invoice_id, unique_amount = _create_invoice(uid, amount, method)
+    invoice_id, unique_amount, note_code = _create_invoice(uid, amount, method)
     await edit_or_send(
         q,
-        _invoice_text_for(method, amount, unique_amount, invoice_id),
+        _invoice_text_for(method, amount, unique_amount, invoice_id, note_code),
         _invoice_menu_for(method, invoice_id),
     )
 
@@ -194,8 +239,8 @@ async def deposit_shortfall(q, uid, amount):
         await edit_or_send(q, _method_chooser_text(amount), _method_menu(amount))
         return
     method = methods[0][0] if methods else "bep20"
-    invoice_id, unique_amount = _create_invoice(uid, amount, method)
-    await edit_or_send(q, _invoice_text_for(method, amount, unique_amount, invoice_id), _invoice_menu_for(method, invoice_id))
+    invoice_id, unique_amount, note_code = _create_invoice(uid, amount, method)
+    await edit_or_send(q, _invoice_text_for(method, amount, unique_amount, invoice_id, note_code), _invoice_menu_for(method, invoice_id))
 
 
 async def handle_deposit_amount(update, uid, text):
@@ -218,9 +263,9 @@ async def handle_deposit_amount(update, uid, text):
             )
         else:
             method = methods[0][0] if methods else "bep20"
-            invoice_id, unique_amount = _create_invoice(uid, amount, method)
+            invoice_id, unique_amount, note_code = _create_invoice(uid, amount, method)
             await update.message.reply_text(
-                _invoice_text_for(method, amount, unique_amount, invoice_id),
+                _invoice_text_for(method, amount, unique_amount, invoice_id, note_code),
                 reply_markup=_invoice_menu_for(method, invoice_id),
                 parse_mode="HTML",
                 disable_web_page_preview=True

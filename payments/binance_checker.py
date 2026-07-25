@@ -1,0 +1,207 @@
+"""USDT Binance Pay auto-deposit checker.
+
+Flow:
+1. Customer creates a deposit invoice in the bot and enters the amount.
+2. The bot gives them a unique 8-character NOTE code.
+3. Customer opens Binance App -> Pay -> Send, sends USDT to the shop's Binance
+   ID, and puts the note code in the transfer Note/Remark.
+4. This job polls Binance "Get Pay Trade History"
+   (GET /sapi/v1/pay/transactions), finds an incoming transfer whose note
+   contains the code, and credits the wallet.
+
+SECURITY / anti-PEPE guard:
+    Only transfers whose asset is USDT are EVER credited. The top-level
+    `currency` must be USDT and every `fundsDetail` entry must be USDT. Any
+    other token (PEPE, BNB, etc.) is ignored, even if the note code matches
+    and the number looks right. This prevents the
+    "sent 500 PEPE, got credited 500 USDT" exploit.
+
+Requires env vars: BINANCE_API_KEY, BINANCE_API_SECRET, BINANCE_PAY_ID.
+The API key only needs read access (Enable Reading); no trading/withdrawal
+permission is required.
+"""
+
+import hashlib
+import hmac
+import time
+from datetime import timedelta
+from decimal import Decimal
+
+import httpx
+
+from utils.error_logger import log_error
+from utils.timezone import now, now_text
+from database.db import cur, conn, add_balance, get_balance, render_message_template
+from config import (
+    ADMIN_ID,
+    BINANCE_API_KEY,
+    BINANCE_API_SECRET,
+    BINANCE_PAY_ID,
+    DEPOSIT_EXPIRE_HOURS,
+    PAYMENT_AMOUNT_TOLERANCE,
+)
+
+BINANCE_API_BASE = "https://api.binance.com"
+PAY_TX_PATH = "/sapi/v1/pay/transactions"
+
+DEPOSIT_SUCCESS_DEFAULT = (
+    "\u2705 <b>DEPOSIT CONFIRMED</b>\n\n\U0001f9fe <b>Invoice:</b> <code>#{invoice_id}</code>\n\U0001f4b5 <b>Paid:</b> <code>{paid} USDT</code>\n\U0001f4b0 <b>Balance Added:</b> <code>{amount} USDT</code>\n\U0001f4bc <b>New Balance:</b> <code>{balance} USDT</code>\n\U0001f517 <b>TX:</b> {tx}\n\n\U0001f6cd <i>You can now buy products from Shop.</i>"
+)
+
+
+def _config_ready() -> bool:
+    return bool(BINANCE_API_KEY and BINANCE_API_SECRET and BINANCE_PAY_ID)
+
+
+def _pending_binance_deposits():
+    """Pending, non-expired Binance-Pay invoices that have a note code."""
+    cutoff = (now() - timedelta(hours=DEPOSIT_EXPIRE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute(
+        """
+        SELECT id, user_id, amount, note_code
+        FROM deposits
+        WHERE status='pending' AND method='binance'
+              AND note_code IS NOT NULL AND note_code != '' AND created >= ?
+        ORDER BY id ASC
+        """,
+        (cutoff,),
+    )
+    return cur.fetchall()
+
+
+def _not_processed(tx_id: str) -> bool:
+    cur.execute("SELECT 1 FROM processed_txs WHERE tx_hash=?", (tx_id,))
+    return cur.fetchone() is None
+
+
+def _is_usdt_only(tx) -> bool:
+    """True only if the whole transfer is USDT. Blocks PEPE/other-token spoofs."""
+    if str(tx.get("currency", "")).upper() != "USDT":
+        return False
+    for f in (tx.get("fundsDetail") or []):
+        if str(f.get("currency", "")).upper() != "USDT":
+            return False
+    return True
+
+
+async def _recent_pay_transactions():
+    """Signed call to Get Pay Trade History. Returns the raw data list."""
+    ts = int(time.time() * 1000)
+    start = ts - 2 * 24 * 60 * 60 * 1000  # look back 2 days
+    query = f"startTime={start}&limit=100&recvWindow=60000&timestamp={ts}"
+    signature = hmac.new(
+        BINANCE_API_SECRET.encode("utf-8"), query.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    url = f"{BINANCE_API_BASE}{PAY_TX_PATH}?{query}&signature={signature}"
+    headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+
+    if not isinstance(data, dict) or not data.get("success"):
+        print(f"[binancepay] unexpected response: {str(data)[:200]}", flush=True)
+        return []
+    return data.get("data") or []
+
+
+async def check_binance_payments(context):
+    if not _config_ready():
+        return
+
+    pending = _pending_binance_deposits()
+    if not pending:
+        return
+
+    try:
+        txs = await _recent_pay_transactions()
+    except Exception as exc:
+        print(f"[binancepay] transfer fetch failed: {exc}", flush=True)
+        log_error("Binance Pay checker fetch error", exc)
+        return
+
+    print(
+        f"[binancepay] pending={[(d[0], d[3]) for d in pending]} fetched_tx={len(txs)}",
+        flush=True,
+    )
+
+    tol = Decimal(str(PAYMENT_AMOUNT_TOLERANCE))
+
+    for deposit_id, user_id, base_amount, note_code in pending:
+        code = str(note_code or "").strip().upper()
+        if not code:
+            continue
+
+        for tx in txs:
+            try:
+                tx_id = str(tx.get("transactionId", "") or "")
+                if not tx_id or not _not_processed(tx_id):
+                    continue
+                amount = Decimal(str(tx.get("amount", "0") or "0"))
+                if amount <= 0:
+                    continue  # only incoming (positive) transfers
+                if not _is_usdt_only(tx):
+                    continue  # USDT ONLY -- reject PEPE and every other token
+                note = str(tx.get("note", "") or "").upper()
+                if code not in note:
+                    continue
+                if amount < (Decimal(str(base_amount)) - tol):
+                    continue  # underpaid -> do not credit
+            except Exception:
+                continue
+
+            # ---- Matched: credit the wallet (actual USDT received) ----
+            credit = float(amount)
+            add_balance(user_id, credit)
+            cur.execute(
+                "UPDATE deposits SET status='paid', tx_hash=?, paid_at=? WHERE id=? AND status='pending'",
+                (tx_id, now_text(), deposit_id),
+            )
+            cur.execute(
+                "INSERT OR IGNORE INTO processed_txs(tx_hash, deposit_id, user_id, amount) VALUES(?,?,?,?)",
+                (tx_id, deposit_id, user_id, credit),
+            )
+            conn.commit()
+
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=render_message_template(
+                        "deposit_success",
+                        DEPOSIT_SUCCESS_DEFAULT,
+                        invoice_id=deposit_id,
+                        paid=f"{credit:.2f}",
+                        amount=f"{credit:.2f}",
+                        balance=f"{get_balance(user_id):.2f}",
+                        tx=f"<code>{tx_id}</code>",
+                    ),
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            except Exception as exc:
+                log_error(
+                    "Failed to notify user about Binance deposit",
+                    exc,
+                    extra=f"user={user_id} deposit={deposit_id}",
+                )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "\U0001f4b0 <b>AUTO PAYMENT CONFIRMED (Binance Pay)</b>\n\n"
+                        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+                        f"\U0001f464 <b>User:</b> <code>{user_id}</code>\n"
+                        f"\U0001f9fe <b>Invoice:</b> <code>#{deposit_id}</code>\n"
+                        f"\U0001f516 <b>Note code:</b> <code>{code}</code>\n"
+                        f"\U0001f4b5 <b>Credited:</b> <code>{credit:.2f} USDT</code>\n"
+                        f"\U0001f517 <b>TX:</b> <code>{tx_id}</code>"
+                    ),
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                pass
+
+            break

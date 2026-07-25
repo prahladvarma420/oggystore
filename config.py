@@ -51,6 +51,17 @@ USDT_TRC20_DECIMALS = 6
 # Optional TronGrid API key for higher rate limits (works without one too).
 TRONGRID_API_KEY = os.getenv("TRONGRID_API_KEY")
 
+# ================== BINANCE PAY (USDT) SETTINGS ==================
+# Customers send USDT via Binance Pay to your Binance ID and put a unique
+# 8-char note code (given by the bot) in the transfer Note/Remark. The bot
+# matches by that code and ONLY ever credits USDT transfers.
+# The API key needs read access only (Enable Reading); no trade/withdraw.
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
+# Your Binance Pay ID (the numeric ID customers send to).
+BINANCE_PAY_ID = os.getenv("BINANCE_PAY_ID")
+# ================================================================
+
 # Check payments every 30 seconds
 PAYMENT_CHECK_INTERVAL_SECONDS = 30
 
