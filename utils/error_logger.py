@@ -4,18 +4,27 @@ from pathlib import Path
 from datetime import datetime
 
 LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
-
 ERROR_LOG_FILE = LOG_DIR / "error.log"
 
-logging.basicConfig(
-    filename=ERROR_LOG_FILE,
-    level=logging.ERROR,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    encoding="utf-8"
-)
-
+# Attach a handler to OUR logger only. logging.basicConfig() at import time
+# hijacked the root logger for every third-party library, and LOG_DIR.mkdir()
+# at import crashed outright on a read-only filesystem.
 logger = logging.getLogger("oggystore_bot")
+logger.setLevel(logging.ERROR)
+logger.propagate = False
+
+if not logger.handlers:
+    _formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+    )
+    try:
+        LOG_DIR.mkdir(exist_ok=True)
+        _handler = logging.FileHandler(ERROR_LOG_FILE, encoding="utf-8")
+    except Exception:
+        # Read-only or ephemeral FS: fall back to stderr instead of dying.
+        _handler = logging.StreamHandler()
+    _handler.setFormatter(_formatter)
+    logger.addHandler(_handler)
 
 
 def log_error(title: str, exc: Exception = None, extra: str = ""):

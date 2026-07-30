@@ -189,8 +189,10 @@ async def check_binance_payments(context):
             except Exception:
                 continue
 
-            # ---- Matched: credit the wallet (actual USDT received) ----
-            credit = float(amount)
+            # ---- Matched: credit the INVOICE amount, never more ----
+            # Previously credited float(amount), so any overpayment (or a
+            # false-positive blob match on a larger tx) credited the full sum.
+            credit = float(min(amount, Decimal(str(base_amount))))
             add_balance(user_id, credit)
             cur.execute(
                 "UPDATE deposits SET status='paid', tx_hash=?, paid_at=? WHERE id=? AND status='pending'",

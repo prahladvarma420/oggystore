@@ -105,7 +105,22 @@ def ex(sql, params=()):
 
 
 def has_column(table, column):
+    """Backend-aware column probe.
+
+    Was PRAGMA-only, so on Postgres it always returned False and _migrate()
+    re-ran ALTER TABLE on every boot (silently swallowed).
+    """
     try:
+        from database.pgcompat import use_postgres
+    except Exception:
+        def use_postgres():
+            return False
+    try:
+        if use_postgres():
+            rows = q("SELECT column_name FROM information_schema.columns "
+                     "WHERE table_schema='public' AND table_name=?", (table,))
+            return any((r["column_name"] if isinstance(r, dict) else r[0]) == column
+                       for r in rows)
         rows = q("PRAGMA table_info({})".format(table))
         return any(r["name"] == column for r in rows)
     except Exception:
@@ -298,7 +313,17 @@ def _csrf_protect():
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return
     if request.path == "/login":
-        return
+        # Login is no longer blanket-exempt. A token is issued on GET /login and
+        # verified here, which blocks login-CSRF / forced-login.
+        token = session.get("csrf")
+        sent = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
+        if token and sent and hmac.compare_digest(str(token), str(sent)):
+            return
+        if not token:
+            # First ever POST in a brand new session: allow, then pin a token.
+            session["csrf"] = secrets.token_urlsafe(32)
+            return
+        return jsonify({"ok": False, "error": "Invalid or missing CSRF token"}), 403
     token = session.get("csrf")
     sent = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
     if not token or not sent or not hmac.compare_digest(str(token), str(sent)):
@@ -404,10 +429,17 @@ LOCK_THRESHOLD = 5
 LOCK_WINDOW = 900
 
 
+# Only honour X-Forwarded-For when explicitly told we sit behind a trusted
+# proxy. Trusting it unconditionally let anyone bypass the IP allowlist, the
+# rate limiter and the login lockout by spoofing a header.
+TRUST_PROXY = (os.getenv("WEB_ADMIN_TRUST_PROXY", "") or "").strip().lower() in ("1", "true", "yes")
+
+
 def _client_ip():
-    xff = request.headers.get("X-Forwarded-For", "")
-    if xff:
-        return xff.split(",")[0].strip()
+    if TRUST_PROXY:
+        xff = request.headers.get("X-Forwarded-For", "")
+        if xff:
+            return xff.split(",")[0].strip()
     return request.remote_addr or "?"
 
 
@@ -556,7 +588,13 @@ def verify_password(password):
             "sha256", password.encode("utf-8"), salt.encode("utf-8"), 300_000
         ).hex()
         return hmac.compare_digest(calc, hashed)
-    plain = os.getenv("WEB_ADMIN_PASSWORD", "admin")
+    plain = os.getenv("WEB_ADMIN_PASSWORD", "")
+    if not plain:
+        # Refuse to authenticate against the old "admin" fallback. A deploy that
+        # forgot WEB_ADMIN_PASSWORD used to be reachable with admin/admin.
+        print("[web_admin] REFUSING LOGIN: WEB_ADMIN_PASSWORD / "
+              "WEB_ADMIN_PASSWORD_HASH is not configured.", flush=True)
+        return False
     return hmac.compare_digest(password, plain)
 
 
@@ -690,7 +728,13 @@ def _ensure_web_admins_seeded():
         username = os.getenv("WEB_ADMIN_USERNAME", "admin")
         pwd = botdb.get_setting("web_admin_pwd", "")
         if not pwd:
-            pwd = hash_web_password(os.getenv("WEB_ADMIN_PASSWORD", "admin"))
+            _seed_pw = os.getenv("WEB_ADMIN_PASSWORD", "")
+            if not _seed_pw:
+                # Never seed a well-known default owner account.
+                print("[web_admin] Skipping owner seed: set WEB_ADMIN_PASSWORD first.",
+                      flush=True)
+                return
+            pwd = hash_web_password(_seed_pw)
         g_secret = botdb.get_setting("web_2fa_secret", "") or ""
         g_enabled = 1 if botdb.get_setting("web_2fa_enabled", "0") == "1" else 0
         g_recovery = botdb.get_setting("web_2fa_recovery", "[]") or "[]"
@@ -1046,7 +1090,11 @@ def _broadcast_to_all(msg, pid=None, button_text=None, button_callback=None):
         users = q("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
     except Exception:
         return 0, 0
-    for u in users:
+    for _i, u in enumerate(users):
+        # Telegram allows ~30 msg/sec. Blasting with no pacing guaranteed 429s
+        # and made every subsequent send count as "failed".
+        if _i and _i % 25 == 0:
+            time.sleep(1.0)
         ok_send, _info = tg_send(u["user_id"], msg, reply_markup=kb)
         if ok_send:
             sent += 1
@@ -1533,6 +1581,22 @@ def api_order_refund(oid):
     if not row:
         return jsonify({"ok": False, "error": "not found"}), 404
     botdb.add_balance(row["user_id"], float(row["price"] or 0))
+    # Claw back any referral commission paid on this order, otherwise a
+    # buy -> refund loop mints free referral earnings.
+    try:
+        _ref = q("SELECT referrer_id FROM referrals WHERE referred_id=?",
+                 (row["user_id"],), one=True)
+        if _ref:
+            _pct = float(botdb.get_setting("referral_percent", "5") or 5)
+            _earn = round(float(row["price"] or 0) * _pct / 100, 6)
+            if _earn > 0:
+                ex("UPDATE referrals SET earned=MAX(0, earned-?) WHERE referred_id=?",
+                   (_earn, row["user_id"]))
+                ex("UPDATE users SET referral_earnings=MAX(0, COALESCE(referral_earnings,0)-?), "
+                   "referral_pending=MAX(0, COALESCE(referral_pending,0)-?) WHERE user_id=?",
+                   (_earn, _earn, _ref["referrer_id"]))
+    except Exception:
+        pass
     ex("DELETE FROM orders WHERE id=?", (oid,))
     log_action("refund_order", "#{} ${} -> user {}".format(oid, row["price"], row["user_id"]))
     notify = request.get_json(silent=True) or {}
@@ -2134,8 +2198,11 @@ def api_profit():
     for p in prods:
         pid = p["id"]
         units = botdb.get_sold_stock_count(pid) or 0
-        rev_row = q("SELECT COALESCE(SUM(price),0) s FROM orders WHERE product_name=?",
-                    (p["name"],), one=True) or {}
+        # Orders store product_name as "<name> xN", so an exact match never hit
+        # and revenue silently fell back to price*units for every product.
+        rev_row = q("SELECT COALESCE(SUM(price),0) s FROM orders "
+                    "WHERE product_id=? OR product_name=? OR product_name LIKE ?",
+                    (pid, p["name"], (p["name"] or "") + " x%"), one=True) or {}
         revenue = rev_row.get("s", 0) or 0
         if not revenue and units:
             revenue = (p["price"] or 0) * units
@@ -2368,8 +2435,10 @@ def api_branding_logo():
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "No file selected"}), 400
     ext = os.path.splitext(f.filename)[1].lower()
-    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"):
-        return jsonify({"ok": False, "error": "Use PNG, JPG, WEBP, GIF or SVG"}), 400
+    # SVG removed: it is an executable document. An uploaded SVG was served from
+    # /static/uploads/ and rendered inline, giving stored XSS in the admin panel.
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        return jsonify({"ok": False, "error": "Use PNG, JPG, WEBP or GIF"}), 400
     updir = os.path.join(app.static_folder or "static", "uploads")
     os.makedirs(updir, exist_ok=True)
     for old in glob.glob(os.path.join(updir, "logo.*")):

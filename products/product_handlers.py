@@ -15,10 +15,13 @@ from utils.error_logger import log_error
 from utils.states import user_state
 
 try:
-    from utils.timezone import now
+    from utils.timezone import now, now_text
 except Exception:
     def now():
         return datetime.now()
+
+    def now_text():
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 from config import ADMIN_ID, LOW_STOCK_ALERT_THRESHOLD, USDT_BEP20_ADDRESS, USDT_TRC20_ADDRESS, DEPOSIT_EXPIRE_HOURS, STORE_NAME
 
 
@@ -672,10 +675,10 @@ async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1, method
 
     cur.execute(
         """
-        INSERT INTO deposits(user_id, amount, unique_amount, status, checkout_product_id, checkout_quantity, checkout_done, method)
-        VALUES(?,?,?,?,?,?,0,?)
+        INSERT INTO deposits(user_id, amount, unique_amount, status, created, checkout_product_id, checkout_quantity, checkout_done, method)
+        VALUES(?,?,?,?,?,?,?,0,?)
         """,
-        (uid, total_price, unique_amount, "pending", pid, quantity, method)
+        (uid, total_price, unique_amount, "pending", now_text(), pid, quantity, method)
     )
     conn.commit()
 
@@ -1043,11 +1046,34 @@ Please select a lower quantity or check again later.""",
                 await q.message.reply_text(invite_prompt, parse_mode="HTML", disable_web_page_preview=True)
             return
 
+        # Charge FIRST, then reserve stock. conn.rollback() is a no-op on
+        # Postgres (pgcompat uses autocommit), so reserving before charging
+        # permanently burned codes whenever the balance check failed.
+        cur.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND balance>=?", (total_price, uid, total_price))
+        charged_rows = cur.rowcount
+        conn.commit()
+
+        if charged_rows == 0:
+            await edit_or_send(
+                q,
+                "❌ <b>Purchase Failed</b>\n\nYour balance changed while processing this order.\n\nPlease refresh and try again.",
+                main_menu(uid)
+            )
+            return
+
+        def _refund_charge():
+            try:
+                cur.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (total_price, uid))
+                conn.commit()
+            except Exception:
+                pass
+
         deliveries = reserve_stock_items(pid, uid, quantity)
 
         # Fallback for old products without product_stock rows.
         if deliveries is None:
             if quantity != 1:
+                _refund_charge()
                 await edit_or_send(
                     q,
                     "❌ <b>Multi-buy not available for this old product stock.</b>\n\nPlease buy 1 item or restock this product from admin panel.",
@@ -1057,21 +1083,19 @@ Please select a lower quantity or check again later.""",
 
             delivery_text = fallback_delivery
             cur.execute("UPDATE products SET stock=stock-1 WHERE id=? AND stock > 0", (pid,))
+            if cur.rowcount == 0:
+                _refund_charge()
+                await edit_or_send(
+                    q,
+                    "❌ <b>Out of Stock</b>\n\nThis product just sold out. You have not been charged.",
+                    main_menu(uid)
+                )
+                return
             deliveries = [delivery_text]
         else:
             new_stock = get_available_stock_count(pid)
             cur.execute("UPDATE products SET stock=? WHERE id=?", (new_stock, pid))
-
-        cur.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND balance>=?", (total_price, uid, total_price))
-
-        if cur.rowcount == 0:
-            conn.rollback()
-            await edit_or_send(
-                q,
-                "❌ <b>Purchase Failed</b>\n\nYour balance changed while processing this order.\n\nPlease refresh and try again.",
-                main_menu(uid)
-            )
-            return
+        conn.commit()
 
         delivery_text = format_delivery_items(deliveries)
 
@@ -1079,15 +1103,16 @@ Please select a lower quantity or check again later.""",
             "INSERT INTO orders(user_id, product_name, price, delivery, product_id) VALUES(?,?,?,?,?)",
             (uid, f"{raw_name} x{quantity}", total_price, encrypt_text(delivery_text), pid)
         )
+        order_id = cur.lastrowid
         conn.commit()
 
-        if discount > 0 and coupon_code:
+        # Coupons must be consumed even when the computed discount rounds to 0,
+        # otherwise max_uses is never reached and the coupon is reusable forever.
+        if coupon_code:
             mark_coupon_used(coupon_code)
             clear_user_coupon(uid)
 
         loyalty_points = add_loyalty_points(uid, total_price)
-
-        order_id = cur.lastrowid
 
         referral_earning, referrer_id = add_referral_earning(uid, total_price)
         if referral_earning and referrer_id:

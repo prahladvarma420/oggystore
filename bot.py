@@ -67,10 +67,16 @@ def main():
             interval=600,
             first=120,
         )
+        # Automatic database backup (was imported but never registered).
+        app.job_queue.run_repeating(
+            scheduled_backup,
+            interval=BACKUP_INTERVAL_SECONDS,
+            first=300,
+        )
 
     print("[bot] Started — polling for updates. Payment auto-checker is running.", flush=True)
     try:
-        app.run_polling()
+        app.run_polling(drop_pending_updates=True)
     finally:
         print("[bot] Stopped.", flush=True)
 

@@ -107,7 +107,10 @@ def _gen_note_code(length=8):
     code = "".join(secrets.choice(alphabet) for _ in range(length))
     for _ in range(20):
         cur.execute(
-            "SELECT 1 FROM deposits WHERE note_code=? AND status='pending'", (code,)
+            # Check ALL recent invoices, not just pending ones. A code from an
+            # already-paid invoice could be reissued and then match an old
+            # transaction inside the Binance 2-day scan window.
+            "SELECT 1 FROM deposits WHERE note_code=?", (code,)
         )
         if cur.fetchone() is None:
             return code
@@ -118,13 +121,29 @@ def _gen_note_code(length=8):
 def _create_invoice(uid, amount, method="bep20"):
     """Cancel older pending invoices and create a fresh one.
     Returns (invoice_id, unique_amount, note_code)."""
-    # Cancel older pending invoices for the same user to avoid confusion.
+    # Cancel older pending TOP-UP invoices only.
+    # This used to cancel every pending invoice for the user, including a
+    # direct product-checkout invoice they may have already paid but not yet
+    # been credited for -- silently orphaning a real payment.
     cur.execute(
-        "UPDATE deposits SET status='cancelled' WHERE user_id=? AND status='pending'",
+        "UPDATE deposits SET status='cancelled' "
+        "WHERE user_id=? AND status='pending' AND checkout_product_id IS NULL",
         (uid,)
     )
 
-    unique_amount = round(amount + random.randint(100, 999) / 100000, 5)
+    # Widen the suffix space and verify it is not already in flight. The old
+    # randint(100,999)/100000 gave only 900 variants, so two users depositing
+    # the same base amount collided often -- and the checker credited whichever
+    # pending row it found first (i.e. potentially the WRONG user).
+    unique_amount = round(amount + random.randint(1000, 99999) / 1000000, 6)
+    for _ in range(25):
+        cur.execute(
+            "SELECT 1 FROM deposits WHERE unique_amount=? AND status='pending'",
+            (unique_amount,),
+        )
+        if cur.fetchone() is None:
+            break
+        unique_amount = round(amount + random.randint(1000, 99999) / 1000000, 6)
     note_code = _gen_note_code() if method == "binance" else None
 
     # Set created explicitly in bot time (IST). The DB default is UTC,

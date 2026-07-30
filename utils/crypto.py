@@ -51,3 +51,16 @@ def decrypt_text(value: str) -> str:
         return f.decrypt(value[len(PREFIX):].encode("utf-8")).decode("utf-8")
     except InvalidToken:
         return "[encrypted: invalid key]"
+
+
+# Loud startup warning: without a key, encrypt_text() stores PLAINTEXT product
+# codes / credentials and nobody notices.
+try:
+    if not (os.getenv("DATA_ENCRYPTION_KEY") or "").strip():
+        print(
+            "[crypto] WARNING: DATA_ENCRYPTION_KEY is not set - "
+            "delivery codes and credentials are being stored UNENCRYPTED.",
+            flush=True,
+        )
+except Exception:
+    pass

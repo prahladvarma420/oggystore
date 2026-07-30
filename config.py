@@ -4,7 +4,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+try:
+    ADMIN_ID = int(os.getenv("ADMIN_ID") or 0)
+except (TypeError, ValueError):
+    ADMIN_ID = 0
+if not ADMIN_ID:
+    print("[config] WARNING: ADMIN_ID is not set - admin features are disabled.", flush=True)
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
 OWNER_USERNAME = os.getenv("OWNER_USERNAME")
 GROUP_LINK = "t.me/oggypremiumchat"

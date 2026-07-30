@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import html
 import re
@@ -241,8 +242,16 @@ def get_lock_seconds(user_id: int) -> int:
     return 0
 
 
-async def send_rate_limit_message(obj):
-    text = f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(user.id) or 2} seconds before using the bot again."
+async def send_rate_limit_message(obj, uid=None):
+    if uid is None:
+        try:
+            uid = obj.from_user.id
+        except Exception:
+            try:
+                uid = obj.message.from_user.id
+            except Exception:
+                uid = 0
+    text = f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(uid) or 2} seconds before using the bot again."
     try:
         await edit_or_send(obj, text)
     except Exception:
@@ -258,10 +267,10 @@ async def start(update, context: ContextTypes.DEFAULT_TYPE):
     try:
         welcome_coupon = get_setting("auto_welcome_coupon", "")
         if welcome_coupon:
-            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (uid,))
+            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (user.id,))
             order_count = cur.fetchone()[0]
             if order_count == 0:
-                set_user_coupon(uid, welcome_coupon)
+                set_user_coupon(user.id, welcome_coupon)
     except Exception:
         pass
 
@@ -902,24 +911,24 @@ Example:
 
     if data == "withdraw_history":
         rows = get_user_withdrawals(uid, 10)
-        text = "📂 <b>Withdrawal History</b>\\n\\n"
+        text = "📂 <b>Withdrawal History</b>\n\n"
         if not rows:
             text += "No withdrawal requests yet."
         else:
             for wid, amount, wallet, status, note, created, updated in rows:
                 icon = "🟡" if status == "pending" else "🟢" if status == "approved" else "🔴"
                 text += (
-                    f"{icon} <b>Request #{wid}</b>\\n"
-                    f"💰 Amount: <code>{amount:.6f} USDT</code>\\n"
-                    f"📍 Status: <b>{status}</b>\\n"
-                    f"👛 Wallet: <code>{wallet}</code>\\n"
+                    f"{icon} <b>Request #{wid}</b>\n"
+                    f"💰 Amount: <code>{amount:.6f} USDT</code>\n"
+                    f"📍 Status: <b>{status}</b>\n"
+                    f"👛 Wallet: <code>{wallet}</code>\n"
                 )
                 if note:
-                    text += f"📝 Note: {note}\\n"
-                text += f"🕒 <code>{created}</code>\\n\\n"
+                    text += f"📝 Note: {note}\n"
+                text += f"🕒 <code>{created}</code>\n\n"
 
         if len(text) > 3900:
-            text = text[:3900] + "\\n..."
+            text = text[:3900] + "\n..."
 
         await edit_or_send(q, text, profile_menu())
         return
@@ -1434,7 +1443,7 @@ It will be used on your next wallet purchase.""",
 
             if not request_id:
                 await update.message.reply_text(
-                    "❌ <b>Withdrawal failed.</b>\\n\\nCheck your available referral balance.",
+                    "❌ <b>Withdrawal failed.</b>\n\nCheck your available referral balance.",
                     reply_markup=profile_menu(),
                     parse_mode="HTML"
                 )
@@ -1456,11 +1465,11 @@ Admin will review your request.""",
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
                     text=(
-                        "💸 <b>New Withdrawal Request</b>\\n\\n"
-                        f"🧾 Request: <code>#{request_id}</code>\\n"
-                        f"👤 User: <code>{uid}</code>\\n"
-                        f"💰 Amount: <code>{amount:.6f} USDT</code>\\n"
-                        f"👛 Wallet: <code>{wallet}</code>\\n\\n"
+                        "💸 <b>New Withdrawal Request</b>\n\n"
+                        f"🧾 Request: <code>#{request_id}</code>\n"
+                        f"👤 User: <code>{uid}</code>\n"
+                        f"💰 Amount: <code>{amount:.6f} USDT</code>\n"
+                        f"👛 Wallet: <code>{wallet}</code>\n\n"
                         "Admin Panel → Withdrawals"
                     ),
                     parse_mode="HTML"
@@ -1472,7 +1481,7 @@ Admin will review your request.""",
 
         except Exception:
             await update.message.reply_text(
-                "❌ <b>Wrong Format</b>\\n\\nUse: <code>AMOUNT | WALLET_ADDRESS</code>",
+                "❌ <b>Wrong Format</b>\n\nUse: <code>AMOUNT | WALLET_ADDRESS</code>",
                 parse_mode="HTML"
             )
             return
@@ -1588,6 +1597,12 @@ async def photo_handler(update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     uid = user.id
     ensure_user(user)
+
+    # A photo message has no .text. Several text-input states below
+    # (checkout_coupon_code / apply_coupon_code / custom_buy_qty) referenced an
+    # undefined `text` and raised NameError. Fall back to the photo caption so
+    # those states degrade gracefully instead of crashing.
+    text = (update.message.caption or "").strip()
 
     try:
         welcome_coupon = get_setting("auto_welcome_coupon", "")
@@ -1756,13 +1771,13 @@ It will be used on your next wallet purchase.""",
             context.user_data.pop("image_product_id", None)
 
             await update.message.reply_text(
-                f"✅ <b>Product image saved.</b>\\n\\n🆔 Product ID: <code>{product_id}</code>",
+                f"✅ <b>Product image saved.</b>\n\n🆔 Product ID: <code>{product_id}</code>",
                 reply_markup=main_menu(uid),
                 parse_mode="HTML"
             )
         except Exception as exc:
             await update.message.reply_text(
-                f"❌ <b>Image save failed.</b>\\n\\n<code>{exc}</code>",
+                f"❌ <b>Image save failed.</b>\n\n<code>{exc}</code>",
                 parse_mode="HTML"
             )
 
@@ -1869,7 +1884,9 @@ async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
             file = await context.bot.get_file(doc.file_id)
             restore_dir = Path("restore_uploads")
             restore_dir.mkdir(exist_ok=True)
-            file_path = restore_dir / doc.file_name
+            # Use only the basename: a crafted doc.file_name such as
+            # "../../config.py" would otherwise write outside restore_uploads.
+            file_path = restore_dir / os.path.basename(doc.file_name or "backup.zip")
             await file.download_to_drive(str(file_path))
 
             ok, msg = restore_backup_zip(str(file_path))

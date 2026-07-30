@@ -1,6 +1,20 @@
 from database.db import cur, conn, get_setting, set_user_coupon
-from utils.timezone import now_text
+from utils.timezone import now_text, today_prefix
 from config import ADMIN_ID
+
+
+def _cutoff_text(days):
+    """UTC-naive cutoff string. DATE('now', '-N days') is SQLite-only and
+    silently failed on Postgres, so inactive-user marketing never ran."""
+    from datetime import timedelta
+    try:
+        from utils.timezone import now as _now
+        base = _now()
+    except Exception:
+        from datetime import datetime
+        base = datetime.now()
+    return (base - timedelta(days=int(days))).strftime("%Y-%m-%d %H:%M:%S")
+
 
 
 async def run_auto_marketing(context):
@@ -27,12 +41,12 @@ async def run_auto_marketing(context):
             SELECT user_id
             FROM users
             WHERE COALESCE(blocked,0)=0
-              AND (last_marketing_sent IS NULL OR DATE(last_marketing_sent) < DATE('now'))
+              AND (last_marketing_sent IS NULL OR last_marketing_sent < ?)
               AND user_id NOT IN (
-                  SELECT DISTINCT user_id FROM orders WHERE DATE(created) >= DATE('now', ?)
+                  SELECT DISTINCT user_id FROM orders WHERE created >= ?
               )
             LIMIT 25
-        """, (f"-{days} days",))
+        """, (today_prefix(), _cutoff_text(days)))
         users = cur.fetchall()
 
         sent = 0

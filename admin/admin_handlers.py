@@ -4046,7 +4046,7 @@ async def handle_admin_message(update, context, uid, text, state):
 
         except Exception as exc:
             await update.message.reply_text(
-                f"❌ <b>Offer save failed.</b>\\n\\n<code>{exc}</code>",
+                f"❌ <b>Offer save failed.</b>\n\n<code>{exc}</code>",
                 parse_mode="HTML"
             )
             return True
@@ -4060,7 +4060,7 @@ async def handle_admin_message(update, context, uid, text, state):
             user_state.pop(uid, None)
 
             await update.message.reply_text(
-                f"{'✅' if deleted else '⚠️'} <b>Offer delete completed.</b>\\n\\nQuantity: <code>{qty}</code>",
+                f"{'✅' if deleted else '⚠️'} <b>Offer delete completed.</b>\n\nQuantity: <code>{qty}</code>",
                 reply_markup=price_offers_keyboard(product_id),
                 parse_mode="HTML"
             )

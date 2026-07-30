@@ -37,3 +37,6 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+*.dump
+*.db
+restore_uploads/

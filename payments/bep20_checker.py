@@ -104,7 +104,8 @@ async def _expire_old_deposits(context):
     """Mark stale pending invoices as expired and notify their owners."""
     cutoff = (now() - timedelta(hours=DEPOSIT_EXPIRE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
     cur.execute(
-        "SELECT id, user_id, amount FROM deposits WHERE status='pending' AND created < ?",
+        "SELECT id, user_id, amount FROM deposits WHERE status='pending' "
+        "AND (method IS NULL OR method='' OR method='bep20') AND created < ?",
         (cutoff,),
     )
     rows = cur.fetchall()
@@ -388,7 +389,7 @@ async def check_payments(context):
                         order_id = cur.lastrowid
 
                         cur.execute(
-                            "UPDATE deposits SET status='paid', tx_hash=?, paid_at=?, checkout_done=1 WHERE id=?",
+                            "UPDATE deposits SET status='paid', tx_hash=?, paid_at=?, checkout_done=1 WHERE id=? AND status='pending'",
                             (tx_hash, now_text(), deposit_id),
                         )
                         cur.execute(
@@ -440,7 +441,7 @@ async def check_payments(context):
                     else:
                         add_balance(user_id, float(base_amount))
                         cur.execute(
-                            "UPDATE deposits SET status='paid', tx_hash=?, paid_at=?, checkout_done=1 WHERE id=?",
+                            "UPDATE deposits SET status='paid', tx_hash=?, paid_at=?, checkout_done=1 WHERE id=? AND status='pending'",
                             (tx_hash, now_text(), deposit_id),
                         )
                         cur.execute(
@@ -464,7 +465,7 @@ async def check_payments(context):
                 else:
                     add_balance(user_id, float(base_amount))
                     cur.execute(
-                        "UPDATE deposits SET status='paid', tx_hash=?, paid_at=?, checkout_done=1 WHERE id=?",
+                        "UPDATE deposits SET status='paid', tx_hash=?, paid_at=?, checkout_done=1 WHERE id=? AND status='pending'",
                         (tx_hash, now_text(), deposit_id),
                     )
                     cur.execute(
@@ -476,7 +477,7 @@ async def check_payments(context):
                 add_balance(user_id, float(base_amount))
 
                 cur.execute(
-                    "UPDATE deposits SET status='paid', tx_hash=?, paid_at=? WHERE id=?",
+                    "UPDATE deposits SET status='paid', tx_hash=?, paid_at=? WHERE id=? AND status='pending'",
                     (tx_hash, now_text(), deposit_id),
                 )
 
@@ -573,7 +574,7 @@ async def check_payments(context):
 
                     add_balance(user_id, float(base_amount))
                     cur.execute(
-                        "UPDATE deposits SET status='paid', tx_hash=?, paid_at=? WHERE id=?",
+                        "UPDATE deposits SET status='paid', tx_hash=?, paid_at=? WHERE id=? AND status='pending'",
                         (pseudo_tx, now_text(), deposit_id),
                     )
                     cur.execute(

@@ -4,20 +4,42 @@ import sqlite3
 from config import DB_PATH, ADMIN_ID
 import os
 from utils.crypto import encrypt_text, decrypt_text
-from utils.timezone import now_text, now as ist_now
+from utils.timezone import now_text, today_prefix, now as ist_now
 
 from database.pgcompat import connect as _compat_connect  # SQLite/Postgres switch
 conn = _compat_connect(DB_PATH)
 cur = conn.cursor()
 
 
+def _table_columns(table: str):
+    """Column names for `table` on either backend."""
+    try:
+        from database.pgcompat import use_postgres
+    except Exception:
+        def use_postgres():
+            return False
+
+    if use_postgres():
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name=?",
+            (table,),
+        )
+        return [r[0] for r in cur.fetchall()]
+
+    cur.execute(f"PRAGMA table_info({table})")
+    return [row[1] for row in cur.fetchall()]
+
+
 def _safe_add_column(table: str, column: str, definition: str):
     # Do not fail fresh installs if a migration is listed before the table is created.
+    # NOTE: the sqlite_master probe is rewritten to information_schema by pgcompat;
+    # it is scoped to the public schema so a same-named table in another schema
+    # cannot produce a false positive.
     cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,))
     if cur.fetchone() is None:
         return
-    cur.execute(f"PRAGMA table_info({table})")
-    existing = [row[1] for row in cur.fetchall()]
+    existing = _table_columns(table)
     if column not in existing:
         cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
@@ -512,14 +534,22 @@ def init_db():
         )
     }
 
-    for key, (title, body) in default_templates.items():
-        cur.execute(
-            "INSERT OR IGNORE INTO message_templates(key, title, body) VALUES(?,?,?)",
-            (key, title, body)
-        )
-
+    # Seed the default templates ONCE per process. This used to run 15
+    # INSERT OR IGNORE statements plus a commit on every /start, every message
+    # and every callback -- a large pointless write load on every interaction.
+    global _TEMPLATES_SEEDED
+    if not _TEMPLATES_SEEDED:
+        for key, (title, body) in default_templates.items():
+            cur.execute(
+                "INSERT OR IGNORE INTO message_templates(key, title, body) VALUES(?,?,?)",
+                (key, title, body)
+            )
+        _TEMPLATES_SEEDED = True
 
     conn.commit()
+
+
+_TEMPLATES_SEEDED = False
 
 
 def ensure_user(user):
@@ -707,7 +737,12 @@ def add_stock_items(product_id: int, delivery_text: str):
             (product_id, encrypt_text(item))
         )
 
-    cur.execute("UPDATE products SET stock=? WHERE id=?", (len(items), product_id))
+    # Set stock to the REAL unsold count. This used to be `stock=len(items)`,
+    # which discarded any existing unsold stock on every restock.
+    cur.execute("SELECT COUNT(*) FROM product_stock WHERE product_id=? AND sold=0", (product_id,))
+    _avail = cur.fetchone()
+    cur.execute("UPDATE products SET stock=? WHERE id=?",
+                (int(_avail[0]) if _avail else len(items), product_id))
     # Re-arm low-stock alerts after restock so the next drop alerts again.
     cur.execute("UPDATE products SET low_stock_notified=0 WHERE id=?", (product_id,))
     conn.commit()
@@ -1353,11 +1388,46 @@ def mark_restock_notified(product_id: int):
     conn.commit()
 
 
+VIP_TIERS = [(0.0, "Bronze"), (100.0, "Silver"), (500.0, "Gold"), (2000.0, "Platinum")]
+
+
 def add_loyalty_points(user_id: int, amount_spent: float):
-    return 0.0
+    """Award loyalty points based on the loyalty_percent setting.
+
+    Previously a stub returning 0.0, so the points shown in the wallet/profile
+    screens never moved.
+    """
+    try:
+        percent = float(get_setting("loyalty_percent", "0") or 0)
+        points = round(float(amount_spent) * percent / 100.0, 6)
+        if points <= 0:
+            return 0.0
+        cur.execute(
+            "UPDATE users SET loyalty_points=COALESCE(loyalty_points,0)+? WHERE user_id=?",
+            (points, user_id),
+        )
+        conn.commit()
+        update_vip_rank(user_id)
+        return points
+    except Exception:
+        return 0.0
+
 
 def update_vip_rank(user_id: int):
-    return 'Bronze'
+    """Recompute VIP rank from lifetime spend. Previously always 'Bronze'."""
+    try:
+        cur.execute("SELECT COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (user_id,))
+        row = cur.fetchone()
+        spent = float(row[0] or 0) if row else 0.0
+        rank = "Bronze"
+        for threshold, name in VIP_TIERS:
+            if spent >= threshold:
+                rank = name
+        cur.execute("UPDATE users SET vip_rank=? WHERE user_id=?", (rank, user_id))
+        conn.commit()
+        return rank
+    except Exception:
+        return "Bronze"
 
 def get_first_purchase_discount(user_id: int):
     cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (user_id,))
@@ -1555,13 +1625,14 @@ def clear_admin_logs():
 def smart_dashboard_stats():
     reset_at = get_setting("revenue_reset_at", "") or "1970-01-01 00:00:00"
     try:
-        cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE DATE(created)=DATE('now') AND created >= ?", (reset_at,))
+        cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders "
+                    "WHERE created >= ? AND created >= ?", (today_prefix(), reset_at))
         today_revenue, today_orders = cur.fetchone()
     except Exception:
         today_revenue, today_orders = 0, 0
 
     try:
-        cur.execute("SELECT COUNT(*) FROM users WHERE DATE(joined)=DATE('now')")
+        cur.execute("SELECT COUNT(*) FROM users WHERE joined >= ?", (today_prefix(),))
         new_users = cur.fetchone()[0]
     except Exception:
         new_users = 0
@@ -1612,9 +1683,19 @@ def create_backup_zip():
     backup_path = backup_dir / f"shopbot_backup_{ts}.zip"
 
     with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as z:
+        wrote_data = False
         db_file = Path(DB_PATH)
         if db_file.exists():
             z.write(db_file, db_file.name)
+            wrote_data = True
+
+        # On Postgres there is no .db file -- embed a portable JSON snapshot
+        # instead, otherwise the zip contained no data at all.
+        if not wrote_data:
+            from utils.backup import create_backup
+            snap = Path(create_backup())
+            z.write(snap, snap.name)
+
         for p in Path(".").glob(".env*"):
             if p.is_file():
                 z.write(p, p.name)
@@ -1634,8 +1715,19 @@ def restore_backup_zip(zip_path: str):
         db_members = [m for m in z.namelist() if m.endswith(".db")]
         if not db_members:
             return False, "No .db file found in backup."
-        z.extract(db_members[0], ".")
-        extracted = Path(db_members[0])
+
+        member = db_members[0]
+        # Zip-slip guard: a crafted member like ../../etc/x.db previously
+        # let an uploaded backup write anywhere on the filesystem.
+        safe_name = Path(member).name
+        if not safe_name or safe_name.startswith("."):
+            return False, "Unsafe filename inside backup."
+
+        extract_root = Path("restore_extract").resolve()
+        extract_root.mkdir(parents=True, exist_ok=True)
+        extracted = extract_root / safe_name
+        with z.open(member) as src, open(extracted, "wb") as dst:
+            dst.write(src.read())
         target = Path(DB_PATH)
         if extracted.resolve() != target.resolve():
             target.write_bytes(extracted.read_bytes())
