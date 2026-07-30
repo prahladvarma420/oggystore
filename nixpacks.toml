@@ -30,4 +30,21 @@ aptPkgs = [
 
 [phases.playwright]
 dependsOn = ["install"]
-cmds = ["python -m playwright install --with-deps chromium || python -m playwright install chromium"]
+cmds = [
+    # Print the resolved version so the build log shows which browser revision
+    # is expected, and so this phase's cache key changes when it is edited.
+    "python -m playwright --version",
+    # Install the Chromium build matching the PINNED playwright in requirements.txt.
+    "python -m playwright install --with-deps chromium || python -m playwright install chromium",
+    # Playwright >=1.49 launches the separate headless-shell binary by default.
+    # On some versions it is NOT covered by `install chromium`, which leaves
+    # chromium_headless_shell-<rev> missing at runtime. Harmless where unsupported.
+    "python -m playwright install chromium-headless-shell || true",
+    # Fail the BUILD (not the running bot) if nothing landed on disk.
+    "ls -la /root/.cache/ms-playwright",
+]
+
+# Nixpacks only guarantees a custom phase runs if something depends on it.
+# Without this, [phases.playwright] can be skipped or cached away entirely.
+[phases.build]
+dependsOn = ["playwright"]

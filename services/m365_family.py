@@ -544,7 +544,7 @@ def send_family_invite_sync(email: str, forced_session=None, warranty=None):
                 ):
                     # Browser missing OR it crashed on startup. The system
                     # libraries are baked into the image at build time via
-                    # railpack.json (deploy.aptPackages) and the browser binary
+                    # nixpacks.toml (phases.setup.aptPkgs) and the browser binary
                     # via the build install step, so this is only a rare
                     # fallback. Install the browser binary ONLY (never apt at
                     # runtime — apt-get hangs on the Railway runtime image).
@@ -1051,8 +1051,26 @@ def _refresh_session_sync(session_id, state_json):
         with sync_playwright() as p:
             try:
                 browser = p.chromium.launch(headless=True, channel="chromium", args=_CHROMIUM_ARGS)
-            except Exception:
-                browser = p.chromium.launch(headless=True, args=_CHROMIUM_ARGS)
+            except Exception as _first_exc:
+                try:
+                    browser = p.chromium.launch(headless=True, args=_CHROMIUM_ARGS)
+                except Exception as _launch_exc:
+                    # Same self-heal the purchase path already had. Without this
+                    # the keepalive job could never recover from a missing browser
+                    # binary and just logged "check inconclusive" forever.
+                    err_text = str(_launch_exc)
+                    if (
+                        "Executable doesn't exist" in err_text
+                        or "has been closed" in err_text
+                        or "Failed to launch" in err_text
+                        or "error while loading shared libraries" in err_text
+                    ):
+                        _log("chromium missing during keepalive - attempting runtime install")
+                        _install_chromium(with_deps=False)
+                        browser = p.chromium.launch(headless=True, args=_CHROMIUM_ARGS)
+                        _log("chromium launched OK after reinstall")
+                    else:
+                        raise
             context = browser.new_context(
                 storage_state=tmp.name,
                 viewport={"width": 1280, "height": 800},
