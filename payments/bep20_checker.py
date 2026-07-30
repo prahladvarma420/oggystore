@@ -244,36 +244,22 @@ def _get_recent_incoming_usdt_logs(context, w3: Web3):
 
 async def _maybe_low_stock_alert(context, product_id: int):
     try:
-        cur.execute("SELECT value FROM settings WHERE key='low_stock_alert_threshold'")
-        row = cur.fetchone()
-        threshold = int(row[0]) if row and row[0] else 3
+        # FIX59: delegate to the single canonical low-stock implementation.
+        # This function used to treat products.low_stock_notified as a BOOLEAN
+        # (0/1), while notify_low_stock() treats the SAME column as an ALERT
+        # LEVEL (e.g. 5 or 1). Whichever ran first corrupted the other: once
+        # this code wrote 1, notify_low_stock() saw last_notified=1, which is
+        # <= every configured level, and went permanently silent.
+        # Imported locally to avoid a circular import at module load time.
+        from products.product_handlers import notify_low_stock
 
-        stock = get_available_stock_count(product_id)
-
-        cur.execute("SELECT name, low_stock_notified FROM products WHERE id=?", (product_id,))
+        cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
         p = cur.fetchone()
         if not p:
             return
 
-        name, notified = p
-
-        if stock <= threshold and not notified:
-            cur.execute("UPDATE products SET low_stock_notified=1 WHERE id=?", (product_id,))
-            conn.commit()
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"""⚠️ <b>Low Stock Alert</b>
-
-📦 <b>{html.escape(strip_premium(name), quote=False)}</b>
-🆔 Product ID: <code>{product_id}</code>
-📊 Remaining: <code>{stock}</code>
-
-Please restock soon.""",
-                parse_mode="HTML"
-            )
-        elif stock > threshold and notified:
-            cur.execute("UPDATE products SET low_stock_notified=0 WHERE id=?", (product_id,))
-            conn.commit()
+        stock = get_available_stock_count(product_id)
+        await notify_low_stock(context.bot, product_id, p[0], stock)
     except Exception as exc:
         log_error("Low stock alert failed", exc, extra=f"product={product_id}")
 
@@ -411,7 +397,7 @@ async def check_payments(context):
                                     f"🔗 <b>TX:</b> <a href='{tx_link}'>{short_tx}</a>\n\n"
                                     "🔑 <b>Code(s):</b>\n"
                                     f"<code>{html.escape(delivery_text, quote=False)}</code>\n\n"
-                                    "━━━━━━━━━━━━━��━━━━━━\n"
+                                    "━━━━━━━━━━━━━━━━━━━\n"
                                     "Thank you for your purchase! 🎉"
                                 ),
                                 parse_mode="HTML",

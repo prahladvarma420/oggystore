@@ -310,7 +310,7 @@ def product_analytics_text(product_id: int):
 🛒 Orders: <code>{orders}</code>
 💵 Revenue: <code>${float(revenue or 0):.2f}</code>
 📤 Delivered/Sold Stock: <code>{sold_stock}</code>
-�� Available Stock: <code>{available or live_stock or stock}</code>"""
+Available Stock: <code>{available or live_stock or stock}</code>"""
 
 
 def top_sellers_text():
@@ -673,9 +673,9 @@ def add_product_preview_text(uid: int):
 {description}
 
 📌 <b>Validity:</b> {validity}
-�� <b>Warranty:</b> {warranty}
+<b>Warranty:</b> {warranty}
 
-��� <b>Rules:</b>
+<b>Rules:</b>
 {rules}
 
 Choose what you want to do:"""
@@ -712,7 +712,7 @@ def get_product_codes_text(product_id: int, limit: int = 80):
     sold_count = get_sold_stock_count(product_id)
     total = get_total_stock_count(product_id)
 
-    msg = f"""�� <b>Product Codes Manager</b>
+    msg = f"""<b>Product Codes Manager</b>
 
 📦 <b>Product:</b> {_admin_name(product_name)}
 🆔 <b>Product ID:</b> <code>{product_id}</code>
@@ -1080,7 +1080,7 @@ async def show_admin_panel(q, uid):
 🛒 <b>Orders:</b> <code>{orders_count}</code>
 👥 <b>Users:</b> <code>{users_count}</code>
 📦 <b>Active Products:</b> <code>{products_count}</code>
-���� <b>Available Stock:</b> <code>{available_stock}</code>
+<b>Available Stock:</b> <code>{available_stock}</code>
 🎫 <b>Open Tickets:</b> <code>{open_tickets}</code>
 
 <b>Recent Orders</b>
@@ -2226,7 +2226,7 @@ Send:
                       f"🧾 <b>Order:</b> <code>#{order_id}</code>\n"
                       f"📦 <b>Product:</b> {_admin_name(product_name)}\n"
                       f"💰 <b>Paid:</b> <code>${price:.2f}</code>\n\n"
-                      f"���� <b>Your Delivery</b>\n<code>{delivery}</code>"),
+                      f"<b>Your Delivery</b>\n<code>{delivery}</code>"),
                 parse_mode="HTML"
             )
             log_admin_action(uid, "ORDER_DETAIL_RESEND", f"Order #{order_id} to user {target_id}")
@@ -2259,7 +2259,7 @@ Send:
         status = "🚫 Blocked" if blocked else "✅ Active"
         await edit_or_send(q, f"""👤 <b>User Detail</b>
 
-���� <b>ID:</b> <code>{user_id}</code>
+<b>ID:</b> <code>{user_id}</code>
 👤 <b>Name:</b> {first_name or 'User'}
 🔗 <b>Username:</b> {uname}
 💼 <b>Balance:</b> <code>${float(balance or 0):.2f}</code>
@@ -2387,7 +2387,7 @@ Send any one:
         user_state[uid] = "admin_coupon_create"
         await edit_or_send(
             q,
-            """�� <b>Create Coupon</b>
+            """<b>Create Coupon</b>
 
 Send:
 <code>CODE | percent/fixed | value | max_uses | hours</code>
@@ -2638,7 +2638,7 @@ Example:
 
 👤 User: <code>{user_id}</code>
 👤 Name: <b>{first_name or 'User'}</b> / <code>{username_text}</code>
-��� Subject: <b>{subject or 'Support Ticket'}</b>
+Subject: <b>{subject or 'Support Ticket'}</b>
 📌 Status: <b>{status}</b>
 
 <b>User Message:</b>
@@ -2785,7 +2785,7 @@ Example:
         cur.execute("SELECT id, name, price, stock, active, validity, warranty, max_per_order FROM products ORDER BY id DESC")
         rows = cur.fetchall()
 
-        text = "📦 <b>Product Management</b>\n\n🔎 Use Search Product for quick lookup.\n�����️ LOW means stock ≤ 5.\n\n"
+        text = "📦 <b>Product Management</b>\n\n🔎 Use Search Product for quick lookup.\n️ LOW means stock ≤ 5.\n\n"
 
         if not rows:
             text += "😕 <i>No products added yet.</i>"
@@ -2996,7 +2996,7 @@ Choose an order to view details:""",
                 text += (
                     f"🎫 <b>Ticket #{ticket_id}</b>\n"
                     f"👤 {first_name or 'User'} / {username_text}\n"
-                    f"��� <code>{user_id}</code>\n"
+                    f"<code>{user_id}</code>\n"
                     f"📌 <b>{subject}</b>\n"
                     f"📝 {short_msg}\n"
                     f"🕒 <code>{created}</code>\n"
@@ -3779,7 +3779,7 @@ async def handle_admin_message(update, context, uid, text, state):
             await update.message.reply_text(
                 f"""🤝 <b>Reseller Coupon Saved</b>
 
-���� Code: <code>{code}</code>
+Code: <code>{code}</code>
 💝 Discount: <code>{discount_text}</code>
 ⏳ Validity: <code>{hours:g} hours</code>
 📌 Expires: <code>{ends}</code>

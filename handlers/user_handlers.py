@@ -4,7 +4,7 @@ import html
 import re
 import time
 from telegram.ext import ContextTypes
-from database.db import get_setting, set_user_coupon, render_message_template, cur, conn, ensure_user, get_balance, is_blocked, is_admin, create_ticket, get_user_tickets, add_referral, get_referral_stats, create_withdrawal_request, get_user_withdrawals, get_user_coupon, validate_coupon, clear_user_coupon, restore_backup_zip, add_restock_notification
+from database.db import get_setting, set_user_coupon, render_message_template, cur, conn, ensure_user, get_balance, is_blocked, is_admin, create_ticket, get_user_tickets, add_referral, get_referral_stats, create_withdrawal_request, get_user_withdrawals, get_user_coupon, validate_coupon, get_coupon_user_uses, clear_user_coupon, restore_backup_zip, add_restock_notification
 from utils.crypto import decrypt_text
 from utils.premium_emoji import strip_premium
 from keyboards.menus import main_menu, profile_menu, back_home, support_menu
@@ -1182,7 +1182,7 @@ async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
             qty = int(state_parts[2])
             code = text.strip().upper()
 
-            coupon, error = validate_coupon(code)
+            coupon, error = validate_coupon(code, uid)
             if not coupon:
                 await update.message.reply_text(
                     f"❌ <b>Invalid Coupon</b>\n\n{error}",
@@ -1259,7 +1259,7 @@ Now open checkout again to see the updated final price.""",
     if state == "apply_coupon_code":
         try:
             code = text.strip().upper()
-            coupon, error = validate_coupon(code)
+            coupon, error = validate_coupon(code, uid)
 
             if not coupon:
                 await update.message.reply_text(
@@ -1659,7 +1659,7 @@ async def photo_handler(update, context: ContextTypes.DEFAULT_TYPE):
             qty = int(qty_text)
             code = text.strip().upper()
 
-            coupon, error = validate_coupon(code)
+            coupon, error = validate_coupon(code, uid)
             if not coupon:
                 await update.message.reply_text(
                     f"❌ <b>Invalid Coupon</b>\n\n{error}",
@@ -1697,7 +1697,7 @@ async def photo_handler(update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == "apply_coupon_code":
         code = text.strip().upper()
-        coupon, error = validate_coupon(code)
+        coupon, error = validate_coupon(code, uid)
 
         if not coupon:
             await update.message.reply_text(

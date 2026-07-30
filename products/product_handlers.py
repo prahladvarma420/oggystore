@@ -455,7 +455,7 @@ async def show_order_preview(q, uid: int, product_id: int, quantity: int):
     coupon_code = get_user_coupon(uid)
     coupon_line = "🎟 <b>Coupon:</b> None"
     if coupon_code:
-        coupon, coupon_error = validate_coupon(coupon_code)
+        coupon, coupon_error = validate_coupon(coupon_code, uid)
         if coupon:
             discount = calculate_coupon_discount(original_total, coupon)
             total_price = round(original_total - discount, 2)
@@ -473,7 +473,7 @@ async def show_order_preview(q, uid: int, product_id: int, quantity: int):
 🛒 <b>Checkout Preview</b>
 
 Quantity: <b>{quantity}</b> code{'s' if quantity != 1 else ''}
-��� Rate Used: <b>${unit_price:.2f}</b> each
+Rate Used: <b>${unit_price:.2f}</b> each
 💵 Original Total: <b>${original_total:.2f}</b>
 💼 Final Total: <b>${total_price:.2f}</b>
 👛 Wallet Balance: <b>{balance:.2f} USDT</b>
@@ -523,7 +523,7 @@ async def show_shop(q):
         visible_count += 1
         kb.append([
             InlineKeyboardButton(
-                f"{'����� ' if featured else ''}{button_premium(name)[0]} — {price_label} (Stock: {stock})",
+                f"{'' if featured else ''}{button_premium(name)[0]} — {price_label} (Stock: {stock})",
                 callback_data=f"product_{pid}",
                 style="danger" if int(stock or 0) <= 0 else "primary",
                 icon_custom_emoji_id=button_premium(name)[1]
@@ -842,7 +842,7 @@ Please select a lower quantity or check again later.""",
             total_price = round(total_price - first_purchase_discount, 2)
 
         if coupon_code:
-            coupon, coupon_error = validate_coupon(coupon_code)
+            coupon, coupon_error = validate_coupon(coupon_code, uid)
             if coupon:
                 discount = calculate_coupon_discount(total_price, coupon)
                 total_price = round(total_price - discount, 2)
@@ -907,7 +907,7 @@ Please select a lower quantity or check again later.""",
             conn.commit()
 
             if discount > 0 and coupon_code:
-                mark_coupon_used(coupon_code)
+                mark_coupon_used(coupon_code, uid)
                 clear_user_coupon(uid)
 
             add_loyalty_points(uid, total_price)
@@ -1004,7 +1004,7 @@ Please select a lower quantity or check again later.""",
             conn.commit()
 
             if discount > 0 and coupon_code:
-                mark_coupon_used(coupon_code)
+                mark_coupon_used(coupon_code, uid)
                 clear_user_coupon(uid)
 
             add_loyalty_points(uid, total_price)
@@ -1125,7 +1125,7 @@ Please select a lower quantity or check again later.""",
         # Coupons must be consumed even when the computed discount rounds to 0,
         # otherwise max_uses is never reached and the coupon is reusable forever.
         if coupon_code:
-            mark_coupon_used(coupon_code)
+            mark_coupon_used(coupon_code, uid)
             clear_user_coupon(uid)
 
         loyalty_points = add_loyalty_points(uid, total_price)

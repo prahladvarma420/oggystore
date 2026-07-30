@@ -1255,7 +1255,7 @@ async def process_invite(bot, invite_id: int):
             await bot.send_message(
                 chat_id=user_id,
                 text=(
-                    "�� <b>Microsoft 365 Invite Sent!</b>\n"
+                    "<b>Microsoft 365 Invite Sent!</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━\n\n"
                     f"📧 <b>Email:</b> <code>{safe_email}</code>\n\n"
                     "1️⃣ Open that inbox (check <b>Spam</b> too)\n"

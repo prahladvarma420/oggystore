@@ -612,11 +612,11 @@ def init_db():
         ),
         "wallet_message": (
             "My Wallet Message",
-            "💼 <b>My Wallet</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💰 <b>Available Balance:</b> <b>{balance} USDT</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n🧾 <b>Paid Deposits:</b> <b>{deposits}</b>\n\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💸 <b>Total Spent:</b> <b>{spent} USDT</b>\n\n��� <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n⭐ <b>Loyalty Points:</b> <b>{loyalty_points}</b>\n🏆 <b>VIP Rank:</b> <b>{vip_rank}</b>\n\nUse Deposit to add balance, then pay directly from wallet during checkout."
+            "💼 <b>My Wallet</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💰 <b>Available Balance:</b> <b>{balance} USDT</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n🧾 <b>Paid Deposits:</b> <b>{deposits}</b>\n\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💸 <b>Total Spent:</b> <b>{spent} USDT</b>\n\n<b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n⭐ <b>Loyalty Points:</b> <b>{loyalty_points}</b>\n🏆 <b>VIP Rank:</b> <b>{vip_rank}</b>\n\nUse Deposit to add balance, then pay directly from wallet during checkout."
         ),
         "support_prompt": (
             "Support Ticket Message",
-            "��� <b>Create Support Ticket</b>\n\nSend your issue/message now.\n\nExample:\nPayment done but balance not added."
+            "<b>Create Support Ticket</b>\n\nSend your issue/message now.\n\nExample:\nPayment done but balance not added."
         ),
         "deposit_success": (
             "Deposit Success Message",
@@ -1492,7 +1492,7 @@ def clear_user_coupon(user_id: int):
     conn.commit()
 
 
-def validate_coupon(code: str):
+def validate_coupon(code: str, user_id: int = None):
     code = code.upper().strip()
     cur.execute("SELECT code, discount_type, value, active, max_uses, used_count, expires_at FROM coupons WHERE code=?", (code,))
     row = cur.fetchone()
@@ -1519,6 +1519,17 @@ def validate_coupon(code: str):
     if max_uses and used_count >= max_uses:
         return None, "Coupon usage limit reached"
 
+    # FIX60: per-user redemption cap. Without this only the GLOBAL used_count
+    # was enforced, so a single user could redeem the same coupon over and
+    # over -- draining a limited coupon, or unlimited times when max_uses=0.
+    if user_id is not None:
+        try:
+            per_user = int(get_setting_value("coupon_max_uses_per_user", "1") or 1)
+        except Exception:
+            per_user = 1
+        if per_user > 0 and get_coupon_user_uses(code, user_id) >= per_user:
+            return None, "You have already used this coupon"
+
     return {
         "code": code,
         "discount_type": discount_type,
@@ -1543,8 +1554,48 @@ def calculate_coupon_discount(total: float, coupon):
     return round(min(total, total * value / 100), 2)
 
 
-def mark_coupon_used(code: str):
-    cur.execute("UPDATE coupons SET used_count=used_count+1 WHERE code=?", (code.upper().strip(),))
+_COUPON_REDEMPTIONS_READY = False
+
+
+def _ensure_coupon_redemptions():
+    """Lazily create the redemption log (mirrors the ensure_canva_table pattern).
+
+    Created lazily rather than at import time so it never runs DDL before
+    init_db() has set the database up.
+    """
+    global _COUPON_REDEMPTIONS_READY
+    if _COUPON_REDEMPTIONS_READY:
+        return
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS coupon_redemptions(
+        code TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        redeemed_at TEXT
+    )""")
+    conn.commit()
+    _COUPON_REDEMPTIONS_READY = True
+
+
+def get_coupon_user_uses(code: str, user_id: int) -> int:
+    """How many times this specific user has already redeemed this coupon."""
+    _ensure_coupon_redemptions()
+    cur.execute(
+        "SELECT COUNT(*) FROM coupon_redemptions WHERE code=? AND user_id=?",
+        (code.upper().strip(), user_id),
+    )
+    row = cur.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def mark_coupon_used(code: str, user_id: int = None):
+    code = code.upper().strip()
+    cur.execute("UPDATE coupons SET used_count=used_count+1 WHERE code=?", (code,))
+    if user_id is not None:
+        _ensure_coupon_redemptions()
+        cur.execute(
+            "INSERT INTO coupon_redemptions(code, user_id, redeemed_at) VALUES(?,?,?)",
+            (code, user_id, now_text()),
+        )
     conn.commit()
 
 
@@ -1721,9 +1772,9 @@ def simplify_default_message_templates():
         "welcome": "👋 Welcome to {store}\n\nChoose an option below 👇",
         "delivery_success": "✅ Payment Successful!\n\n🧾 Order ID: #{order_id}\n📦 Product: {product}\n\n🔑 Code:\n{code}\n\n💰 Paid: {paid}\n💼 Balance: {balance}\n\nThank you for your purchase ❤️",
         "coupon_broadcast": "🎟 New Coupon Available!\n\n💝 Discount: {discount}\n🎫 Code: {code}\n⏳ Validity: {validity}\n🔥 Limit: {limit}\n\nUse it before checkout 👇",
-        "flash_sale_broadcast": "🔥 FLASH SALE!\n\n📦 {product}\n\n💰 Was: {old_price}\n⚡ Now: {new_price}\n🎁 Discount: {discount}\n\n����� {validity}\n\nBuy before it ends 👇",
+        "flash_sale_broadcast": "🔥 FLASH SALE!\n\n📦 {product}\n\n💰 Was: {old_price}\n⚡ Now: {new_price}\n🎁 Discount: {discount}\n\n{validity}\n\nBuy before it ends 👇",
         "restock_alert": "🔔 Back In Stock!\n\n📦 {product}\n📊 Available: {stock}\n\nTap below to buy now 👇",
-        "deposit_success": "✅ Deposit Confirmed\n\n���� Amount: {amount} USDT\n\nYour wallet balance has been updated."
+        "deposit_success": "✅ Deposit Confirmed\n\nAmount: {amount} USDT\n\nYour wallet balance has been updated."
     }
     for key, body in simple_templates.items():
         cur.execute("UPDATE message_templates SET body=? WHERE key=?", (body, key))
