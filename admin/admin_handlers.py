@@ -216,6 +216,90 @@ def user_management_keyboard():
 
 
 
+BROADCAST_SEND_DELAY_SECONDS = 0.05
+
+
+def _queue_broadcast(context, recipients, msg, kb=None, tag="BROADCAST", detail=""):
+    """Send a bulk broadcast in the BACKGROUND, paced under Telegram's limits.
+
+    python-telegram-bot processes updates sequentially, so awaiting hundreds
+    of send_message() calls directly inside a handler freezes the ENTIRE bot
+    until the broadcast drains -- /start and /admin never get answered. This
+    schedules the sends as a background task instead and paces them, so the
+    bot stays responsive.
+
+    Returns the number of recipients QUEUED (delivery happens afterwards).
+    """
+    import asyncio
+    from telegram.error import RetryAfter, Forbidden, TelegramError
+
+    # Materialise the rows now: the shared DB cursor must not be reused
+    # across await points inside the background task.
+    targets = [r[0] if isinstance(r, (list, tuple)) else r for r in recipients]
+    total = len(targets)
+
+    async def _send_one(target_id):
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=msg,
+            reply_markup=kb,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+
+    async def _run():
+        sent = 0
+        failed = 0
+        for target_id in targets:
+            try:
+                await _send_one(target_id)
+                sent += 1
+            except RetryAfter as exc:
+                # Telegram flood control: wait the requested time, retry once.
+                try:
+                    await asyncio.sleep(float(getattr(exc, "retry_after", 5)) + 1)
+                    await _send_one(target_id)
+                    sent += 1
+                except Exception:
+                    failed += 1
+            except (Forbidden, TelegramError):
+                failed += 1  # blocked the bot / deactivated / bad chat
+            except Exception:
+                failed += 1
+
+            # Yield to the event loop and stay under ~30 msg/sec.
+            await asyncio.sleep(BROADCAST_SEND_DELAY_SECONDS)
+
+        try:
+            log_admin_action(0, tag, "%s sent=%s failed=%s" % (detail, sent, failed))
+        except Exception:
+            pass
+
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "\u2705 <b>Broadcast finished</b>\n\n"
+                    "\U0001f4e8 <b>Sent:</b> <code>%s</code>\n"
+                    "\u26a0\ufe0f <b>Failed:</b> <code>%s</code>\n"
+                    "\U0001f3af <b>Total:</b> <code>%s</code>" % (sent, failed, total)
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    try:
+        context.application.create_task(_run())
+    except Exception:
+        try:
+            asyncio.get_event_loop().create_task(_run())
+        except Exception:
+            return 0
+
+    return total
+
+
 async def broadcast_coupon_created(context, code: str, dtype: str, value: float, max_uses: int, expires_at: str):
     """Broadcast newly created coupon to all users."""
     try:
@@ -253,24 +337,8 @@ async def broadcast_coupon_created(context, code: str, dtype: str, value: float,
             [InlineKeyboardButton("🎟 Apply Coupon", callback_data="apply_coupon")]
         ])
 
-        sent = 0
-        failed = 0
-
-        for row in users:
-            try:
-                await context.bot.send_message(
-                    chat_id=row[0],
-                    text=msg,
-                    reply_markup=kb,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
-                sent += 1
-            except Exception:
-                failed += 1
-
-        log_admin_action(0, "COUPON_BROADCAST", f"code={code} sent={sent} failed={failed}")
-        return sent, failed
+        queued = _queue_broadcast(context, users, msg, kb, "COUPON_BROADCAST", f"code={code}")
+        return queued, 0
 
     except Exception:
         return 0, 0
@@ -427,24 +495,8 @@ async def broadcast_flash_sale(context, product_id: int, name: str, old_price: f
             [InlineKeyboardButton(f"🛒 Buy {button_premium(name)[0][:28]}", callback_data=f"product_{product_id}", icon_custom_emoji_id=button_premium(name)[1])]
         ])
 
-        sent = 0
-        failed = 0
-
-        for row in users:
-            try:
-                await context.bot.send_message(
-                    chat_id=row[0],
-                    text=msg,
-                    reply_markup=kb,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
-                sent += 1
-            except Exception:
-                failed += 1
-
-        log_admin_action(0, "FLASH_SALE_BROADCAST", f"product={product_id} sent={sent} failed={failed}")
-        return sent, failed
+        queued = _queue_broadcast(context, users, msg, kb, "FLASH_SALE_BROADCAST", f"product={product_id}")
+        return queued, 0
 
     except Exception:
         return 0, 0
@@ -826,25 +878,8 @@ async def broadcast_product_update(context, product_id: int, product_name: str, 
             [InlineKeyboardButton("🛒 Tap to Buy Now", callback_data=f"product_{product_id}")]
         ])
 
-        sent = 0
-        failed = 0
-
-        for row in users:
-            target_id = row[0]
-            try:
-                await context.bot.send_message(
-                    chat_id=target_id,
-                    text=msg,
-                    reply_markup=kb,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
-                sent += 1
-            except Exception:
-                failed += 1
-
-        log_admin_action(0, "AUTO_PRODUCT_BROADCAST", f"product={product_id} sent={sent} failed={failed} mode={mode}")
-        return sent, failed
+        queued = _queue_broadcast(context, users, msg, kb, "AUTO_PRODUCT_BROADCAST", f"product={product_id} mode={mode}")
+        return queued, 0
 
     except Exception:
         return 0, 0
@@ -900,24 +935,8 @@ async def broadcast_new_offer(context, product_id: int):
         cur.execute("SELECT user_id FROM users WHERE COALESCE(blocked,0)=0 AND COALESCE(notifications,1)=1")
         users = cur.fetchall()
 
-        sent = 0
-        failed = 0
-
-        for urow in users:
-            try:
-                await context.bot.send_message(
-                    chat_id=urow[0],
-                    text=msg,
-                    reply_markup=kb,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
-                sent += 1
-            except Exception:
-                failed += 1
-
-        log_admin_action(0, "AUTO_OFFER_BROADCAST", f"product={product_id} sent={sent} failed={failed}")
-        return sent, failed
+        queued = _queue_broadcast(context, users, msg, kb, "AUTO_OFFER_BROADCAST", f"product={product_id}")
+        return queued, 0
 
     except Exception:
         return 0, 0
@@ -971,23 +990,8 @@ async def broadcast_price_change(context, product_id: int, product_name: str, ol
 
         kb = InlineKeyboardMarkup([[action_button]])
 
-        sent = 0
-        failed = 0
-        for row in users:
-            try:
-                await context.bot.send_message(
-                    chat_id=row[0],
-                    text=msg,
-                    reply_markup=kb,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
-                sent += 1
-            except Exception:
-                failed += 1
-
-        log_admin_action(0, "AUTO_PRICE_BROADCAST", f"product={product_id} {old_price}->{new_price} sent={sent} failed={failed}")
-        return sent, failed
+        queued = _queue_broadcast(context, users, msg, kb, "AUTO_PRICE_BROADCAST", f"product={product_id} {old_price}->{new_price}")
+        return queued, 0
     except Exception:
         return 0, 0
 
