@@ -35,6 +35,33 @@ user_locked_until = {}
 
 _join_cache = {}  # uid -> cache expiry timestamp (positive results only)
 
+# These per-user dicts previously grew forever -- every user who ever touched
+# the bot stayed in memory until the process restarted. Prune them cheaply.
+_LAST_PRUNE = [0.0]
+_PRUNE_INTERVAL_SECONDS = 600
+_STALE_AFTER_SECONDS = 3600
+
+
+def _prune_memory_caches(now_ts=None):
+    """Drop stale per-user entries. Runs at most once every 10 minutes."""
+    now_ts = time.time() if now_ts is None else now_ts
+    if now_ts - _LAST_PRUNE[0] < _PRUNE_INTERVAL_SECONDS:
+        return
+    _LAST_PRUNE[0] = now_ts
+
+    for _k, _expiry in list(_join_cache.items()):
+        if _expiry <= now_ts:
+            _join_cache.pop(_k, None)
+
+    for _k, _ts in list(user_last_action.items()):
+        if now_ts - _ts > _STALE_AFTER_SECONDS:
+            user_last_action.pop(_k, None)
+            user_warn_count.pop(_k, None)
+
+    for _k, _until in list(user_locked_until.items()):
+        if _until <= now_ts:
+            user_locked_until.pop(_k, None)
+
 
 def _force_join_channels():
     raw = get_setting("force_join_channels", "@oggypremiumstore,@oggypremiumchat") or ""
@@ -372,12 +399,18 @@ async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(user)
     data = q.data or ""
 
+    _prune_memory_caches()
+
     # Basic callback safety: ignore malformed/oversized callback data.
     if len(data) > 80:
         await edit_or_send(q, "❌ <b>Invalid request.</b>", back_home())
         return
 
-    if is_blocked(uid) and not data.startswith("admin_"):
+    # An "admin_" prefix alone must never grant an exemption -- any user can
+    # craft callback data. Require the caller to actually BE an admin.
+    _admin_cb = data.startswith("admin_") and is_admin(uid)
+
+    if is_blocked(uid) and not _admin_cb:
         await edit_or_send(
             q,
             "🚫 <b>Access Denied</b>\n\nYour account is blocked from using this bot.",
@@ -385,7 +418,7 @@ async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if is_rate_limited(uid) and not data.startswith("admin_"):
+    if is_rate_limited(uid) and not _admin_cb:
         await edit_or_send(
             q,
             f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(uid) or 2} seconds before clicking again.",
@@ -415,7 +448,7 @@ async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
         await edit_or_send(q, welcome_text(user.first_name), main_menu(uid))
         return
 
-    if not is_admin(uid) and not data.startswith("admin_"):
+    if not is_admin(uid):
         missing = await get_unjoined_channels(_gate_bot, uid)
         if missing:
             await edit_or_send(q, force_join_text(), force_join_markup(missing))

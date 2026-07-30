@@ -31,6 +31,13 @@ PURCHASE_LOCKS = {}
 PURCHASE_LOCK_TIMEOUT_SECONDS = 90
 
 
+def _prune_purchase_locks(now_ts):
+    """Drop expired purchase locks so this dict cannot grow without bound."""
+    for _k, _ts in list(PURCHASE_LOCKS.items()):
+        if now_ts - _ts >= PURCHASE_LOCK_TIMEOUT_SECONDS:
+            PURCHASE_LOCKS.pop(_k, None)
+
+
 
 async def notify_restock_users(context_bot, product_id: int, product_name: str, available_stock: int):
     """Notify users who requested restock alerts."""
@@ -62,7 +69,11 @@ async def notify_restock_users(context_bot, product_id: int, product_name: str, 
             except Exception:
                 pass
 
-        mark_restock_notified(product_id)
+        # Only clear the waiting list if at least one alert actually went out.
+        # Previously a total send failure still wiped every waiter, so those
+        # users silently never got their restock alert.
+        if sent:
+            mark_restock_notified(product_id)
         try:
             await context_bot.send_message(
                 chat_id=ADMIN_ID,
@@ -745,6 +756,7 @@ async def buy_product(q, uid: int, pid: int, quantity: int = 1):
     lock_key = f"{uid}:{pid}"
 
     now_ts = time.time()
+    _prune_purchase_locks(now_ts)
     old_lock = PURCHASE_LOCKS.get(lock_key)
 
     if old_lock and now_ts - old_lock < PURCHASE_LOCK_TIMEOUT_SECONDS:
@@ -1321,6 +1333,7 @@ async def show_bundle_details(q, uid: int, bundle_id: int):
 async def buy_bundle(q, uid: int, bundle_id: int):
     lock_key = f"{uid}:bundle:{bundle_id}"
     now_ts = time.time()
+    _prune_purchase_locks(now_ts)
     old_lock = PURCHASE_LOCKS.get(lock_key)
 
     if old_lock and now_ts - old_lock < PURCHASE_LOCK_TIMEOUT_SECONDS:

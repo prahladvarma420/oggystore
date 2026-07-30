@@ -90,8 +90,13 @@ def _apply_upserts(s: str) -> str:
     return s
 
 
-def _translate(sql: str):
-    """Translate one SQLite statement to Postgres. Returns (sql, returns_id)."""
+def _translate(sql: str, has_params: bool = True):
+    """Translate one SQLite statement to Postgres. Returns (sql, returns_id).
+
+    has_params tells us whether psycopg will be given a parameter
+    sequence. That decides whether literal % must be escaped -- see the
+    escaping step at the end of this function.
+    """
     s = sql
     is_ddl = re.match(r"\s*(CREATE|ALTER)\b", s, re.I) is not None
 
@@ -142,7 +147,12 @@ def _translate(sql: str):
         returns_id = True
 
     # --- escape literal % (e.g. LIKE 'enc:%') BEFORE introducing %s placeholders ---
-    s = s.replace("%", "%%")
+    # Only when parameters are supplied. psycopg unescapes %% -> % as part of
+    # interpolation, but with no parameters it does not interpolate at all, so
+    # escaping unconditionally left a literal '%%' in the SQL and corrupted
+    # every parameterless query containing a percent sign.
+    if has_params:
+        s = s.replace("%", "%%")
     # --- placeholders ? -> %s ---
     s = s.replace("?", "%s")
 
@@ -241,8 +251,8 @@ class _PgCursor:
             self._idx = 0
             return self
 
-        tsql, returns_id = _translate(sql)
         p = tuple(params) if params else None
+        tsql, returns_id = _translate(sql, p is not None)
         with self._conn._lock:
             self._raw_execute(tsql, p)
             if returns_id:
