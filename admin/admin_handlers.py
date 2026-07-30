@@ -231,12 +231,45 @@ def _queue_broadcast(context, recipients, msg, kb=None, tag="BROADCAST", detail=
     Returns the number of recipients QUEUED (delivery happens afterwards).
     """
     import asyncio
+    from html import escape as html_escape
     from telegram.error import RetryAfter, Forbidden, TelegramError
+
+    def _chat_id(row):
+        """Extract a numeric chat_id from a DB row.
+
+        Rows are NOT always tuples: sqlite3 yields sqlite3.Row and the
+        Postgres compatibility layer yields pgcompat._Row. Neither is a
+        list/tuple subclass, so never branch on isinstance(row, tuple) --
+        that silently passes the whole row object as chat_id and makes every
+        single send fail.
+        """
+        if isinstance(row, bool):
+            raise TypeError("bool is not a chat_id")
+        if isinstance(row, int):
+            return row
+        if isinstance(row, str):
+            return int(row.strip())
+        try:
+            return int(row[0])
+        except (TypeError, KeyError, IndexError):
+            return int(next(iter(row)))
 
     # Materialise the rows now: the shared DB cursor must not be reused
     # across await points inside the background task.
-    targets = [r[0] if isinstance(r, (list, tuple)) else r for r in recipients]
+    targets = []
+    skipped = 0
+    for _row in recipients:
+        try:
+            targets.append(_chat_id(_row))
+        except Exception:
+            skipped += 1
     total = len(targets)
+
+    if skipped:
+        try:
+            log_admin_action(0, tag, "%s WARNING unreadable_rows=%s" % (detail, skipped))
+        except Exception:
+            pass
 
     async def _send_one(target_id):
         await context.bot.send_message(
@@ -250,6 +283,13 @@ def _queue_broadcast(context, recipients, msg, kb=None, tag="BROADCAST", detail=
     async def _run():
         sent = 0
         failed = 0
+        first_error = None
+
+        def _note(exc):
+            nonlocal first_error
+            if first_error is None:
+                first_error = "%s: %s" % (type(exc).__name__, exc)
+
         for target_id in targets:
             try:
                 await _send_one(target_id)
@@ -260,30 +300,45 @@ def _queue_broadcast(context, recipients, msg, kb=None, tag="BROADCAST", detail=
                     await asyncio.sleep(float(getattr(exc, "retry_after", 5)) + 1)
                     await _send_one(target_id)
                     sent += 1
-                except Exception:
+                except Exception as exc2:
                     failed += 1
-            except (Forbidden, TelegramError):
+                    _note(exc2)
+            except (Forbidden, TelegramError) as exc:
                 failed += 1  # blocked the bot / deactivated / bad chat
-            except Exception:
+                _note(exc)
+            except Exception as exc:
                 failed += 1
+                _note(exc)
 
             # Yield to the event loop and stay under ~30 msg/sec.
             await asyncio.sleep(BROADCAST_SEND_DELAY_SECONDS)
 
         try:
-            log_admin_action(0, tag, "%s sent=%s failed=%s" % (detail, sent, failed))
+            log_admin_action(
+                0,
+                tag,
+                "%s sent=%s failed=%s%s"
+                % (detail, sent, failed, " err=%s" % first_error if first_error else ""),
+            )
         except Exception:
             pass
+
+        summary = (
+            "\u2705 <b>Broadcast finished</b>\n\n"
+            "\U0001f4e8 <b>Sent:</b> <code>%s</code>\n"
+            "\u26a0\ufe0f <b>Failed:</b> <code>%s</code>\n"
+            "\U0001f3af <b>Total:</b> <code>%s</code>" % (sent, failed, total)
+        )
+        # A total wipeout is a code fault, not users blocking the bot. Show it.
+        if sent == 0 and failed and first_error:
+            summary += "\n\n\u274c <b>First error:</b>\n<code>%s</code>" % (
+                html_escape(first_error[:300])
+            )
 
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
-                text=(
-                    "\u2705 <b>Broadcast finished</b>\n\n"
-                    "\U0001f4e8 <b>Sent:</b> <code>%s</code>\n"
-                    "\u26a0\ufe0f <b>Failed:</b> <code>%s</code>\n"
-                    "\U0001f3af <b>Total:</b> <code>%s</code>" % (sent, failed, total)
-                ),
+                text=summary,
                 parse_mode="HTML",
             )
         except Exception:
