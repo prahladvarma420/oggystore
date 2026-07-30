@@ -826,8 +826,12 @@ def login():
 
     def _show(fields, subtitle, btn, error=""):
         block = ('<div class="alert error">%s</div>' % error) if error else ""
+        # csrf_token() issues (and pins) the session token, which the hidden
+        # csrf_token field in login.html posts back. Without this the login
+        # form submits no token and _csrf_protect rejects every attempt.
         return render_page("login.html", STORE=store, FIELDS=fields, BTN_LABEL=btn,
-                           SUBTITLE=subtitle, ERROR_BLOCK=block)
+                           SUBTITLE=subtitle, ERROR_BLOCK=block,
+                           CSRF=csrf_token())
 
     def _show_step1(error=""):
         return _show(_fields_credentials(), "Web Admin Control Center", "Login", error)

@@ -19,6 +19,7 @@
   %%ERROR_BLOCK%%
 
   <form method="POST" class="login-form">
+    <input type="hidden" name="csrf_token" value="%%CSRF%%">
     %%FIELDS%%
     <button type="submit" class="btn btn-glow btn-block">
       <span>%%BTN_LABEL%%</span>
