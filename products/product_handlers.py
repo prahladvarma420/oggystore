@@ -886,11 +886,13 @@ Please select a lower quantity or check again later.""",
             cur.execute("UPDATE products SET stock=stock-1 WHERE id=? AND stock > 0", (pid,))
 
             cur.execute(
-                "INSERT INTO orders(user_id, product_name, price, delivery) VALUES(?,?,?,?)",
-                (uid, f"{raw_name} x1", total_price, encrypt_text("Microsoft 365 Family invite — waiting for customer email"))
+                "INSERT INTO orders(user_id, product_name, price, delivery, product_id) VALUES(?,?,?,?,?)",
+                (uid, f"{raw_name} x1", total_price, encrypt_text("Microsoft 365 Family invite — waiting for customer email"), pid)
             )
-            conn.commit()
+            # product_id is required for warranty/replacement lookups, and
+            # lastrowid must be read before commit.
             order_id = cur.lastrowid
+            conn.commit()
 
             if discount > 0 and coupon_code:
                 mark_coupon_used(coupon_code)
@@ -981,11 +983,13 @@ Please select a lower quantity or check again later.""",
             cur.execute("UPDATE products SET stock=stock-1 WHERE id=? AND stock > 0", (pid,))
 
             cur.execute(
-                "INSERT INTO orders(user_id, product_name, price, delivery) VALUES(?,?,?,?)",
-                (uid, f"{raw_name} x1", total_price, encrypt_text("Canva invite — waiting for customer email"))
+                "INSERT INTO orders(user_id, product_name, price, delivery, product_id) VALUES(?,?,?,?,?)",
+                (uid, f"{raw_name} x1", total_price, encrypt_text("Canva invite — waiting for customer email"), pid)
             )
-            conn.commit()
+            # product_id is required for warranty/replacement lookups, and
+            # lastrowid must be read before commit.
             order_id = cur.lastrowid
+            conn.commit()
 
             if discount > 0 and coupon_code:
                 mark_coupon_used(coupon_code)
@@ -1373,16 +1377,37 @@ async def buy_bundle(q, uid: int, bundle_id: int):
             )
             return
 
+        # Charge FIRST, then reserve. conn.rollback() is a no-op under
+        # Postgres autocommit, so reserving before charging meant that a
+        # failed balance deduction permanently burned the reserved codes.
+        cur.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND balance>=?", (bprice, uid, bprice))
+
+        if cur.rowcount == 0:
+            await edit_or_send(
+                q,
+                "❌ <b>Purchase Failed</b>\n\nYour balance changed while processing this order.\n\nPlease refresh and try again.",
+                main_menu(uid)
+            )
+            return
+        conn.commit()
+
+        def _refund_bundle_charge():
+            try:
+                cur.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (bprice, uid))
+                conn.commit()
+            except Exception:
+                pass
+
         # Reserve stock from every component product.
         sections = []
         total_codes = 0
         for product_id, item_qty, pname, _pprice in items:
             deliveries = reserve_stock_items(product_id, uid, int(item_qty))
             if deliveries is None:
-                conn.rollback()
+                _refund_bundle_charge()
                 await edit_or_send(
                     q,
-                    "❌ <b>Purchase Failed</b>\n\nStock changed while processing. Please try again.",
+                    "❌ <b>Purchase Failed</b>\n\nStock changed while processing. You have not been charged.",
                     InlineKeyboardMarkup([[InlineKeyboardButton(get_message_template("btn_back_to_bundles", BTN_BACK_TO_BUNDLES_DEFAULT), callback_data="bundles")]])
                 )
                 return
@@ -1390,17 +1415,7 @@ async def buy_bundle(q, uid: int, bundle_id: int):
             cur.execute("UPDATE products SET stock=? WHERE id=?", (new_stock, product_id))
             total_codes += len(deliveries)
             sections.append((str(pname), format_delivery_items(deliveries)))
-
-        cur.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND balance>=?", (bprice, uid, bprice))
-
-        if cur.rowcount == 0:
-            conn.rollback()
-            await edit_or_send(
-                q,
-                "❌ <b>Purchase Failed</b>\n\nYour balance changed while processing this order.\n\nPlease refresh and try again.",
-                main_menu(uid)
-            )
-            return
+        conn.commit()
 
         delivery_text = ""
         for pname, section_text in sections:
@@ -1411,8 +1426,10 @@ async def buy_bundle(q, uid: int, bundle_id: int):
             "INSERT INTO orders(user_id, product_name, price, delivery) VALUES(?,?,?,?)",
             (uid, f"🎁 {bname_raw} (bundle)", bprice, encrypt_text(delivery_text))
         )
-        conn.commit()
+        # lastrowid must be read BEFORE commit -- after commit the cursor is
+        # reset and this returned None/stale ids.
         order_id = cur.lastrowid
+        conn.commit()
 
         add_loyalty_points(uid, bprice)
         new_balance = get_balance(uid)

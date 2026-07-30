@@ -176,9 +176,23 @@ async def check_binance_payments(context):
                 # on the receiver side, so scanning the full record is far more
                 # robust. The code is a random 8-char string, so an accidental
                 # match is effectively impossible.
-                tx_blob = json.dumps(tx, default=str).upper()
-                if code not in tx_blob:
-                    continue
+                # Prefer real note/remark fields. Scanning the whole record
+                # can match the code against an unrelated field (ids, raw
+                # payloads), so only fall back to it when no note field has
+                # the code, and log it so blob matches stay visible.
+                _note_blob = " ".join(
+                    str(tx.get(_k, "") or "")
+                    for _k in ("note", "remark", "remarks", "memo", "description",
+                               "transactionNote", "payerNote", "orderNote")
+                ).upper()
+                if code not in _note_blob:
+                    tx_blob = json.dumps(tx, default=str).upper()
+                    if code not in tx_blob:
+                        continue
+                    print(
+                        f"[binancepay] code {code} matched tx {tx_id} via full-record scan (no note field)",
+                        flush=True,
+                    )
                 if amount < (Decimal(str(base_amount)) - tol):
                     print(
                         f"[binancepay] code {code} matched tx {tx_id} but underpaid: got {amount} need {base_amount}",

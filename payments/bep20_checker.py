@@ -570,7 +570,10 @@ async def check_payments(context):
                 ]
                 if len(matches) == 1:
                     deposit_id, user_id, base_amount, unique_amount, _cpid, _cqty, _cdone = matches[0]
-                    pseudo_tx = f"balance-delta-{deposit_id}-{int(time.time())}"
+                    # Deterministic: including a timestamp made every pseudo tx unique,
+                    # so INSERT OR IGNORE into processed_txs never deduped and a
+                    # deposit could be credited twice on repeated balance deltas.
+                    pseudo_tx = f"balance-delta-{deposit_id}"
 
                     add_balance(user_id, float(base_amount))
                     cur.execute(

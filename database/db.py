@@ -646,6 +646,12 @@ def init_db():
 
     conn.commit()
 
+    # Base tables now exist -- (re)apply the gift/warranty migrations that
+    # cannot safely run at import time on a fresh database.
+    _apply_gift_warranty_migrations()
+    _apply_m365_migrations()
+
+
 
 _TEMPLATES_SEEDED = False
 
@@ -2128,39 +2134,69 @@ def toggle_canva_product(product_id: int) -> bool:
 
 # ---------------- Gift Codes & Warranty Replacement ----------------
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS gift_codes(
-    code TEXT PRIMARY KEY,
-    amount REAL NOT NULL,
-    created_by INTEGER,
-    redeemed_by INTEGER,
-    redeemed_at TEXT,
-    created TEXT DEFAULT CURRENT_TIMESTAMP
-)
-""")
+_GIFT_WARRANTY_READY = False
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS replacements(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    product_id INTEGER,
-    old_delivery TEXT,
-    new_delivery TEXT,
-    status TEXT DEFAULT 'pending',
-    created TEXT DEFAULT CURRENT_TIMESTAMP
-)
-""")
 
-_safe_add_column("orders", "product_id", "INTEGER")
-_safe_add_column("users", "warranty_banned", "INTEGER DEFAULT 0")
+def _apply_gift_warranty_migrations():
+    """Create the gift/warranty tables and seed their settings rows.
 
-cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('warranty_enabled', '1')")
-cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('warranty_hours', '24')")
-cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('warranty_max_week', '3')")
-cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('gift_min_amount', '1')")
-cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('gift_max_amount', '500')")
-conn.commit()
+    This block used to run at import time. On a brand new database that
+    crashed the whole process, because db.py is imported long before
+    init_db() creates the base tables -- so the INSERT INTO settings hit a
+    table that did not exist yet. It is fully idempotent, so init_db() calls
+    it after creating the base tables, and the import-time call below stays
+    as a best-effort path for databases that are already initialised.
+    """
+    global _GIFT_WARRANTY_READY
+    if _GIFT_WARRANTY_READY:
+        return
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS gift_codes(
+        code TEXT PRIMARY KEY,
+        amount REAL NOT NULL,
+        created_by INTEGER,
+        redeemed_by INTEGER,
+        redeemed_at TEXT,
+        created TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS replacements(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        product_id INTEGER,
+        old_delivery TEXT,
+        new_delivery TEXT,
+        status TEXT DEFAULT 'pending',
+        created TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    _safe_add_column("orders", "product_id", "INTEGER")
+    _safe_add_column("users", "warranty_banned", "INTEGER DEFAULT 0")
+
+    for _k, _v in (
+        ("warranty_enabled", "1"),
+        ("warranty_hours", "24"),
+        ("warranty_max_week", "3"),
+        ("gift_min_amount", "1"),
+        ("gift_max_amount", "500"),
+    ):
+        cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?,?)", (_k, _v))
+
+    conn.commit()
+    _GIFT_WARRANTY_READY = True
+
+
+try:
+    _apply_gift_warranty_migrations()
+except Exception:
+    # Fresh database: base tables do not exist yet. init_db() will create
+    # them and then re-run these migrations.
+    pass
 
 
 def generate_gift_code() -> str:
@@ -2181,15 +2217,28 @@ def create_gift_code(user_id: int, amount: float, free: bool = False):
             (amount, user_id, amount)
         )
         if cur.rowcount == 0:
-            conn.rollback()
             return None
+        conn.commit()
 
     code = generate_gift_code()
-    cur.execute(
-        "INSERT INTO gift_codes(code, amount, created_by, created) VALUES(?,?,?,?)",
-        (code, amount, user_id, now_text())
-    )
-    conn.commit()
+    try:
+        cur.execute(
+            "INSERT INTO gift_codes(code, amount, created_by, created) VALUES(?,?,?,?)",
+            (code, amount, user_id, now_text())
+        )
+        conn.commit()
+    except Exception:
+        # conn.rollback() is a no-op under Postgres autocommit, so the balance
+        # deduction above is already durable. Refund explicitly instead of
+        # silently keeping the customer money with no gift code issued.
+        if not free:
+            try:
+                cur.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, user_id))
+                conn.commit()
+            except Exception:
+                pass
+        return None
+
     return code
 
 
@@ -2214,11 +2263,25 @@ def redeem_gift_code(user_id: int, code: str):
         (user_id, now_text(), code)
     )
     if cur.rowcount == 0:
-        conn.rollback()
         return False, "This gift code has already been redeemed."
-
-    cur.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, user_id))
     conn.commit()
+
+    try:
+        cur.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, user_id))
+        conn.commit()
+    except Exception:
+        # The claim above is already durable (no-op rollback), so release it
+        # explicitly -- otherwise the code is burned without crediting anyone.
+        try:
+            cur.execute(
+                "UPDATE gift_codes SET redeemed_by=NULL, redeemed_at=NULL WHERE code=? AND redeemed_by=?",
+                (code, user_id)
+            )
+            conn.commit()
+        except Exception:
+            pass
+        return False, "Could not credit your balance. Please try again."
+
     return True, amount
 
 
@@ -2331,27 +2394,50 @@ def set_replacement_status(replacement_id: int, status: str, new_delivery=None):
 
 # ---------------- M365 Multi-Session Rotation ----------------
 
-cur.execute("""CREATE TABLE IF NOT EXISTS m365_sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    label TEXT,
-    state TEXT,
-    invites_used INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'active',
-    created TEXT
-)""")
-conn.commit()
+_M365_MIGRATIONS_READY = False
 
-cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('m365_invites_per_session', '5')")
-conn.commit()
 
-# Optional saved login (email + password + 2FA secret) so a session can be
-# refreshed automatically by logging in again when its cookies expire.
-_safe_add_column("m365_sessions", "login_email", "TEXT")
-_safe_add_column("m365_sessions", "login_password", "TEXT")
-_safe_add_column("m365_sessions", "totp_secret", "TEXT")
-# Warranty group tag: '' (any), '6m' (6-Month warranty IDs) or '1y' (1-Year warranty IDs).
-_safe_add_column("m365_sessions", "warranty", "TEXT")
-conn.commit()
+def _apply_m365_migrations():
+    """Create the m365_sessions table and seed its settings row.
+
+    Deferred for the same reason as the gift/warranty migrations: this used
+    to run at import time and crashed a brand new database, because the
+    `settings` table does not exist until init_db() runs. Idempotent.
+    """
+    global _M365_MIGRATIONS_READY
+    if _M365_MIGRATIONS_READY:
+        return
+
+    cur.execute("""CREATE TABLE IF NOT EXISTS m365_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT,
+        state TEXT,
+        invites_used INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'active',
+        created TEXT
+    )""")
+    conn.commit()
+
+    cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('m365_invites_per_session', '5')")
+    conn.commit()
+
+    # Optional saved login (email + password + 2FA secret) so a session can be
+    # refreshed automatically by logging in again when its cookies expire.
+    _safe_add_column("m365_sessions", "login_email", "TEXT")
+    _safe_add_column("m365_sessions", "login_password", "TEXT")
+    _safe_add_column("m365_sessions", "totp_secret", "TEXT")
+    # Warranty group tag: '' (any), '6m' (6-Month warranty IDs) or '1y' (1-Year warranty IDs).
+    _safe_add_column("m365_sessions", "warranty", "TEXT")
+    conn.commit()
+
+    _M365_MIGRATIONS_READY = True
+
+
+try:
+    _apply_m365_migrations()
+except Exception:
+    # Fresh database: init_db() will create the base tables and re-run this.
+    pass
 
 
 def add_m365_session(label, state_json, warranty=""):
