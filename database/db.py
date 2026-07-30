@@ -6,9 +6,107 @@ import os
 from utils.crypto import encrypt_text, decrypt_text
 from utils.timezone import now_text, today_prefix, now as ist_now
 
+import threading as _threading
+
 from database.pgcompat import connect as _compat_connect  # SQLite/Postgres switch
-conn = _compat_connect(DB_PATH)
-cur = conn.cursor()
+
+# ---------------------------------------------------------------- FIX42
+# `conn` / `cur` used to be ONE module-global connection and ONE cursor shared
+# by the bot thread, the PTB job-queue threads and all 8 gunicorn threads.
+#
+# That is not safe. _PgCursor buffers its result set into self._rows, so two
+# threads running execute() on the same cursor clobber each other's rows AND
+# each other's .rowcount / .lastrowid. In the payment path that meant a
+# `cur.rowcount` balance check could read another thread's result.
+#
+# Fix: give every thread its own connection + cursor, kept behind proxy objects
+# so that `from database.db import conn, cur` (done by 8 modules) and all ~380
+# existing `cur.execute(...)` / `conn.commit()` call sites keep working
+# unchanged.
+_tls = _threading.local()
+
+
+def _new_conn():
+    c = _compat_connect(DB_PATH)
+    # WAL lets SQLite readers run concurrently with a writer instead of
+    # serialising every access. No-op on Postgres (pgcompat ignores PRAGMA).
+    try:
+        c.cursor().execute("PRAGMA journal_mode=WAL")
+        c.cursor().execute("PRAGMA busy_timeout=15000")
+    except Exception:
+        pass
+    return c
+
+
+def get_conn():
+    """The calling thread's own database connection."""
+    c = getattr(_tls, "conn", None)
+    if c is None:
+        c = _new_conn()
+        _tls.conn = c
+    return c
+
+
+def get_cursor():
+    """The calling thread's own cursor."""
+    k = getattr(_tls, "cur", None)
+    if k is None:
+        k = get_conn().cursor()
+        _tls.cur = k
+    return k
+
+
+def close_thread_connection():
+    """Release this thread's connection (call from long-lived worker teardown)."""
+    k = getattr(_tls, "cur", None)
+    if k is not None:
+        try:
+            k.close()
+        except Exception:
+            pass
+        _tls.cur = None
+    c = getattr(_tls, "conn", None)
+    if c is not None:
+        try:
+            c.close()
+        except Exception:
+            pass
+        _tls.conn = None
+
+
+class _ConnProxy:
+    """Forwards every attribute access to the current thread's connection."""
+    __slots__ = ()
+
+    def __getattr__(self, name):
+        return getattr(get_conn(), name)
+
+    def __setattr__(self, name, value):
+        setattr(get_conn(), name, value)
+
+    def __enter__(self):
+        return get_conn().__enter__()
+
+    def __exit__(self, *a):
+        return get_conn().__exit__(*a)
+
+
+class _CursorProxy:
+    """Forwards every attribute access to the current thread's cursor."""
+    __slots__ = ()
+
+    def __getattr__(self, name):
+        return getattr(get_cursor(), name)
+
+    def __setattr__(self, name, value):
+        setattr(get_cursor(), name, value)
+
+    def __iter__(self):
+        return iter(get_cursor())
+
+
+conn = _ConnProxy()
+cur = _CursorProxy()
 
 
 def _table_columns(table: str):
@@ -775,20 +873,31 @@ def get_display_stock(product_id: int) -> int:
 
 
 def reserve_stock_item(product_id: int, user_id: int):
-    cur.execute(
-        "SELECT id, delivery FROM product_stock WHERE product_id=? AND sold=0 ORDER BY id ASC LIMIT 1",
-        (product_id,)
-    )
-    row = cur.fetchone()
-
-    if row:
-        stock_id, delivery = row
+    """Atomically claim ONE unsold code. See reserve_stock_items for why this
+    uses a conditional UPDATE rather than SELECT ... FOR UPDATE (FIX44).
+    """
+    stamp = now_text()
+    for _attempt in range(5):
         cur.execute(
-            "UPDATE product_stock SET sold=1, sold_to=?, sold_at=? WHERE id=?",
-            (user_id, now_text(), stock_id)
+            "SELECT id, delivery FROM product_stock "
+            "WHERE product_id=? AND sold=0 ORDER BY id ASC LIMIT 10",
+            (product_id,),
         )
-        return decrypt_text(delivery)
-
+        rows = cur.fetchall()
+        if not rows:
+            return None
+        for stock_id, delivery in rows:
+            cur.execute(
+                "UPDATE product_stock SET sold=1, sold_to=?, sold_at=? "
+                "WHERE id=? AND sold=0",
+                (user_id, stamp, stock_id),
+            )
+            if cur.rowcount == 1:
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+                return decrypt_text(delivery)
     return None
 
 
@@ -1026,25 +1135,99 @@ def close_ticket(ticket_id: int):
 
 
 
-def reserve_stock_items(product_id: int, user_id: int, quantity: int):
-    cur.execute(
-        "SELECT id, delivery FROM product_stock WHERE product_id=? AND sold=0 ORDER BY id ASC LIMIT ?",
-        (product_id, quantity)
-    )
-    rows = cur.fetchall()
+def _release_claims(stock_ids):
+    """Undo our own claims when an order cannot be fully filled."""
+    for sid in stock_ids:
+        try:
+            cur.execute(
+                "UPDATE product_stock SET sold=0, sold_to=NULL, sold_at=NULL WHERE id=?",
+                (sid,),
+            )
+        except Exception:
+            pass
+    try:
+        conn.commit()
+    except Exception:
+        pass
 
-    if len(rows) < quantity:
+
+def reserve_stock_items(product_id: int, user_id: int, quantity: int):
+    """Atomically claim `quantity` unsold codes. Returns None if it cannot.
+
+    FIX43 - the old version did SELECT ... WHERE sold=0 and then a blind
+    UPDATE ... WHERE id=?. Two buyers checking out at the same moment both
+    passed the SELECT and both got handed the SAME codes.
+
+    Note we deliberately do NOT use SELECT ... FOR UPDATE SKIP LOCKED:
+    pgcompat opens Postgres with autocommit=True, so the row locks would be
+    released the instant the SELECT statement finished and would protect
+    nothing. Instead every row is claimed with a conditional single-statement
+    UPDATE (... WHERE id=? AND sold=0), which is atomic on both backends.
+    rowcount==1 means this thread won the row; rowcount==0 means somebody
+    else took it and we move on to the next candidate.
+    """
+    quantity = int(quantity)
+    if quantity <= 0:
         return None
 
-    deliveries = []
-    for stock_id, delivery in rows:
-        cur.execute(
-            "UPDATE product_stock SET sold=1, sold_to=?, sold_at=? WHERE id=?",
-            (user_id, now_text(), stock_id)
-        )
-        deliveries.append(decrypt_text(delivery))
+    claimed = []  # list of (stock_id, delivery)
+    stamp = now_text()
+    stalls = 0
 
-    return deliveries
+    for _attempt in range(12):
+        if len(claimed) >= quantity:
+            break
+        need = quantity - len(claimed)
+        # Over-fetch generously: under contention most candidates will already
+        # have been taken by another thread by the time we try to claim them.
+        cur.execute(
+            "SELECT id, delivery FROM product_stock "
+            "WHERE product_id=? AND sold=0 ORDER BY id ASC LIMIT ?",
+            (product_id, need * 5 + 25),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            break
+
+        already = {sid for sid, _d in claimed}
+        progressed = False
+        for stock_id, delivery in rows:
+            if len(claimed) >= quantity:
+                break
+            if stock_id in already:
+                continue
+            cur.execute(
+                "UPDATE product_stock SET sold=1, sold_to=?, sold_at=? "
+                "WHERE id=? AND sold=0",
+                (user_id, stamp, stock_id),
+            )
+            if cur.rowcount == 1:
+                claimed.append((stock_id, delivery))
+                progressed = True
+
+        if progressed:
+            stalls = 0
+            continue
+        # Nothing claimed this round. On SQLite the competing writers' UPDATEs
+        # are not committed yet, so our SELECT still sees those rows as sold=0
+        # while our conditional UPDATE matches nothing. Backing off briefly
+        # lets them commit and gives us a genuinely fresh candidate list.
+        # Giving up immediately here (the first cut of this fix did) told
+        # customers "out of stock" while plenty of stock existed.
+        stalls += 1
+        if stalls >= 4:
+            break
+        _threading.Event().wait(0.05 * stalls)
+
+    if len(claimed) < quantity:
+        _release_claims([sid for sid, _d in claimed])
+        return None
+
+    try:
+        conn.commit()
+    except Exception:
+        pass
+    return [decrypt_text(d) for _sid, d in claimed]
 
 
 # ---------- Bundle deals ----------
