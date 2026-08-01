@@ -1498,6 +1498,33 @@ def api_stock_delete(stock_id):
     return jsonify({"ok": True, "available": avail})
 
 
+@app.route("/api/products/<int:pid>/stock/delete_all", methods=["POST"])
+@login_required
+def api_stock_delete_all(pid):
+    """Delete every UNSOLD code for a product in one click.
+
+    Sold codes are deliberately kept: they are the delivery history behind
+    existing orders and are needed for warranty claims, resends and
+    replacements. Codes currently mid-purchase are already flipped to
+    sold=1 by the atomic claim, so they cannot be removed here.
+    """
+    prod = q("SELECT id FROM products WHERE id=?", (pid,), one=True)
+    if not prod:
+        return jsonify({"ok": False, "error": "product not found"}), 404
+    _lastrow, removed = ex(
+        "DELETE FROM product_stock WHERE product_id=? AND COALESCE(sold,0)=0",
+        (pid,))
+    try:
+        removed = int(removed or 0)
+    except (TypeError, ValueError):
+        removed = 0
+    avail = botdb.get_available_stock_count(pid)
+    ex("UPDATE products SET stock=? WHERE id=?", (avail, pid))
+    log_action("delete_all_stock",
+               "product#{} removed={} left={}".format(pid, removed, avail))
+    return jsonify({"ok": True, "deleted": removed, "available": avail})
+
+
 # ---- price tiers (Price Offers)
 @app.route("/api/products/<int:pid>/tiers/set", methods=["POST"])
 @login_required

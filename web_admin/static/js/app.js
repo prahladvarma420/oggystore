@@ -348,6 +348,7 @@ function flashSale(id) {
 async function manageStock(id) {
   const p = cache.products.find(x => x.id === id);
   const d = await api(`/api/products/${id}/stock`);
+  const availCount = (d.items || []).filter(i => !i.sold).length;
   const items = (d.items || []).map(i =>
     `<tr><td>#${i.id}</td><td class="mono" style="word-break:break-all;white-space:normal;max-width:340px">${esc(i.code)}</td><td>${i.sold ? '<span class="badge off">Sold</span>' : '<span class="badge on">Available</span>'}</td>
      <td class="muted">${i.sold_to || ""}</td>
@@ -373,6 +374,11 @@ async function manageStock(id) {
       <textarea id="st_accounts" placeholder="user1@mail.com:Pass123:JBSWY3DPEHPK3PXP\nuser2@mail.com:Pass456:KRSXG5CTMVRXEZLU"></textarea></label>
     <div class="toolbar"><div class="grow"></div><button class="btn btn-glow" id="stAddAcc"><span>\u2795 Add Accounts</span></button></div>
 
+    <div class="toolbar" style="margin-top:20px;border-top:1px solid rgba(255,255,255,.08);padding-top:16px">
+      <h4 style="margin:0">\ud83d\udce6 Stock codes <span class="muted" style="font-weight:400;font-size:13px">\u00b7 ${availCount} available</span></h4>
+      <div class="grow"></div>
+      ${availCount ? `<button class="btn btn-sm btn-red" id="stDelAll"><span>\ud83d\uddd1\ufe0f Delete All Stock</span></button>` : ""}
+    </div>
     <div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>ID</th><th>Code</th><th>Status</th><th>Sold to</th><th></th></tr></thead><tbody>${items || '<tr><td colspan=5 class="muted">No codes</td></tr>'}</tbody></table></div>`);
   $("#stAdd").onclick = async () => {
     const codes = val("st_codes");
@@ -387,6 +393,14 @@ async function manageStock(id) {
     if (!accounts) return toast("Enter accounts", "err");
     const r = await post(`/api/products/${id}/stock/add_accounts`, { accounts, delimiter });
     if (r.ok) { toast("Added " + r.added + " accounts"); manageStock(id); render(); } else toast(r.error || "Failed", "err");
+  };
+  const delAllBtn = $("#stDelAll");
+  if (delAllBtn) delAllBtn.onclick = async () => {
+    if (!confirm("Delete ALL " + availCount + " available codes for \"" + stripTg(p.name) + "\"?\n\nSold codes are kept as order history.\nThis cannot be undone.")) return;
+    delAllBtn.disabled = true;
+    const r = await post(`/api/products/${id}/stock/delete_all`, {});
+    if (r.ok) { toast("Deleted " + r.deleted + " codes"); manageStock(id); render(); }
+    else { delAllBtn.disabled = false; toast(r.error || "Failed", "err"); }
   };
 }
 async function delStock(stockId, pid, btn) {
