@@ -334,8 +334,27 @@ async def check_payments(context):
         try:
             w3 = _get_web3(context)
             balance_now = _wallet_usdt_balance(w3)
-            context.bot_data["last_wallet_balance"] = balance_now
-            set_setting("last_wallet_balance", str(balance_now))
+            prev_idle = context.bot_data.get("last_wallet_balance")
+            if prev_idle is None:
+                try:
+                    stored = get_setting("last_wallet_balance")
+                    prev_idle = Decimal(str(stored)) if stored else None
+                except Exception:
+                    prev_idle = None
+            # Never advance the baseline over money that landed while no
+            # invoice was pending. Users routinely pay within seconds of the
+            # invoice being created, and the invoice row may not exist yet on
+            # this cycle. Burning the delta here made that payment impossible
+            # to match on any later cycle.
+            if prev_idle is not None and balance_now > prev_idle:
+                print(
+                    "[payscan] holding baseline while idle: +%s USDT arrived with no pending invoice"
+                    % (balance_now - prev_idle),
+                    flush=True,
+                )
+            else:
+                context.bot_data["last_wallet_balance"] = balance_now
+                set_setting("last_wallet_balance", str(balance_now))
         except Exception:
             _drop_cached_web3(context)
         return
@@ -401,6 +420,20 @@ async def check_payments(context):
             log_error("Payment checker RPC/log scan error", exc)
             if balance_rose:
                 print("[payscan] balance rose but log scan failed; balance check will handle it", flush=True)
+
+    # Re-read pending invoices AFTER the RPC work. The list fetched at the top
+    # of this cycle is now several seconds old: connecting to the RPC, probing
+    # the balance and chunk-scanning event logs all take real time. An invoice
+    # created inside that window -- then paid immediately, which is the normal
+    # case -- was missing from the stale list, so a payment for the exact
+    # requested amount was reported as "no pending invoice matches this amount"
+    # and held instead of credited.
+    try:
+        refreshed = _pending_deposits()
+        if refreshed:
+            pending = refreshed
+    except Exception as exc:
+        log_error("Pending invoice re-read failed", exc)
 
     credited_ids = set()
     for deposit_id, user_id, base_amount, unique_amount, checkout_product_id, checkout_quantity, checkout_done in pending:

@@ -56,7 +56,7 @@ async def show_deposit_history(q, uid):
             text += (
                 f"🧾 <b>Invoice #{dep_id}</b>\n"
                 f"💵 Amount: <b>{amount:.2f} USDT</b>\n"
-                f"🎯 Exact Pay: <code>{unique_amount:.5f}</code> USDT\n"
+                f"🎯 Exact Pay: <code>{unique_amount:.6f}</code> USDT\n"
                 f"📌 Status: <b>{status_text}</b>\n"
             )
 
@@ -135,7 +135,7 @@ def _create_invoice(uid, amount, method="bep20"):
     # randint(100,999)/100000 gave only 900 variants, so two users depositing
     # the same base amount collided often -- and the checker credited whichever
     # pending row it found first (i.e. potentially the WRONG user).
-    unique_amount = round(amount + random.randint(1000, 99999) / 1000000, 6)
+    unique_amount = round(amount + random.randint(1000, 9999) / 1000000, 6)
     for _ in range(25):
         cur.execute(
             "SELECT 1 FROM deposits WHERE unique_amount=? AND status='pending'",
@@ -143,7 +143,7 @@ def _create_invoice(uid, amount, method="bep20"):
         )
         if cur.fetchone() is None:
             break
-        unique_amount = round(amount + random.randint(1000, 99999) / 1000000, 6)
+        unique_amount = round(amount + random.randint(1000, 9999) / 1000000, 6)
     note_code = _gen_note_code() if method == "binance" else None
 
     # Set created explicitly in bot time (IST). The DB default is UTC,
@@ -165,7 +165,7 @@ def _invoice_text(amount, unique_amount, invoice_id):
 
 ⚛️ Order: <b>${amount:.2f} USDT</b>
 
-🟢 Send EXACTLY: <code>{unique_amount:.5f}</code> <b>USDT</b>
+🟢 Send EXACTLY: <code>{unique_amount:.6f}</code> <b>USDT</b>
 <b>To Address (BEP20 (BNB Smart Chain)):</b>
 <code>{USDT_BEP20_ADDRESS}</code>
 
@@ -182,7 +182,7 @@ def _trc20_invoice_text(amount, unique_amount, invoice_id):
 
 \u269b\ufe0f Order: <b>${amount:.2f} USDT</b>
 
-\U0001f7e2 Send EXACTLY: <code>{unique_amount:.5f}</code> <b>USDT</b>
+\U0001f7e2 Send EXACTLY: <code>{unique_amount:.6f}</code> <b>USDT</b>
 <b>To Address (TRC20 (Tron Network)):</b>
 <code>{USDT_TRC20_ADDRESS}</code>
 
