@@ -90,6 +90,13 @@ PAYMENT_SCAN_BLOCKS = int(os.getenv("PAYMENT_SCAN_BLOCKS", "8000"))
 
 # Decimal tolerance
 PAYMENT_AMOUNT_TOLERANCE = 0.000001
+
+# Set ALERT_FOREIGN_DEPOSITS=0 when the deposit wallet is also used for
+# personal funds. Incoming transfers that are not customer invoices are then
+# handled silently instead of sending an admin alert for every one of them.
+ALERT_FOREIGN_DEPOSITS = os.getenv(
+    "ALERT_FOREIGN_DEPOSITS", "1"
+).strip().lower() not in ("0", "false", "no", "off")
 # ==================================================
 
 # ================== BACKUP SETTINGS ==================

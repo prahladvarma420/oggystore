@@ -24,6 +24,7 @@ from config import (
     PAYMENT_AMOUNT_TOLERANCE,
     PAYMENT_REQUIRED_CONFIRMATIONS,
     PAYMENT_SCAN_BLOCKS,
+    ALERT_FOREIGN_DEPOSITS,
 )
 
 TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex().replace("0x", "")
@@ -399,6 +400,7 @@ async def check_payments(context):
     )
 
     logs, scanned_to = [], None
+    scan_ok = False
     fails = context.bot_data.get("logscan_failures", 0)
     cycle = context.bot_data.get("payscan_cycle", 0)
     context.bot_data["payscan_cycle"] = cycle + 1
@@ -409,6 +411,7 @@ async def check_payments(context):
     if should_scan:
         try:
             logs, scanned_to = _get_recent_incoming_usdt_logs(context, w3)
+            scan_ok = True
             if fails:
                 print(f"[payscan] log scan recovered after {fails} failures", flush=True)
             context.bot_data["logscan_failures"] = 0
@@ -621,6 +624,9 @@ async def check_payments(context):
             continue
         alerted.add(tx_hash)
         paid_amount = _amount_from_log(log)
+        if not ALERT_FOREIGN_DEPOSITS:
+            # Wallet is shared with personal funds; owner muted these.
+            continue
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
@@ -652,11 +658,26 @@ async def check_payments(context):
                 # "not d[4]". Once the log scan was rate-limited off that left
                 # checkout payments with no working confirmation path at all,
                 # so they are now matched too.
-                matches = [
-                    d for d in pending
-                    if d[0] not in credited_ids and _matches_amount(delta, d[3])
-                ]
+                # Money already credited from the event logs on this very
+                # cycle is part of this same delta. Subtract it before deciding
+                # whether anything is genuinely unaccounted for -- otherwise a
+                # payment that was just confirmed by TX hash also raised an
+                # "UNMATCHED WALLET DEPOSIT" alert for its own amount.
+                credited_total = sum(
+                    (Decimal(str(d[3])) for d in pending if d[0] in credited_ids),
+                    Decimal("0"),
+                )
+                residual = delta - credited_total
                 attributed = bool(credited_ids)
+                if residual <= Decimal(str(PAYMENT_AMOUNT_TOLERANCE)):
+                    # Every cent of this delta is already accounted for.
+                    matches = []
+                    residual = Decimal("0")
+                else:
+                    matches = [
+                        d for d in pending
+                        if d[0] not in credited_ids and _matches_amount(residual, d[3])
+                    ]
                 if len(matches) == 1:
                     deposit_id, user_id, base_amount, unique_amount, _cpid, _cqty, _cdone = matches[0]
                     # Deterministic: including a timestamp made every pseudo tx unique,
@@ -724,7 +745,7 @@ async def check_payments(context):
                                 "💰 <b>AUTO PAYMENT CONFIRMED</b> (balance check)\n\n"
                                 f"👤 <b>User:</b> <code>{user_id}</code>\n"
                                 f"🧾 <b>Invoice:</b> <code>#{deposit_id}</code>\n"
-                                f"💵 <b>Paid:</b> <code>{delta:.5f} USDT</code>\n"
+                                f"💵 <b>Paid:</b> <code>{residual:.5f} USDT</code>\n"
                                 f"💰 <b>Credit:</b> <code>{float(base_amount):.2f} USDT</code>"
                             ),
                             parse_mode="HTML",
@@ -733,14 +754,36 @@ async def check_payments(context):
                         pass
                 elif len(matches) > 1:
                     await _alert_unattributed(
-                        context, delta,
+                        context, residual,
                         f"{len(matches)} pending invoices match this exact amount",
                     )
-                else:
-                    await _alert_unattributed(
-                        context, delta,
-                        "no pending invoice matches this amount",
-                    )
+                elif residual > 0:
+                    # Nothing matches. If the event-log scan succeeded this
+                    # cycle then every incoming transfer was seen and already
+                    # reported with its TX hash, so this is simply money that
+                    # is not a customer payment -- typically the owner's own
+                    # funds, because this wallet is used personally too.
+                    #
+                    # Such money must NOT hold the baseline. Holding it would
+                    # leave the leftover amount inside every future delta, so
+                    # the next real customer payment would be measured as
+                    # (personal + customer) and would never match its invoice.
+                    # If a customer invoice really is involved, the log scan
+                    # keeps ~1h of history and re-credits it on a later cycle.
+                    if scan_ok:
+                        print(
+                            f"[payscan] foreign deposit {residual} USDT "
+                            "(not a customer invoice); baseline advanced",
+                            flush=True,
+                        )
+                        attributed = True
+                    else:
+                        # Blind this cycle: the scan failed, so we cannot tell
+                        # "not a customer payment" from "not seen yet". Hold.
+                        await _alert_unattributed(
+                            context, residual,
+                            "no pending invoice matches this amount",
+                        )
 
                 if not attributed:
                     # Never move the baseline past money we could not attribute.
