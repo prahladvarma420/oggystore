@@ -182,7 +182,9 @@ def _wallet_usdt_balance(w3: Web3) -> Decimal:
 # 'message': 'limit exceeded'}. Scan the window in small chunks instead.
 LOG_SCAN_CHUNK_BLOCKS = 450
 # Cap catch-up work per cycle; anything left is scanned on the next cycles.
-MAX_CHUNKS_PER_CYCLE = 12
+# Kept small: a 12-request burst every 30s is what tripped the free-RPC
+# 'limit exceeded' rate limit and disabled log scanning entirely.
+MAX_CHUNKS_PER_CYCLE = 6
 
 
 def _load_last_scanned_block(context) -> int:
@@ -264,6 +266,37 @@ async def _maybe_low_stock_alert(context, product_id: int):
         log_error("Low stock alert failed", exc, extra=f"product={product_id}")
 
 
+async def _alert_unattributed(context, delta, reason: str):
+    """Warn the admin about wallet funds that could not be matched.
+
+    Uses its own dedupe key so these money alerts are never swallowed by the
+    shared 30-minute RPC-error throttle inside _notify_admin_error().
+    """
+    key = "%.6f" % delta
+    seen = context.bot_data.setdefault("unattributed_alerts", {})
+    nowts = int(time.time())
+    if nowts - seen.get(key, 0) < 1800:
+        return
+    if len(seen) > 200:
+        seen.clear()
+    seen[key] = nowts
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                "\u26a0\ufe0f <b>UNMATCHED WALLET DEPOSIT</b>\n\n"
+                f"\U0001f4b5 <b>Amount:</b> <code>{delta:.6f} USDT</code>\n"
+                f"\u2753 <b>Reason:</b> {html.escape(str(reason), quote=False)}\n\n"
+                "These funds are NOT credited. The balance baseline is being "
+                "held so the payment is not lost \u2014 check BscScan and credit "
+                "manually via Admin \u2192 Add Balance."
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
 async def _notify_admin_error(context, message: str):
     now = int(time.time())
     last = context.bot_data.get("last_payment_rpc_error", 0)
@@ -319,13 +352,46 @@ async def check_payments(context):
     # reject or stall on eth_getLogs. A failure here must NOT abort the
     # cycle, because the wallet-balance check below still verifies payments
     # reliably on every RPC.
+    # A cheap balanceOf probe now drives the expensive work. Free public BSC
+    # RPCs rate-limit eth_getLogs ("limit exceeded"), and the old code called
+    # it on every 30s cycle whether or not any money had arrived - which kept
+    # the scanner permanently throttled off and left the balance check as the
+    # only working path. balanceOf is one cheap call that keeps succeeding, so
+    # use it as the trigger and only scan logs when the balance actually moved.
+    balance_now = None
+    try:
+        balance_now = _wallet_usdt_balance(w3)
+    except Exception as exc:
+        _drop_cached_web3(context)
+        print(f"[payscan] balance probe failed: {exc}", flush=True)
+
+    prev_balance = context.bot_data.get("last_wallet_balance")
+    if prev_balance is None:
+        try:
+            stored = get_setting("last_wallet_balance")
+            prev_balance = Decimal(str(stored)) if stored else None
+        except Exception:
+            prev_balance = None
+
+    balance_rose = (
+        balance_now is not None
+        and prev_balance is not None
+        and balance_now > prev_balance
+    )
+
     logs, scanned_to = [], None
     fails = context.bot_data.get("logscan_failures", 0)
     cycle = context.bot_data.get("payscan_cycle", 0)
     context.bot_data["payscan_cycle"] = cycle + 1
-    if fails < 5 or cycle % 20 == 0:
+
+    # Scan when money arrived, when there is no baseline yet, or as a periodic
+    # safety sweep in case the balance probe itself is failing.
+    should_scan = balance_rose or prev_balance is None or cycle % 10 == 0
+    if should_scan:
         try:
             logs, scanned_to = _get_recent_incoming_usdt_logs(context, w3)
+            if fails:
+                print(f"[payscan] log scan recovered after {fails} failures", flush=True)
             context.bot_data["logscan_failures"] = 0
         except Exception as exc:
             context.bot_data["logscan_failures"] = fails + 1
@@ -333,8 +399,8 @@ async def check_payments(context):
             _drop_cached_web3(context)
             print(f"[payscan] log scan failed ({fails + 1} in a row): {exc}", flush=True)
             log_error("Payment checker RPC/log scan error", exc)
-    else:
-        print("[payscan] log scan disabled after repeated failures; using balance check only", flush=True)
+            if balance_rose:
+                print("[payscan] balance rose but log scan failed; balance check will handle it", flush=True)
 
     credited_ids = set()
     for deposit_id, user_id, base_amount, unique_amount, checkout_product_id, checkout_quantity, checkout_done in pending:
@@ -541,19 +607,23 @@ async def check_payments(context):
     # Fallback verification: detect payments by wallet balance increase.
     # This works even when the RPC returns empty event logs.
     try:
-        balance_now = _wallet_usdt_balance(w3)
-        prev = context.bot_data.get("last_wallet_balance")
-        if prev is None:
-            stored = get_setting("last_wallet_balance")
-            prev = Decimal(str(stored)) if stored else None
+        if balance_now is None:
+            balance_now = _wallet_usdt_balance(w3)
+        prev = prev_balance
+        attributed = True
 
         if prev is not None:
             delta = balance_now - prev
             if delta > 0:
+                # Direct-checkout invoices used to be excluded here via
+                # "not d[4]". Once the log scan was rate-limited off that left
+                # checkout payments with no working confirmation path at all,
+                # so they are now matched too.
                 matches = [
                     d for d in pending
-                    if d[0] not in credited_ids and not d[4] and _matches_amount(delta, d[3])
+                    if d[0] not in credited_ids and _matches_amount(delta, d[3])
                 ]
+                attributed = bool(credited_ids)
                 if len(matches) == 1:
                     deposit_id, user_id, base_amount, unique_amount, _cpid, _cqty, _cdone = matches[0]
                     # Deterministic: including a timestamp made every pseudo tx unique,
@@ -563,7 +633,7 @@ async def check_payments(context):
 
                     add_balance(user_id, float(base_amount))
                     cur.execute(
-                        "UPDATE deposits SET status='paid', tx_hash=?, paid_at=? WHERE id=? AND status='pending'",
+                        "UPDATE deposits SET status='paid', tx_hash=?, paid_at=?, checkout_done=1 WHERE id=? AND status='pending'",
                         (pseudo_tx, now_text(), deposit_id),
                     )
                     cur.execute(
@@ -572,7 +642,30 @@ async def check_payments(context):
                     )
                     conn.commit()
                     credited_ids.add(deposit_id)
+                    attributed = True
                     print(f"[payscan] credited deposit #{deposit_id} via balance check (+{delta} USDT)", flush=True)
+
+                    if _cpid and int(_cqty or 0) > 0 and not _cdone:
+                        # The balance-only path cannot safely reserve stock and
+                        # deliver codes, so the money lands in the wallet and
+                        # the admin is told to finish the order.
+                        try:
+                            await context.bot.send_message(
+                                chat_id=ADMIN_ID,
+                                text=(
+                                    "\U0001f6d2 <b>CHECKOUT PAID (balance check)</b>\n\n"
+                                    f"\U0001f464 User: <code>{user_id}</code>\n"
+                                    f"\U0001f9fe Invoice: <code>#{deposit_id}</code>\n"
+                                    f"\U0001f4e6 Product ID: <code>{int(_cpid)}</code>\n"
+                                    f"\U0001f522 Quantity: <code>{int(_cqty)}</code>\n"
+                                    f"\U0001f4b5 Paid: <code>{delta:.5f} USDT</code>\n\n"
+                                    "Credited to the user wallet balance. Deliver "
+                                    "the product manually if it was not sent."
+                                ),
+                                parse_mode="HTML",
+                            )
+                        except Exception:
+                            pass
 
                     try:
                         await context.bot.send_message(
@@ -606,14 +699,36 @@ async def check_payments(context):
                     except Exception:
                         pass
                 elif len(matches) > 1:
-                    await _notify_admin_error(
-                        context,
-                        f"Wallet balance increased by {delta} USDT but multiple pending "
-                        f"invoices match. Credit manually via Admin -> Add Balance.",
+                    await _alert_unattributed(
+                        context, delta,
+                        f"{len(matches)} pending invoices match this exact amount",
+                    )
+                else:
+                    await _alert_unattributed(
+                        context, delta,
+                        "no pending invoice matches this amount",
                     )
 
-        context.bot_data["last_wallet_balance"] = balance_now
-        set_setting("last_wallet_balance", str(balance_now))
+                if not attributed:
+                    # Never move the baseline past money we could not attribute.
+                    # Advancing it unconditionally is what made unmatched
+                    # payments permanently unrecoverable: the funds disappeared
+                    # from the delta on the very next cycle, so no later run
+                    # could ever match them. Carry the delta forward instead.
+                    since = context.bot_data.get("unattributed_since")
+                    if not since:
+                        context.bot_data["unattributed_since"] = time.time()
+                        print(f"[payscan] holding baseline: {delta} USDT unattributed", flush=True)
+                    elif time.time() - since > DEPOSIT_EXPIRE_HOURS * 3600:
+                        # Stop carrying a stale delta forever, otherwise it
+                        # poisons amount matching for every future payment.
+                        print(f"[payscan] dropping stale unattributed delta {delta} USDT", flush=True)
+                        attributed = True
+
+        if attributed:
+            context.bot_data["unattributed_since"] = None
+            context.bot_data["last_wallet_balance"] = balance_now
+            set_setting("last_wallet_balance", str(balance_now))
     except Exception as exc:
         log_error("Balance fallback check failed", exc)
 
