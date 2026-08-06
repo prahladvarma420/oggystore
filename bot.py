@@ -1,3 +1,5 @@
+import sys
+
 from tasks.auto_marketing import run_auto_marketing
 from tasks.scheduled_broadcasts import run_scheduled_broadcasts
 from services.m365_family import run_m365_maintenance
@@ -77,8 +79,18 @@ def main():
     print("[bot] Started — polling for updates. Payment auto-checker is running.", flush=True)
     try:
         app.run_polling(drop_pending_updates=True)
+    except Exception as exc:
+        print(f"[bot] FATAL: polling crashed: {exc!r}", flush=True)
     finally:
         print("[bot] Stopped.", flush=True)
+    # run_polling never returns during normal operation, so reaching this
+    # point means the bot died (e.g. "can't start new thread") or the host
+    # asked it to stop. Exit non-zero so Railway's on-failure restart policy
+    # brings the store back automatically instead of leaving it offline for
+    # hours until someone notices and redeploys by hand. During a redeploy
+    # or manual stop the container is being replaced anyway, so the exit
+    # code is irrelevant there.
+    sys.exit(1)
 
 
 if __name__ == "__main__":

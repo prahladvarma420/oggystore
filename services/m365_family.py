@@ -278,6 +278,8 @@ _RUNTIME_INSTALL_DONE = False
 # Tracks the last automation phase reached, so a hard timeout in the async
 # wrapper can still report WHERE the flow got stuck (the worker thread cannot
 # return a value once it is killed by asyncio.wait_for).
+from services import pw_lane
+
 _LAST_PHASE = "not started"
 # Last screenshot captured during a run. Stored at module level so the async
 # timeout handler can still attach an image even if the worker thread is killed
@@ -929,6 +931,25 @@ def send_family_invite_sync(email: str, forced_session=None, warranty=None):
 
 
 def _invite_with_failover_sync(email: str, warranty=None):
+    """Lane-guarded entry: never run two Chromium jobs at the same time."""
+    # Wait briefly in case a short keepalive holds the lane, then park the
+    # order in the queue instead of stacking another browser thread.
+    if not pw_lane.acquire(f"M365 invite {email}", wait_seconds=60):
+        _log(f"browser lane busy ({pw_lane.busy_info()}) -> invite parked in queue")
+        return (
+            False,
+            "Another browser task is still running; the invite stays queued "
+            "and will be delivered automatically on the next flush.",
+            None,
+            True,
+        )
+    try:
+        return _invite_with_failover_locked(email, warranty)
+    finally:
+        pw_lane.release()
+
+
+def _invite_with_failover_locked(email: str, warranty=None):
     """Order safety-net driver: try each active Microsoft ID in turn.
 
     If an ID's cookies turn out to be expired, mark it expired (so the owner is
@@ -1164,6 +1185,21 @@ def _refresh_session_sync(session_id, state_json):
 
 
 def _keepalive_sessions_sync():
+    """Lane-guarded entry: skip the round entirely if a browser job is live.
+
+    Maintenance must never compete with a customer order for memory, and it
+    must never stack a second worker thread behind a stuck one.
+    """
+    if not pw_lane.acquire("M365 keepalive"):
+        _log(f"browser lane busy ({pw_lane.busy_info()}) -> skipping this keepalive round")
+        return []
+    try:
+        return _keepalive_sessions_locked()
+    finally:
+        pw_lane.release()
+
+
+def _keepalive_sessions_locked():
     """Refresh every active session; return the labels of any that just died."""
     from database.db import list_active_m365_sessions, get_m365_session, mark_m365_session_expired
     newly_expired = []
@@ -1412,6 +1448,32 @@ async def run_m365_maintenance(context):
        exists again.
     """
     bot = context.bot
+
+    # Hourly health line: catches a thread/process leak long before it can
+    # crash the container again (the 4-day crash was only diagnosable after
+    # the fact; this makes growth visible while the bot is still healthy).
+    try:
+        import threading as _th
+        _tasks = "?"
+        try:
+            _tasks = len(os.listdir("/proc/self/task"))
+        except Exception:
+            pass
+        _rss = "?"
+        try:
+            with open("/proc/self/status") as _f:
+                for _l in _f:
+                    if _l.startswith("VmRSS"):
+                        _rss = " ".join(_l.split()[1:])
+                        break
+        except Exception:
+            pass
+        _log(
+            f"health: py-threads={_th.active_count()} os-tasks={_tasks} "
+            f"rss={_rss} lane={pw_lane.busy_info()}"
+        )
+    except Exception:
+        pass
 
     # 1 + 2: refresh sessions and alert on any that just died.
     try:

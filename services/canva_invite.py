@@ -79,6 +79,8 @@ _RUNTIME_INSTALL_DONE = False
 
 # Tracks the last automation phase reached, so a hard timeout in the async
 # wrapper can still report WHERE the flow got stuck.
+from services import pw_lane
+
 _LAST_PHASE = "not started"
 # Last screenshot captured during a run (see services/m365_family.py for why).
 _LAST_SCREENSHOT = None
@@ -262,6 +264,22 @@ def _toast_screenshot(page):
 
 
 def send_canva_invite_sync(email: str):
+    """Lane-guarded entry: never run two Chromium jobs at the same time."""
+    if not pw_lane.acquire(f"Canva invite {email}", wait_seconds=60):
+        _log(f"browser lane busy ({pw_lane.busy_info()}) -> Canva invite deferred")
+        return (
+            False,
+            "Another browser task is still running. Retry this invite in a "
+            "minute.",
+            None,
+        )
+    try:
+        return _send_canva_invite_locked(email)
+    finally:
+        pw_lane.release()
+
+
+def _send_canva_invite_locked(email: str):
     """Send a Canva team invite to `email`.
 
     Returns (ok: bool, message: str, screenshot: bytes | None).
