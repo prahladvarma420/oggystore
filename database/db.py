@@ -853,6 +853,31 @@ def add_stock_items(product_id: int, delivery_text: str):
     return len(items)
 
 
+def add_stock_file_item(product_id: int, delivery_text: str):
+    """Add ONE stock item whose delivery text is an entire uploaded file.
+
+    Unlike add_stock_items(), this never splits on newlines or ';;', so a
+    multi-line account block (email login, passwords, activation link,
+    notes...) is stored -- and later delivered -- exactly as uploaded.
+    Returns the available (unsold) stock count after the insert.
+    """
+    item = str(delivery_text).strip()
+    if not item:
+        return 0
+    cur.execute(
+        "INSERT INTO product_stock(product_id, delivery, sold) VALUES(?,?,0)",
+        (product_id, encrypt_text(item))
+    )
+    cur.execute("SELECT COUNT(*) FROM product_stock WHERE product_id=? AND sold=0", (product_id,))
+    _avail = cur.fetchone()
+    available = int(_avail[0]) if _avail else 1
+    cur.execute("UPDATE products SET stock=? WHERE id=?", (available, product_id))
+    # Re-arm low-stock alerts after restock so the next drop alerts again.
+    cur.execute("UPDATE products SET low_stock_notified=0 WHERE id=?", (product_id,))
+    conn.commit()
+    return available
+
+
 def get_available_stock_count(product_id: int) -> int:
     cur.execute("SELECT COUNT(*) FROM product_stock WHERE product_id=? AND sold=0", (product_id,))
     row = cur.fetchone()

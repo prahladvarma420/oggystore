@@ -1939,4 +1939,57 @@ async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    if state and str(state).startswith("admin_easy_add_stock:") and is_admin(uid):
+        try:
+            doc = update.message.document
+            fname = str(doc.file_name or "account.txt")
+            if not fname.lower().endswith(".txt"):
+                await update.message.reply_text(
+                    "\u26a0\ufe0f Please upload a <code>.txt</code> file (one account per file), "
+                    "or send the codes as a normal text message.",
+                    parse_mode="HTML",
+                )
+                return
+            if int(doc.file_size or 0) > 262144:
+                await update.message.reply_text(
+                    "\u26a0\ufe0f File too large (max 256 KB). One account per file, please.",
+                    parse_mode="HTML",
+                )
+                return
+            file = await context.bot.get_file(doc.file_id)
+            data = bytes(await file.download_as_bytearray())
+            content = data.decode("utf-8", errors="replace").replace("\r\n", "\n").strip()
+            if not content:
+                await update.message.reply_text("\u26a0\ufe0f That file is empty.", parse_mode="HTML")
+                return
+            product_id = int(str(state).split(":")[1])
+            from database.db import add_stock_file_item, log_admin_action, cur as _cur
+            _cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+            _prod = _cur.fetchone()
+            if not _prod:
+                await update.message.reply_text("\u26a0\ufe0f <b>Product not found.</b>", parse_mode="HTML")
+                user_state.pop(uid, None)
+                return
+            available = add_stock_file_item(product_id, content)
+            log_admin_action(uid, "FILE_ADD_STOCK", f"Product ID {product_id} | file {fname} | available {available}")
+            # State is kept on purpose: the admin can upload many .txt files
+            # in a row (Telegram sends a multi-file selection one by one).
+            await update.message.reply_text(
+                "\u2705 <b>Account Added From File</b>\n\n"
+                f"\U0001f4c4 File: <code>{html.escape(fname, quote=False)}</code>\n"
+                f"\U0001f4e6 Product: <b>{html.escape(str(_prod[0]), quote=False)}</b>\n"
+                f"\U0001f4ca Available Now: <code>{available}</code>\n\n"
+                "\u2795 Upload more <code>.txt</code> files to add more accounts, or "
+                "send codes as a text message. No customer broadcast is sent for "
+                "file uploads, so you can upload as many as you like quietly.",
+                parse_mode="HTML",
+            )
+            return
+        except Exception as exc:
+            await update.message.reply_text(
+                f"\u26a0\ufe0f <b>Stock file add failed.</b>\n\n<code>{html.escape(str(exc), quote=False)}</code>",
+                parse_mode="HTML",
+            )
+            return
+
     await update.message.reply_text("ℹ️ Document received, but no document action is active.", parse_mode="HTML")

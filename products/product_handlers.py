@@ -291,7 +291,18 @@ def stock_label(stock: int) -> str:
 
 def format_delivery_items(items):
     if isinstance(items, list):
-        return "\n\n".join([str(item) for item in items])
+        items = [str(item) for item in items]
+        # Multi-line account blocks (uploaded .txt stock) get numbered
+        # separators so the customer can tell the accounts apart.
+        if len(items) > 1 and any("\n" in it for it in items):
+            sep = "\u2500" * 28
+            out = []
+            for i, it in enumerate(items, 1):
+                out.append(
+                    f"{sep}\n\U0001f464 ACCOUNT {i} of {len(items)}\n{sep}\n{it}"
+                )
+            return "\n\n".join(out)
+        return "\n\n".join(items)
     return str(items)
 
 

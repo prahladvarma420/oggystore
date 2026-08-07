@@ -1965,7 +1965,9 @@ Send one item per line:
 email2:pass2
 email3:pass3</code>
 
-Or separate using <code>;;</code>.""", products_select_keyboard("admin_stock_select"))
+Or separate using <code>;;</code>.
+
+📎 <b>NEW:</b> You can also upload <b>.txt file(s)</b> right here — each file is saved as <b>one account</b>, so multi-line details (email + passwords + links) stay together. Select several files at once to add several accounts.""", products_select_keyboard("admin_stock_select"))
         return True
 
     if data == "admin_manage_codes":
