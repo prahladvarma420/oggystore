@@ -76,15 +76,14 @@ def _available_methods():
     """Payment methods that are configured via env vars. BEP20 is the default.
 
     Labels come from the editable message templates (btn_bep20 / btn_trc20 /
-    btn_binance). Telegram buttons cannot render premium emoji or HTML, so
-    strip_premium() converts any <tg-emoji> tag to its plain fallback emoji
-    and drops other HTML tags.
+    btn_binance) and may contain premium-emoji <tg-emoji> tags. Buttons are
+    built with _method_button() so the FIRST premium emoji becomes the button
+    icon -- exactly how the customizable main-menu buttons behave.
     """
     from database.db import get_message_template, BTN_BEP20_DEFAULT, BTN_TRC20_DEFAULT, BTN_BINANCE_DEFAULT
-    from utils.premium_emoji import strip_premium
 
     def _label(key, default):
-        return strip_premium(get_message_template(key, default)) or strip_premium(default)
+        return (get_message_template(key, default) or "").strip() or default
 
     methods = []
     if isinstance(USDT_BEP20_ADDRESS, str) and USDT_BEP20_ADDRESS.startswith("0x"):
@@ -104,9 +103,18 @@ def _method_chooser_text(amount):
     )
 
 
+def _method_button(label, callback_data):
+    """Payment-method button: the first premium emoji in the label becomes
+    the button icon; the rest renders as plain text (Telegram buttons cannot
+    show premium emoji inline, only as the icon)."""
+    from utils.premium_emoji import button_premium, strip_premium
+    text, icon = button_premium(label)
+    return InlineKeyboardButton(text or strip_premium(label), callback_data=callback_data, icon_custom_emoji_id=icon)
+
+
 def _method_menu(amount):
     rows = [
-        [InlineKeyboardButton(label, callback_data=f"depmethod_{key}_{amount:.2f}")]
+        [_method_button(label, f"depmethod_{key}_{amount:.2f}")]
         for key, label in _available_methods()
     ]
     rows.append([InlineKeyboardButton("\U0001f3e0 Main Menu", callback_data="home")])

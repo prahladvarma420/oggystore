@@ -132,11 +132,12 @@ async function viewDashboard() {
       ${card("c5", "\u26a0\ufe0f", "Low Stock", s.low_stock)}
     </div>
     <div class="stat-grid">
-      ${card("c2", "\ud83d\udcc8", "Total Revenue", money(s.total_revenue))}
+      ${card("c2", "\ud83d\udcc8", "Total Revenue (customers)", money(s.total_revenue))}
       ${card("c1", "\ud83d\udce6", "Total Orders", s.total_orders)}
       ${card("c3", "\ud83d\udc65", "Total Users", t.users)}
       ${card("c5", "\ud83d\udce6", "Active Products", t.active_products + "/" + t.products)}
       ${card("c4", "\ud83d\udcb8", "Pending Withdrawals", t.pending_withdrawals)}
+      ${card("c5", "\ud83d\udee1\ufe0f", "Admin Purchases", money(s.admin_revenue || 0) + " \u00b7 " + (s.admin_orders || 0) + " orders")}
     </div>
     <div class="row-2">
       <div class="panel glass"><h3>\ud83d\udcc8 Revenue \u2014 last 7 days</h3><div class="chart-box"><canvas id="revChart"></canvas></div></div>
@@ -780,21 +781,39 @@ async function deleteBackup(name) {
 
 /* =====================================================  DEPOSITS  ========= */
 let depFilter = "";
+let depMethodFilter = "";
+const DEP_METHODS = { bep20: ["\ud83d\udfe1", "USDT BEP20"], trc20: ["\ud83d\udd34", "USDT TRC20"], binance: ["\ud83d\udfe8", "Binance Pay"] };
+function depMethodBadge(m) {
+  const k = String(m || "bep20").toLowerCase();
+  const v = DEP_METHODS[k] || ["\ud83d\udcb3", k];
+  return `<span class="badge info">${v[0]} ${esc(v[1])}</span>`;
+}
 async function viewDeposits() {
-  const d = await api("/api/deposits" + (depFilter ? "?status=" + depFilter : ""));
+  const qs = [];
+  if (depFilter) qs.push("status=" + depFilter);
+  if (depMethodFilter) qs.push("method=" + depMethodFilter);
+  const d = await api("/api/deposits" + (qs.length ? "?" + qs.join("&") : ""));
   if (!d.ok) return $("#content").innerHTML = empty("No data");
   const badge = s => `<span class="badge ${s === "paid" ? "on" : (s === "pending" ? "warn" : "off")}">${esc(s)}</span>`;
-  const rows = (d.deposits || []).map(x => `<tr><td>#${x.id}</td><td>${esc(x.first_name || x.user_id)}</td><td>${money(x.amount)}</td><td>${x.unique_amount ? money(x.unique_amount) : "-"}</td><td>${badge(x.status)}</td><td class="muted">${fmtDate(x.paid_at || x.created)}</td></tr>`).join("");
+  const rows = (d.deposits || []).map(x => `<tr><td>#${x.id}</td><td>${esc(x.first_name || x.user_id)}</td><td>${money(x.amount)}</td><td>${x.unique_amount ? money(x.unique_amount) : "-"}</td><td>${depMethodBadge(x.method)}</td><td>${badge(x.status)}</td><td class="muted">${fmtDate(x.paid_at || x.created)}</td></tr>`).join("");
   const chip = (v, l) => `<button class="btn btn-sm ${depFilter === v ? "btn-glow" : "btn-ghost"}" onclick="depositFilter('${v}')">${l}</button>`;
+  const mchip = (v, l) => `<button class="btn btn-sm ${depMethodFilter === v ? "btn-glow" : "btn-ghost"}" onclick="depositMethodFilter('${v}')">${l}</button>`;
+  const mCards = (d.by_method || []).map(r => {
+    const k = String(r.m || "bep20").toLowerCase();
+    const v = DEP_METHODS[k] || ["\ud83d\udcb3", k];
+    return `<div class="stat-card glass c3"><div class="ic">${v[0]}</div><div class="label">Paid via ${esc(v[1])} (${r.c})</div><div class="value">${money(r.s)}</div></div>`;
+  }).join("");
   $("#content").innerHTML = `
     <div class="stat-grid">
       <div class="stat-card glass c2"><div class="ic">\ud83d\udcb0</div><div class="label">Total Paid</div><div class="value">${money(d.total_paid)}</div></div>
       <div class="stat-card glass c4"><div class="ic">\u23f3</div><div class="label">Unpaid / Pending</div><div class="value">${d.pending}</div></div>
+      ${mCards}
     </div>
-    <div class="toolbar">${chip("", "All")}${chip("paid", "Paid")}${chip("pending", "Pending")}${chip("cancelled", "Cancelled")}<div class="grow"></div></div>
-    ${rows ? `<div class="tbl-wrap"><table><thead><tr><th>#</th><th>User</th><th>Amount</th><th>Unique</th><th>Status</th><th>When</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No deposits", "\ud83d\udcb3")}`;
+    <div class="toolbar">${chip("", "All")}${chip("paid", "Paid")}${chip("pending", "Pending")}${chip("cancelled", "Cancelled")}<div class="grow"></div>${mchip("", "All Methods")}${mchip("bep20", "\ud83d\udfe1 BEP20")}${mchip("trc20", "\ud83d\udd34 TRC20")}${mchip("binance", "\ud83d\udfe8 Binance Pay")}</div>
+    ${rows ? `<div class="tbl-wrap"><table><thead><tr><th>#</th><th>User</th><th>Amount</th><th>Unique</th><th>Method</th><th>Status</th><th>When</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No deposits", "\ud83d\udcb3")}`;
 }
 function depositFilter(v) { depFilter = v; render(); }
+function depositMethodFilter(v) { depMethodFilter = v; render(); }
 
 /* =====================================================  RESTOCK  ========== */
 async function viewRestock() {

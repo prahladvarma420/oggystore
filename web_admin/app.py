@@ -1008,6 +1008,10 @@ def index():
 @login_required
 def api_dashboard():
     stats = botdb.smart_dashboard_stats()
+    # Owner + promoted admins: their own purchases are shown separately and
+    # excluded from the revenue counters/series so numbers reflect real sales.
+    _admin_ids = sorted(botdb._admin_user_ids())
+    not_admin = (" AND user_id NOT IN (%s)" % ",".join(str(i) for i in _admin_ids)) if _admin_ids else ""
     # Revenue reset marker (UTC, same clock as orders.created). Empty = all-time.
     reset_setting = botdb.get_setting("revenue_reset_at", "") or ""
     reset_at = reset_setting or "1970-01-01 00:00:00"
@@ -1016,7 +1020,7 @@ def api_dashboard():
     for i in range(6, -1, -1):
         day = (now() - dt.timedelta(days=i)).strftime("%Y-%m-%d")
         row = q("SELECT COALESCE(SUM(price),0) AS rev, COUNT(*) AS cnt "
-                "FROM orders WHERE DATE(created)=? AND created >= ?", (day, reset_at), one=True)
+                "FROM orders WHERE DATE(created)=? AND created >= ?" + not_admin, (day, reset_at), one=True)
         series.append({"date": day, "revenue": round(row["rev"] or 0, 2),
                        "orders": row["cnt"] or 0})
     totals = {
@@ -1029,7 +1033,7 @@ def api_dashboard():
     }
     # top sellers
     top = q("SELECT product_name, COUNT(*) sold, COALESCE(SUM(price),0) revenue "
-            "FROM orders WHERE created >= ? GROUP BY product_name ORDER BY sold DESC LIMIT 5", (reset_at,))
+            "FROM orders WHERE created >= ?" + not_admin + " GROUP BY product_name ORDER BY sold DESC LIMIT 5", (reset_at,))
     recent = q("SELECT o.id, o.user_id, o.product_name, o.price, o.created, "
                "u.first_name, u.username FROM orders o LEFT JOIN users u "
                "ON o.user_id=u.user_id ORDER BY o.id DESC LIMIT 8")
@@ -2191,17 +2195,31 @@ def api_export(kind):
 @login_required
 def api_deposits():
     status = (request.args.get("status") or "").strip()
+    method = (request.args.get("method") or "").strip().lower()
     base = ("SELECT d.id, d.user_id, d.amount, d.unique_amount, d.status, "
+            "COALESCE(NULLIF(d.method,''),'bep20') AS method, "
             "d.paid_at, d.created, u.first_name, u.username "
             "FROM deposits d LEFT JOIN users u ON d.user_id=u.user_id ")
+    where, params = [], []
     if status:
-        rows = q(base + "WHERE d.status=? ORDER BY d.id DESC LIMIT 500", (status,))
-    else:
-        rows = q(base + "ORDER BY d.id DESC LIMIT 500")
+        where.append("d.status=?")
+        params.append(status)
+    if method:
+        # Legacy rows have no method stored -- they were all BEP20.
+        where.append("COALESCE(NULLIF(d.method,''),'bep20')=?")
+        params.append(method)
+    if where:
+        base += "WHERE " + " AND ".join(where) + " "
+    rows = q(base + "ORDER BY d.id DESC LIMIT 500", tuple(params))
     total_paid = (q("SELECT COALESCE(SUM(amount),0) s FROM deposits WHERE status=?", ("paid",), one=True) or {}).get("s", 0)
     pending = (q("SELECT COUNT(*) c FROM deposits WHERE status=?", ("pending",), one=True) or {}).get("c", 0)
+    by_method = q("SELECT COALESCE(NULLIF(method,''),'bep20') AS m, "
+                  "COALESCE(SUM(amount),0) AS s, COUNT(*) AS c "
+                  "FROM deposits WHERE status='paid' "
+                  "GROUP BY COALESCE(NULLIF(method,''),'bep20') ORDER BY s DESC")
     return jsonify({"ok": True, "deposits": rows,
-                    "total_paid": round(total_paid or 0, 2), "pending": pending or 0})
+                    "total_paid": round(total_paid or 0, 2), "pending": pending or 0,
+                    "by_method": by_method})
 
 
 @app.route("/api/restock")

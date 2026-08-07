@@ -322,8 +322,8 @@ def order_preview_menu(product_id, quantity, balance=0, total_price=0, coupon_co
     pay_rows = [
         [InlineKeyboardButton(f"💚 Pay Wallet (${float(balance):.2f})", callback_data=f"buy_{product_id}_{quantity}")],
     ]
-    # Editable labels (web admin -> Message Templates). Telegram buttons can't
-    # render premium emoji/HTML, so strip to the plain fallback emoji.
+    # Editable labels (web admin -> Message Templates). Like the main-menu
+    # buttons, the FIRST premium emoji in the label becomes the button icon.
     from database.db import (
         get_message_template,
         BTN_CHECKOUT_BEP20_DEFAULT,
@@ -332,20 +332,22 @@ def order_preview_menu(product_id, quantity, balance=0, total_price=0, coupon_co
     )
     from utils.premium_emoji import strip_premium
 
-    def _pay_label(key, default):
-        return strip_premium(get_message_template(key, default)) or strip_premium(default)
+    def _pay_btn(key, default, cb):
+        label = (get_message_template(key, default) or "").strip() or default
+        text, icon = button_premium(label)
+        return InlineKeyboardButton(text or strip_premium(default), callback_data=cb, icon_custom_emoji_id=icon)
 
     if isinstance(USDT_BEP20_ADDRESS, str) and USDT_BEP20_ADDRESS.startswith("0x"):
-        pay_rows.append([InlineKeyboardButton(_pay_label("btn_checkout_bep20", BTN_CHECKOUT_BEP20_DEFAULT), callback_data=f"directpay_{product_id}_{quantity}")])
+        pay_rows.append([_pay_btn("btn_checkout_bep20", BTN_CHECKOUT_BEP20_DEFAULT, f"directpay_{product_id}_{quantity}")])
     if isinstance(USDT_TRC20_ADDRESS, str) and USDT_TRC20_ADDRESS.startswith("T"):
-        pay_rows.append([InlineKeyboardButton(_pay_label("btn_checkout_trc20", BTN_CHECKOUT_TRC20_DEFAULT), callback_data=f"directpaytrc_{product_id}_{quantity}")])
+        pay_rows.append([_pay_btn("btn_checkout_trc20", BTN_CHECKOUT_TRC20_DEFAULT, f"directpaytrc_{product_id}_{quantity}")])
     try:
         from config import BINANCE_API_KEY, BINANCE_API_SECRET, BINANCE_PAY_ID
         _binance_ready = bool(BINANCE_API_KEY and BINANCE_API_SECRET and BINANCE_PAY_ID)
     except Exception:
         _binance_ready = False
     if _binance_ready:
-        pay_rows.append([InlineKeyboardButton(_pay_label("btn_checkout_binance", BTN_CHECKOUT_BINANCE_DEFAULT), callback_data=f"directpaybnb_{product_id}_{quantity}")])
+        pay_rows.append([_pay_btn("btn_checkout_binance", BTN_CHECKOUT_BINANCE_DEFAULT, f"directpaybnb_{product_id}_{quantity}")])
 
     rows = pay_rows + [
         coupon_row,

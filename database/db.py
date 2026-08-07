@@ -1918,11 +1918,37 @@ def clear_admin_logs():
 
 
 
+def _admin_user_ids():
+    """User ids whose purchases count as ADMIN purchases (owner + promoted
+    admins). Their orders are reported separately from customer revenue."""
+    ids = set()
+    try:
+        from config import ADMIN_ID
+        if ADMIN_ID:
+            ids.add(int(ADMIN_ID))
+    except Exception:
+        pass
+    try:
+        cur.execute("SELECT user_id FROM admins")
+        for row in cur.fetchall():
+            try:
+                ids.add(int(row[0]))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ids
+
+
 def smart_dashboard_stats():
     reset_at = get_setting("revenue_reset_at", "") or "1970-01-01 00:00:00"
+    admin_ids = sorted(_admin_user_ids())
+    _ids = ",".join(str(i) for i in admin_ids)
+    not_admin = (" AND user_id NOT IN (%s)" % _ids) if _ids else ""
+    only_admin = (" AND user_id IN (%s)" % _ids) if _ids else " AND 1=0"
     try:
         cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders "
-                    "WHERE created >= ? AND created >= ?", (today_prefix(), reset_at))
+                    "WHERE created >= ? AND created >= ?" + not_admin, (today_prefix(), reset_at))
         today_revenue, today_orders = cur.fetchone()
     except Exception:
         today_revenue, today_orders = 0, 0
@@ -1946,10 +1972,16 @@ def smart_dashboard_stats():
         low_stock = 0
 
     try:
-        cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE created >= ?", (reset_at,))
+        cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE created >= ?" + not_admin, (reset_at,))
         total_revenue, total_orders = cur.fetchone()
     except Exception:
         total_revenue, total_orders = 0, 0
+
+    try:
+        cur.execute("SELECT COALESCE(SUM(price),0), COUNT(*) FROM orders WHERE created >= ?" + only_admin, (reset_at,))
+        admin_revenue, admin_orders = cur.fetchone()
+    except Exception:
+        admin_revenue, admin_orders = 0, 0
 
     return {
         "today_revenue": float(today_revenue or 0),
@@ -1959,6 +1991,8 @@ def smart_dashboard_stats():
         "low_stock": int(low_stock or 0),
         "total_revenue": float(total_revenue or 0),
         "total_orders": int(total_orders or 0),
+        "admin_revenue": float(admin_revenue or 0),
+        "admin_orders": int(admin_orders or 0),
     }
 
 
