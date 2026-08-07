@@ -151,6 +151,33 @@ BTN_BEP20_DEFAULT = "\U0001f7e1 USDT \u2014 BEP20 (BNB Chain)"
 BTN_TRC20_DEFAULT = "\U0001f534 USDT \u2014 TRC20 (Tron)"
 BTN_BINANCE_DEFAULT = "\U0001f7e8 USDT \u2014 Binance Pay"
 
+# Checkout-screen pay buttons (editable; buttons are plain text only).
+BTN_CHECKOUT_BEP20_DEFAULT = "\u26a1 Pay USDT BEP20"
+BTN_CHECKOUT_TRC20_DEFAULT = "\u26a1 Pay USDT TRC20"
+BTN_CHECKOUT_BINANCE_DEFAULT = "\U0001f7e8 Pay via Binance Pay"
+
+# Price-change broadcasts (editable). Placeholders: {product} {old_price}
+# {new_price} {pct} {stock} {bar} {tail}. {tail} is filled automatically
+# ("grab it now" when in stock / "restocking soon" when out of stock).
+PRICE_UP_BROADCAST_DEFAULT = (
+    "\U0001f4e2 <b>PRICE UPDATE!</b>\n{bar}\n\n"
+    "\U0001f4e6 <b>{product}</b>\n\n"
+    "\U0001f4b0 <b>Old Price:</b> <s>{old_price}</s>\n"
+    "\u2728 <b>New Price:</b> <b>{new_price}</b>\n"
+    "\U0001f4c8 <b>Price Increased:</b> <b>+{pct}%</b>\n"
+    "\U0001f4ca <b>Available Stock:</b> <b>{stock}</b>\n\n"
+    "{bar}\n{tail}"
+)
+PRICE_DOWN_BROADCAST_DEFAULT = (
+    "\U0001f525 <b>PRICE DROP ALERT!</b>\n{bar}\n\n"
+    "\U0001f4e6 <b>{product}</b>\n\n"
+    "\U0001f4b0 <b>Old Price:</b> <s>{old_price}</s>\n"
+    "\u2728 <b>New Price:</b> <b>{new_price}</b>\n"
+    "\U0001f4c9 <b>Price Dropped:</b> <b>-{pct}%</b> \U0001f389\n"
+    "\U0001f4ca <b>Available Stock:</b> <b>{stock}</b>\n\n"
+    "{bar}\n{tail}"
+)
+
 INVOICE_BEP20_DEFAULT = (
     "\U0001fa99 <b>USDT BEP20</b>\n"
     "<b>Auto-verification enabled</b>\n\n"
@@ -491,6 +518,11 @@ def init_db():
         ("btn_back_to_products", "Button \u2014 Back To Products", BTN_BACK_TO_PRODUCTS_DEFAULT),
         ("btn_back_to_bundles", "Button \u2014 Back To Bundles", BTN_BACK_TO_BUNDLES_DEFAULT),
         ("btn_buy_bundle", "Button \u2014 Buy Bundle", BTN_BUY_BUNDLE_DEFAULT),
+        ("price_up_broadcast", "Broadcast \u2014 Price Increase Alert", PRICE_UP_BROADCAST_DEFAULT),
+        ("price_down_broadcast", "Broadcast \u2014 Price Drop Alert", PRICE_DOWN_BROADCAST_DEFAULT),
+        ("btn_checkout_bep20", "Button \u2014 Checkout Pay BEP20", BTN_CHECKOUT_BEP20_DEFAULT),
+        ("btn_checkout_trc20", "Button \u2014 Checkout Pay TRC20", BTN_CHECKOUT_TRC20_DEFAULT),
+        ("btn_checkout_binance", "Button \u2014 Checkout Pay Binance", BTN_CHECKOUT_BINANCE_DEFAULT),
     ):
         cur.execute(
             "INSERT OR IGNORE INTO message_templates(key, title, body) VALUES(?,?,?)",
@@ -1830,26 +1862,25 @@ def queue_price_change_broadcast(product_id: int, old_price: float, new_price: f
 
         if new_price < old_price:
             pct = round((old_price - new_price) / old_price * 100) if old_price > 0 else 0
-            title = "\U0001f525 <b>PRICE DROP ALERT!</b>"
-            change_line = f"\U0001f4c9 <b>Price Dropped:</b> <b>-{pct}%</b> \U0001f389"
         else:
             pct = round((new_price - old_price) / old_price * 100) if old_price > 0 else 0
-            title = "\U0001f4e2 <b>PRICE UPDATE!</b>"
-            change_line = f"\U0001f4c8 <b>Price Increased:</b> <b>+{pct}%</b>"
 
         bar = "\u2501" * 18
         if available and int(available) > 0:
             tail = "\U0001f6cd <i>Open the Shop in the bot to grab it now!</i>"
         else:
             tail = "\u23f3 <i>Out of stock \u2014 restocking soon!</i> \U0001f514"
-        msg = (f"{title}\n{bar}\n\n"
-               f"\U0001f4e6 <b>{name}</b>\n\n"
-               f"\U0001f4b0 <b>Old Price:</b> <s>${old_price:.2f}</s>\n"
-               f"\u2728 <b>New Price:</b> <b>${new_price:.2f}</b>\n"
-               f"{change_line}\n"
-               f"\U0001f4ca <b>Available Stock:</b> <b>{available}</b>\n\n"
-               f"{bar}\n"
-               f"{tail}")
+        msg = render_message_template(
+            "price_down_broadcast" if new_price < old_price else "price_up_broadcast",
+            PRICE_DOWN_BROADCAST_DEFAULT if new_price < old_price else PRICE_UP_BROADCAST_DEFAULT,
+            product_name=name,
+            old_price=f"${old_price:.2f}",
+            new_price=f"${new_price:.2f}",
+            pct=pct,
+            stock=available,
+            bar=bar,
+            tail=tail,
+        )
 
         return create_scheduled_broadcast(msg, now_text())
     except Exception:

@@ -1013,12 +1013,10 @@ async def broadcast_price_change(context, product_id: int, product_name: str, ol
 
         if new_price < old_price:
             pct = round((old_price - new_price) / old_price * 100) if old_price > 0 else 0
-            title = "\U0001f525 <b>PRICE DROP ALERT!</b>"
-            change_line = f"\U0001f4c9 <b>Price Dropped:</b> <b>-{pct}%</b> \U0001f389"
+            tpl_key = "price_down_broadcast"
         else:
             pct = round((new_price - old_price) / old_price * 100) if old_price > 0 else 0
-            title = "\U0001f4e2 <b>PRICE UPDATE!</b>"
-            change_line = f"\U0001f4c8 <b>Price Increased:</b> <b>+{pct}%</b>"
+            tpl_key = "price_up_broadcast"
 
         bar = "\u2501" * 18
 
@@ -1034,14 +1032,18 @@ async def broadcast_price_change(context, product_id: int, product_name: str, ol
             tail_line = "\u23f3 <i>Out of stock \u2014 restocking soon!</i> \U0001f514"
             action_button = InlineKeyboardButton("\U0001f514 Notify Me When Back", callback_data=f"notify_stock_{product_id}")
 
-        msg = (f"{title}\n{bar}\n\n"
-               f"\U0001f4e6 <b>{_admin_name(product_name)}</b>\n\n"
-               f"\U0001f4b0 <b>Old Price:</b> <s>${old_price:.2f}</s>\n"
-               f"\u2728 <b>New Price:</b> <b>${new_price:.2f}</b>\n"
-               f"{change_line}\n"
-               f"\U0001f4ca <b>Available Stock:</b> <b>{available}</b>\n\n"
-               f"{bar}\n"
-               f"{tail_line}")
+        from database.db import PRICE_UP_BROADCAST_DEFAULT, PRICE_DOWN_BROADCAST_DEFAULT
+        msg = render_message_template(
+            tpl_key,
+            PRICE_DOWN_BROADCAST_DEFAULT if tpl_key == "price_down_broadcast" else PRICE_UP_BROADCAST_DEFAULT,
+            product_name=_admin_name(product_name),
+            old_price=f"${old_price:.2f}",
+            new_price=f"${new_price:.2f}",
+            pct=pct,
+            stock=available,
+            bar=bar,
+            tail=tail_line,
+        )
 
         kb = InlineKeyboardMarkup([[action_button]])
 

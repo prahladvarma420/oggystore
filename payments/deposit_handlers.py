@@ -73,14 +73,26 @@ async def show_deposit_history(q, uid):
 
 
 def _available_methods():
-    """Payment methods that are configured via env vars. BEP20 is the default."""
+    """Payment methods that are configured via env vars. BEP20 is the default.
+
+    Labels come from the editable message templates (btn_bep20 / btn_trc20 /
+    btn_binance). Telegram buttons cannot render premium emoji or HTML, so
+    strip_premium() converts any <tg-emoji> tag to its plain fallback emoji
+    and drops other HTML tags.
+    """
+    from database.db import get_message_template, BTN_BEP20_DEFAULT, BTN_TRC20_DEFAULT, BTN_BINANCE_DEFAULT
+    from utils.premium_emoji import strip_premium
+
+    def _label(key, default):
+        return strip_premium(get_message_template(key, default)) or strip_premium(default)
+
     methods = []
     if isinstance(USDT_BEP20_ADDRESS, str) and USDT_BEP20_ADDRESS.startswith("0x"):
-        methods.append(("bep20", "\U0001f7e1 USDT \u2014 BEP20 (BNB Chain)"))
+        methods.append(("bep20", _label("btn_bep20", BTN_BEP20_DEFAULT)))
     if isinstance(USDT_TRC20_ADDRESS, str) and USDT_TRC20_ADDRESS.startswith("T"):
-        methods.append(("trc20", "\U0001f534 USDT \u2014 TRC20 (Tron)"))
+        methods.append(("trc20", _label("btn_trc20", BTN_TRC20_DEFAULT)))
     if BINANCE_API_KEY and BINANCE_API_SECRET and BINANCE_PAY_ID:
-        methods.append(("binance", "\U0001f7e8 USDT \u2014 Binance Pay"))
+        methods.append(("binance", _label("btn_binance", BTN_BINANCE_DEFAULT)))
     return methods
 
 

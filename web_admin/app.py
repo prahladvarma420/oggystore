@@ -1171,26 +1171,26 @@ def _offer_alert_message(name, price, tiers, available):
 def _price_change_message(name, old_price, new_price, available):
     if new_price < old_price:
         pct = round((old_price - new_price) / old_price * 100) if old_price > 0 else 0
-        title = "\U0001f525 <b>PRICE DROP ALERT!</b>"
-        change_line = "\U0001f4c9 <b>Price Dropped:</b> <b>-{}%</b> \U0001f389".format(pct)
+        tpl_key, tpl_default = "price_down_broadcast", botdb.PRICE_DOWN_BROADCAST_DEFAULT
     else:
         pct = round((new_price - old_price) / old_price * 100) if old_price > 0 else 0
-        title = "\U0001f4e2 <b>PRICE UPDATE!</b>"
-        change_line = "\U0001f4c8 <b>Price Increased:</b> <b>+{}%</b>".format(pct)
+        tpl_key, tpl_default = "price_up_broadcast", botdb.PRICE_UP_BROADCAST_DEFAULT
     bar = "\u2501" * 18
     if available and int(available) > 0:
         tail = "\U0001f6d2 <i>Tap below to grab it now!</i> \U0001f447"
     else:
         tail = "\u23f3 <i>Out of stock \u2014 restocking soon!</i> \U0001f514"
-    return ("{}\n{}\n\n"
-            "\U0001f4e6 <b>{}</b>\n\n"
-            "\U0001f4b0 <b>Old Price:</b> <s>${:.2f}</s>\n"
-            "\u2728 <b>New Price:</b> <b>${:.2f}</b>\n"
-            "{}\n"
-            "\U0001f4ca <b>Available Stock:</b> <b>{}</b>\n\n"
-            "{}\n"
-            "{}").format(
-        title, bar, premium_safe(name), old_price, new_price, change_line, available, bar, tail)
+    return botdb.render_message_template(
+        tpl_key,
+        tpl_default,
+        product_name=premium_safe(name),
+        old_price="${:.2f}".format(old_price),
+        new_price="${:.2f}".format(new_price),
+        pct=pct,
+        stock=available,
+        bar=bar,
+        tail=tail,
+    )
 
 
 @app.route("/api/products/create", methods=["POST"])

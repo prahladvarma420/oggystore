@@ -660,7 +660,7 @@ Price: <b>{format_price(display_price)} / code</b>{sale_text}
 
 async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1, method: str = "bep20"):
     """Create a direct USDT (BEP20/TRC20) checkout invoice for a product purchase."""
-    method = "trc20" if str(method) == "trc20" else "bep20"
+    method = str(method) if str(method) in ("trc20", "binance") else "bep20"
     product = get_product_basic(pid)
     if not product:
         await edit_or_send(q, "❌ <b>Product not found.</b>", back_home())
@@ -689,6 +689,21 @@ async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1, method
     total_price = calculate_total_price(pid, float(price), quantity)
     unique_amount = round(total_price + random.randint(100, 999) / 100000, 5)
 
+    note_code = None
+    if method == "binance":
+        # Binance Pay is matched by a unique NOTE code (not a padded amount),
+        # so charge the exact total.
+        unique_amount = round(total_price, 2)
+        import string as _string
+        for _ in range(25):
+            _code = "".join(random.choice(_string.ascii_uppercase + _string.digits) for _ in range(8))
+            cur.execute("SELECT 1 FROM deposits WHERE note_code=?", (_code,))
+            if not cur.fetchone():
+                note_code = _code
+                break
+        if not note_code:
+            note_code = "".join(random.choice(_string.ascii_uppercase + _string.digits) for _ in range(8))
+
     # Cancel older pending direct checkout invoices for this user.
     cur.execute(
         "UPDATE deposits SET status='cancelled' WHERE user_id=? AND status='pending'",
@@ -697,15 +712,54 @@ async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1, method
 
     cur.execute(
         """
-        INSERT INTO deposits(user_id, amount, unique_amount, status, created, checkout_product_id, checkout_quantity, checkout_done, method)
-        VALUES(?,?,?,?,?,?,?,0,?)
+        INSERT INTO deposits(user_id, amount, unique_amount, status, created, checkout_product_id, checkout_quantity, checkout_done, method, note_code)
+        VALUES(?,?,?,?,?,?,?,0,?,?)
         """,
-        (uid, total_price, unique_amount, "pending", now_text(), pid, quantity, method)
+        (uid, total_price, unique_amount, "pending", now_text(), pid, quantity, method, note_code)
     )
     conn.commit()
 
     cur.execute("SELECT last_insert_rowid()")
     invoice_id = cur.fetchone()[0]
+
+    if method == "binance":
+        from config import BINANCE_PAY_ID
+        _bar = "\u2501" * 20
+        await edit_or_send(
+            q,
+            f"""\U0001f4b3 <b>Checkout</b>
+{_bar}
+
+{name_header(name)}
+\U0001f522 <b>Total Codes:</b> <code>{quantity}</code>
+\U0001f4b0 <b>Total:</b> <code>${total_price:.2f}</code>
+
+{_bar}
+\U0001f7e8 <b>USDT \u2014 Binance Pay</b>
+
+<b>How to pay:</b>
+1\ufe0f\u20e3 Open <b>Binance App</b> \u2192 <b>Pay</b> \u2192 <b>Send</b>.
+2\ufe0f\u20e3 Send <b>{total_price:.2f} USDT</b> to Binance ID: <code>{BINANCE_PAY_ID}</code>
+3\ufe0f\u20e3 In the <b>Note / Remark</b> field, enter EXACTLY this code:
+<code>{note_code}</code>
+
+\u26a0\ufe0f Pay in <b>USDT only</b> \u2014 any other coin will <b>NOT</b> be credited.
+\u26a0\ufe0f You must include the note code, or your payment cannot be matched.
+
+\U0001f9fe <b>Invoice ID:</b> <code>#{invoice_id}</code>
+\U0001f7e0 <b>Status:</b> Waiting for payment
+\u23f3 <b>Expires in:</b> <code>{DEPOSIT_EXPIRE_HOURS} hours</code>
+
+{_bar}
+\U0001f916 After payment is confirmed, the bot will deliver automatically.
+
+<b>{STORE_NAME}</b>""",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("\U0001f504 Check Deposit History", callback_data="deposit_history")],
+                [InlineKeyboardButton("\u2b05\ufe0f Back To Product", callback_data=f"product_{pid}")]
+            ])
+        )
+        return
 
     if method == "trc20":
         _method_header = "⚡ <b>USDT TRC20 Auto Instant</b>"

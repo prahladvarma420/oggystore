@@ -78,7 +78,7 @@ def _pending_binance_deposits():
     cutoff = (now() - timedelta(hours=DEPOSIT_EXPIRE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
     cur.execute(
         """
-        SELECT id, user_id, amount, note_code
+        SELECT id, user_id, amount, note_code, checkout_product_id, checkout_quantity, checkout_done
         FROM deposits
         WHERE status='pending' AND method='binance'
               AND note_code IS NOT NULL AND note_code != '' AND created >= ?
@@ -87,6 +87,118 @@ def _pending_binance_deposits():
         (cutoff,),
     )
     return cur.fetchall()
+
+
+async def _deliver_binance_checkout(context, deposit_id, user_id, base_amount, product_id, quantity, tx_id, code):
+    """Deliver a direct product checkout paid via Binance Pay.
+
+    Mirrors the BEP20 direct-checkout path: reserve stock atomically, record
+    the order, mark the invoice paid and send the codes. If stock ran out or
+    the product vanished, the money is credited to the wallet instead so the
+    customer never loses funds.
+    """
+    from database.db import reserve_stock_items, get_available_stock_count, encrypt_text
+    import html as _html
+    from utils.premium_emoji import strip_premium as _strip
+
+    cur.execute("SELECT name FROM products WHERE id=? AND active=1", (product_id,))
+    product = cur.fetchone()
+    deliveries = reserve_stock_items(product_id, user_id, quantity) if product else None
+
+    if product and deliveries:
+        product_name = str(product[0])
+        try:
+            from products.product_handlers import format_delivery_items
+            delivery_text = format_delivery_items(deliveries)
+        except Exception:
+            delivery_text = "\n\n".join(str(x) for x in deliveries)
+        remaining_stock = get_available_stock_count(product_id)
+        cur.execute("UPDATE products SET stock=? WHERE id=?", (remaining_stock, product_id))
+        cur.execute(
+            "INSERT INTO orders(user_id, product_name, price, delivery) VALUES(?,?,?,?)",
+            (user_id, f"{product_name} x{quantity}", float(base_amount), encrypt_text(delivery_text)),
+        )
+        order_id = cur.lastrowid
+        cur.execute(
+            "UPDATE deposits SET status='paid', tx_hash=?, paid_at=?, checkout_done=1 WHERE id=? AND status='pending'",
+            (tx_id, now_text(), deposit_id),
+        )
+        cur.execute(
+            "INSERT OR IGNORE INTO processed_txs(tx_hash, deposit_id, user_id, amount) VALUES(?,?,?,?)",
+            (tx_id, deposit_id, user_id, float(base_amount)),
+        )
+        conn.commit()
+        try:
+            from payments.bep20_checker import _maybe_low_stock_alert
+            await _maybe_low_stock_alert(context, product_id)
+        except Exception:
+            pass
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "\u2705 <b>Payment Successful!</b>\n"
+                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+                    f"\U0001f9fe <b>Order ID:</b> <code>#{order_id}</code>\n\n"
+                    f"\U0001f4e6 <b>{_html.escape(_strip(product_name), quote=False)}</b>\n"
+                    f"\U0001f522 <b>Quantity:</b> <code>{quantity}</code>\n"
+                    f"\U0001f4b0 <b>Paid:</b> <code>${float(base_amount):.2f}</code>\n"
+                    f"\U0001f516 <b>Note code:</b> <code>{code}</code>\n"
+                    f"\U0001f517 <b>TX:</b> <code>{tx_id}</code>\n\n"
+                    "\U0001f511 <b>Code(s):</b>\n"
+                    f"<code>{_html.escape(delivery_text, quote=False)}</code>\n\n"
+                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                    "Thank you for your purchase! \U0001f389"
+                ),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception as exc:
+            log_error("Failed to send Binance checkout delivery", exc, extra=f"user={user_id} deposit={deposit_id}")
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "\U0001f6d2 <b>DIRECT CHECKOUT CONFIRMED (Binance Pay)</b>\n\n"
+                    f"\U0001f464 User: <code>{user_id}</code>\n"
+                    f"\U0001f9fe Invoice: <code>#{deposit_id}</code>\n"
+                    f"\U0001f4e6 Product: <b>{_html.escape(_strip(product_name), quote=False)}</b>\n"
+                    f"\U0001f522 Quantity: <code>{quantity}</code>\n"
+                    f"\U0001f4b0 Paid: <code>{float(base_amount):.2f} USDT</code>\n"
+                    f"\U0001f516 Note code: <code>{code}</code>\n"
+                    f"\U0001f517 TX: <code>{tx_id}</code>"
+                ),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            pass
+        return
+
+    # Stock ran out (or product removed) between checkout and payment:
+    # credit the wallet instead so the customer never loses funds.
+    add_balance(user_id, float(base_amount))
+    cur.execute(
+        "UPDATE deposits SET status='paid', tx_hash=?, paid_at=?, checkout_done=1 WHERE id=? AND status='pending'",
+        (tx_id, now_text(), deposit_id),
+    )
+    cur.execute(
+        "INSERT OR IGNORE INTO processed_txs(tx_hash, deposit_id, user_id, amount) VALUES(?,?,?,?)",
+        (tx_id, deposit_id, user_id, float(base_amount)),
+    )
+    conn.commit()
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "\u2705 <b>Payment Received</b>\n\n"
+                "\u26a0\ufe0f Stock became unavailable before delivery.\n"
+                f"\U0001f4b0 <b>{float(base_amount):.2f} USDT</b> was added to your wallet."
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
 
 
 def _not_processed(tx_id: str) -> bool:
@@ -155,7 +267,7 @@ async def check_binance_payments(context):
 
     tol = Decimal(str(PAYMENT_AMOUNT_TOLERANCE))
 
-    for deposit_id, user_id, base_amount, note_code in pending:
+    for deposit_id, user_id, base_amount, note_code, checkout_product_id, checkout_quantity, checkout_done in pending:
         code = str(note_code or "").strip().upper()
         if not code:
             continue
@@ -202,6 +314,14 @@ async def check_binance_payments(context):
                 print(f"[binancepay] MATCH code {code} tx {tx_id} amount {amount}", flush=True)
             except Exception:
                 continue
+
+            # ---- Direct product checkout: deliver codes, don't credit ----
+            if checkout_product_id and int(checkout_quantity or 0) > 0 and not checkout_done:
+                await _deliver_binance_checkout(
+                    context, deposit_id, user_id, float(base_amount),
+                    int(checkout_product_id), int(checkout_quantity), tx_id, code,
+                )
+                break
 
             # ---- Matched: credit the INVOICE amount, never more ----
             # Previously credited float(amount), so any overpayment (or a
