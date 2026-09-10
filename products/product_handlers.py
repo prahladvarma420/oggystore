@@ -11,6 +11,7 @@ from database.db import render_message_template, get_message_template, BUNDLE_DE
 from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
 from utils.crypto import encrypt_text
 from utils.ui import edit_or_send
+from utils.delivery_file import is_bulk_delivery, send_delivery_txt
 from utils.error_logger import log_error
 from utils.states import user_state
 
@@ -1234,14 +1235,17 @@ Please select a lower quantity or check again later.""",
         if first_purchase_discount > 0:
             first_discount_line = f"\n🎉 <b>First Purchase:</b> saved <b>${first_purchase_discount:.2f}</b>"
 
-        codes_as_file = quantity >= 15
+        # Bulk orders (>5 items) must NOT be dumped into a Telegram message:
+        # they go out as a numbered .txt file. The length guard also catches
+        # small orders whose content would overflow Telegram's message limit.
+        codes_as_file = is_bulk_delivery(quantity, delivery_text)
 
         delivery_message = render_message_template(
             "delivery_success",
-            "✅ <b>Payment Successful!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\n\n📦 <b>{product_name}</b>\n\n🔑 <b>Code(s):</b>\n<code>{delivery}</code>\n\n━━━━━━━━━━━━━━━━━━━━\n\n💰 <b>Paid:</b> <b>${paid}</b>\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\n\n━━━━━━━━━━━━━━━━━━━━\nThank you for your purchase! 🎉\n\nUse /orders to view your order history.",
+            "✅ <b>Payment Successful!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\n\n📦 <b>{product_name}</b>\n\n🔑 <b>Code(s):</b>\n<code>{delivery}</code>\n\n━━━━━━���━━━━━━━━━━━━━\n\n💰 <b>Paid:</b> <b>${paid}</b>\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\n\n━━━━━━━━━━━━━━━━━━━━\nThank you for your purchase! 🎉\n\nUse /orders to view your order history.",
             order_id=order_id,
             product_name=premium_safe(name),
-            delivery=("📎 Your codes are attached as a file below (15+ items)." if codes_as_file else html.escape(delivery_text, quote=False)),
+            delivery=(f"📎 Your {quantity} item(s) are attached as a numbered TXT file below." if codes_as_file else html.escape(delivery_text, quote=False)),
             paid=f"{total_price:.2f}",
             balance=f"{new_balance:.2f}",
             user=(q.from_user.first_name or ""),
@@ -1260,15 +1264,19 @@ Please select a lower quantity or check again later.""",
                 disable_web_page_preview=True,
             )
 
-        # Large orders: deliver codes as a .txt file instead of a huge message.
+        # Bulk orders: deliver the codes as a numbered .txt file instead of a
+        # huge message. The complete delivery is already stored (encrypted) on
+        # the order row, so this file can be regenerated anytime from My Orders.
         if codes_as_file:
             try:
-                codes_file = io.BytesIO(delivery_text.encode("utf-8"))
-                codes_file.name = f"order_{order_id}_codes.txt"
-                await q.message.reply_document(
-                    document=codes_file,
-                    filename=f"order_{order_id}_codes.txt",
-                    caption=f"🔑 Codes for Order #{order_id} ({quantity} items)"
+                await send_delivery_txt(
+                    q.message.reply_document,
+                    order_id=order_id,
+                    product_name=raw_name,
+                    quantity=quantity,
+                    items=deliveries,
+                    paid=total_price,
+                    balance=new_balance,
                 )
             except Exception as file_exc:
                 log_error("Delivery file send failed", file_exc, extra=f"order={order_id}")
