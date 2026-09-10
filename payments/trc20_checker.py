@@ -15,6 +15,7 @@ import httpx
 
 from utils.crypto import encrypt_text
 from utils.premium_emoji import strip_premium
+from utils.delivery_file import is_bulk_delivery, send_delivery_txt, bot_document_sender, checkout_codes_section
 from utils.error_logger import log_error
 from utils.timezone import now, now_text
 from database.db import cur, conn, add_balance, get_balance, render_message_template, reserve_stock_items, get_available_stock_count
@@ -155,8 +156,7 @@ async def _deliver_trc20_checkout(context, deposit_id, user_id, base_amount, pai
                     f"\U0001f522 <b>Quantity:</b> <code>{quantity}</code>\n"
                     f"\U0001f4b0 <b>Paid:</b> <code>${float(base_amount):.2f}</code>\n"
                     f"\U0001f517 <b>TX:</b> <a href='{tx_link}'>{short_tx}</a>\n\n"
-                    "\U0001f511 <b>Code(s):</b>\n"
-                    f"<code>{html.escape(delivery_text, quote=False)}</code>\n\n"
+                    + checkout_codes_section(quantity, delivery_text) +
                     "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
                     "Thank you for your purchase! \U0001f389"
                 ),
@@ -165,6 +165,23 @@ async def _deliver_trc20_checkout(context, deposit_id, user_id, base_amount, pai
             )
         except Exception as exc:
             log_error("Failed to send TRC20 checkout delivery", exc, extra=f"user={user_id} deposit={deposit_id}")
+
+        # Bulk orders (>5 items): attach the complete numbered delivery as a
+        # .txt file (the full delivery is stored on the order regardless).
+        if is_bulk_delivery(quantity, delivery_text):
+            try:
+                await send_delivery_txt(
+                    bot_document_sender(context.bot, user_id),
+                    order_id=order_id,
+                    product_name=product_name,
+                    quantity=quantity,
+                    items=deliveries,
+                    paid=float(base_amount),
+                    balance=get_balance(user_id),
+                )
+            except Exception as file_exc:
+                # Log only the failure, never the delivery contents.
+                log_error("Failed to send TRC20 checkout delivery file", file_exc, extra=f"user={user_id} deposit={deposit_id}")
 
         try:
             await context.bot.send_message(
