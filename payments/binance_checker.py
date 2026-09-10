@@ -31,6 +31,7 @@ from decimal import Decimal
 import httpx
 
 from utils.error_logger import log_error
+from utils.delivery_file import is_bulk_delivery, send_delivery_txt, bot_document_sender, checkout_codes_section
 from utils.timezone import now, now_text
 from database.db import cur, conn, add_balance, get_balance, render_message_template
 from config import (
@@ -145,8 +146,7 @@ async def _deliver_binance_checkout(context, deposit_id, user_id, base_amount, p
                     f"\U0001f4b0 <b>Paid:</b> <code>${float(base_amount):.2f}</code>\n"
                     f"\U0001f516 <b>Note code:</b> <code>{code}</code>\n"
                     f"\U0001f517 <b>TX:</b> <code>{tx_id}</code>\n\n"
-                    "\U0001f511 <b>Code(s):</b>\n"
-                    f"<code>{_html.escape(delivery_text, quote=False)}</code>\n\n"
+                    + checkout_codes_section(quantity, delivery_text) +
                     "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
                     "Thank you for your purchase! \U0001f389"
                 ),
@@ -155,6 +155,23 @@ async def _deliver_binance_checkout(context, deposit_id, user_id, base_amount, p
             )
         except Exception as exc:
             log_error("Failed to send Binance checkout delivery", exc, extra=f"user={user_id} deposit={deposit_id}")
+
+        # Bulk orders (>5 items): attach the complete numbered delivery as a
+        # .txt file (the full delivery is stored on the order regardless).
+        if is_bulk_delivery(quantity, delivery_text):
+            try:
+                await send_delivery_txt(
+                    bot_document_sender(context.bot, user_id),
+                    order_id=order_id,
+                    product_name=product_name,
+                    quantity=quantity,
+                    items=deliveries,
+                    paid=float(base_amount),
+                    balance=get_balance(user_id),
+                )
+            except Exception as file_exc:
+                # Log only the failure, never the delivery contents.
+                log_error("Failed to send Binance checkout delivery file", file_exc, extra=f"user={user_id} deposit={deposit_id}")
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
