@@ -7,6 +7,9 @@ from telegram.ext import ContextTypes
 from database.db import get_setting, set_user_coupon, render_message_template, cur, conn, ensure_user, get_balance, is_blocked, is_admin, create_ticket, get_user_tickets, add_referral, get_referral_stats, create_withdrawal_request, get_user_withdrawals, get_user_coupon, validate_coupon, get_coupon_user_uses, clear_user_coupon, restore_backup_zip, add_restock_notification
 from utils.crypto import decrypt_text
 from utils.premium_emoji import strip_premium
+from utils.delivery_file import split_delivery_items, send_delivery_txt
+from utils.timezone import display_time
+from utils.error_logger import log_error
 from keyboards.menus import main_menu, profile_menu, back_home, support_menu
 from utils.texts import welcome_text
 from utils.ui import edit_or_send
@@ -384,6 +387,117 @@ async def admin(update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=admin_menu(),
         parse_mode="HTML"
     )
+
+
+def _order_quantity_from_name(product_name, items_count):
+    """Quantity shown on an order: parsed from the stored 'Name xN' label,
+    falling back to the number of delivered items."""
+    m = re.search(r"\s+x(\d+)$", str(product_name or ""))
+    if m:
+        return int(m.group(1))
+    return int(items_count or 0) or 1
+
+
+def _get_owned_order(order_id, uid):
+    """Fetch an order ONLY when it belongs to this user. The user_id filter
+    is the ownership check: one user can never read another user's delivery."""
+    cur.execute(
+        "SELECT id, product_name, price, delivery, created FROM orders WHERE id=? AND user_id=?",
+        (order_id, uid),
+    )
+    return cur.fetchone()
+
+
+async def show_order_detail(q, uid, order_id):
+    from telegram import InlineKeyboardMarkup
+    from utils.button_styles import AutoStyledButton as InlineKeyboardButton
+
+    row = _get_owned_order(order_id, uid)
+    if not row:
+        await edit_or_send(
+            q,
+            "❌ <b>Order not found.</b>\n\nYou can only view your own orders.",
+            back_home(),
+        )
+        return
+
+    _oid, name, price, delivery_enc, created = row
+    safe_name = html.escape(strip_premium(str(name)), quote=False)
+    delivery_text = decrypt_text(delivery_enc) or ""
+    items = split_delivery_items(delivery_text)
+    quantity = _order_quantity_from_name(name, len(items))
+
+    text = (
+        "🧾 <b>Order Details</b>\n\n"
+        f"✏️ <b>Order ID:</b> <code>#{_oid}</code>\n"
+        f"🛍 <b>Product:</b> {safe_name}\n"
+        f"🔢 <b>Quantity:</b> <code>{quantity}</code>\n"
+        f"💰 <b>Paid:</b> <code>{float(price or 0):.2f} USDT</code>\n"
+        f"🕒 <b>Date:</b> <code>{html.escape(display_time(created) or str(created or ''), quote=False)}</code>\n"
+    )
+
+    # Small orders show the complete delivery inline (never truncated). Bulk
+    # orders keep credentials out of the chat message -- the numbered TXT file
+    # is regenerated from the stored order whenever the user asks for it.
+    if items and len(items) <= 5 and len(delivery_text) <= 3000:
+        text += (
+            f"\n🔑 <b>Delivered Items ({len(items)}):</b>\n"
+            f"<code>{html.escape(delivery_text, quote=False)}</code>\n"
+        )
+    elif items:
+        text += (
+            f"\n🔑 <b>Delivered Items:</b> <code>{len(items)}</code>\n"
+            "📥 Bulk order — tap <b>Download Delivery</b> to get the complete numbered TXT file.\n"
+        )
+    else:
+        text += "\n🔑 <b>Delivery:</b> Not stored for this order.\n"
+
+    kb = [
+        [InlineKeyboardButton("📥 Download Delivery", callback_data=f"orddl_{order_id}")],
+        [InlineKeyboardButton("⬅️ Back to Orders", callback_data="orders")],
+    ]
+    await edit_or_send(q, text, InlineKeyboardMarkup(kb))
+
+
+async def send_order_delivery_file(q, uid, order_id):
+    row = _get_owned_order(order_id, uid)
+    if not row:
+        await edit_or_send(
+            q,
+            "❌ <b>Order not found.</b>\n\nYou can only download your own orders.",
+            back_home(),
+        )
+        return
+
+    _oid, name, price, delivery_enc, created = row
+    delivery_text = decrypt_text(delivery_enc) or ""
+    items = split_delivery_items(delivery_text)
+    if not items:
+        await edit_or_send(q, "❌ <b>No delivery stored for this order.</b>", back_home())
+        return
+
+    quantity = _order_quantity_from_name(name, len(items))
+    try:
+        # Regenerated from the stored (encrypted) order delivery -- the file
+        # never needs to exist on disk.
+        await send_delivery_txt(
+            q.message.reply_document,
+            order_id=_oid,
+            product_name=name,
+            quantity=quantity,
+            items=items,
+            paid=float(price or 0),
+            balance=get_balance(uid),
+            caption=f"📥 Delivery for Order #{_oid} ({len(items)} items)",
+        )
+    except Exception as exc:
+        # Log only the failure, never the delivery contents.
+        log_error("Order delivery download failed", exc, extra=f"order={order_id}")
+        await edit_or_send(
+            q,
+            "❌ <b>Could not generate the delivery file.</b>\n\nPlease try again in a moment.",
+            back_home(),
+        )
 
 
 async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
@@ -838,7 +952,7 @@ Example:
             f"""📊 <b>My Stats</b>
 
 📦 <b>Total Orders:</b> {total_orders}
-💸 <b>Total Spent:</b> <code>{total_spent:.2f} USDT</code>
+��� <b>Total Spent:</b> <code>{total_spent:.2f} USDT</code>
 💰 <b>Current Balance:</b> <code>{get_balance(uid):.2f} USDT</code>
 
 Thank you for using our store.""",
@@ -861,36 +975,56 @@ Thank you for using our store.""",
         return
 
     if data == "orders":
+        # Order list: one button per order opens the full order view, where
+        # the complete delivery can be read (small orders) or re-downloaded
+        # as a numbered TXT file (bulk orders). Deliveries are never dumped
+        # into this list, so bulk orders can no longer be truncated away.
         cur.execute(
-            "SELECT id, product_name, price, delivery, created FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 10",
+            "SELECT id, product_name, price, created FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 10",
             (uid,)
         )
         rows = cur.fetchall()
 
+        from telegram import InlineKeyboardMarkup
+        from utils.button_styles import AutoStyledButton as InlineKeyboardButton
+
         text = "📦 <b>My Orders</b>\n\n"
+        kb_rows = []
 
         if not rows:
             text += "No orders found yet."
         else:
-            shown = 0
-            for order_id, name, price, delivery, created in rows:
-                name = html.escape(strip_premium(str(name)), quote=False)
-                delivery = html.escape(str(decrypt_text(delivery) or ""), quote=False)
-                if len(delivery) > 700:
-                    delivery = delivery[:700] + "..."
-                entry = (
-                    f"🧾 <b>Order #{order_id}</b>\n"
-                    f"📦 {name}\n"
-                    f"💰 <code>{float(price or 0):.2f} USDT</code>\n"
-                    f"🔑 <b>Delivery:</b>\n<code>{delivery}</code>\n\n"
-                )
-                if len(text) + len(entry) > 3800:
-                    text += f"… and <b>{len(rows) - shown}</b> more order(s)."
-                    break
-                text += entry
-                shown += 1
+            text += "Tap an order to view its full details and delivery:\n"
+            for order_id, name, price, created in rows:
+                short_name = strip_premium(str(name))[:35]
+                kb_rows.append([
+                    InlineKeyboardButton(
+                        f"🧾 #{order_id} — {short_name} — ${float(price or 0):.2f}",
+                        callback_data=f"ordview_{order_id}",
+                        style="",
+                    )
+                ])
 
-        await edit_or_send(q, text, profile_menu())
+        kb_rows.append([InlineKeyboardButton("◀️ Back", callback_data="profile")])
+        await edit_or_send(q, text, InlineKeyboardMarkup(kb_rows))
+        return
+
+    if data.startswith("ordview_"):
+        try:
+            order_id = int(data.split("_")[1])
+        except Exception:
+            await edit_or_send(q, "❌ <b>Invalid request.</b>", back_home())
+            return
+        await show_order_detail(q, uid, order_id)
+        return
+
+    if data.startswith("orddl_"):
+        try:
+            order_id = int(data.split("_")[1])
+        except Exception:
+            await edit_or_send(q, "❌ <b>Invalid request.</b>", back_home())
+            return
+        await send_order_delivery_file(q, uid, order_id)
         return
 
     if data == "referrals":
@@ -1282,7 +1416,7 @@ Now open checkout again to see the updated final price.""",
             await update.message.reply_text(
                 f"""✅ <b>Coupon Applied</b>
 
-🎟 Code: <code>{code}</code>
+���� Code: <code>{code}</code>
 💰 Discount: <code>{coupon['value']}{dtype}</code>
 
 It will be used on your next checkout.""",
