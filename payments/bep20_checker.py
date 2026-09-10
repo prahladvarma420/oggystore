@@ -12,6 +12,7 @@ from utils.timezone import now, now_text
 
 from utils.crypto import encrypt_text
 from utils.premium_emoji import strip_premium
+from utils.delivery_file import is_bulk_delivery, send_delivery_txt, bot_document_sender
 from database.db import cur, conn, add_balance, reserve_stock_items, get_available_stock_count, get_setting, set_setting, get_balance, render_message_template
 from config import (
     ADMIN_ID,
@@ -486,6 +487,18 @@ async def check_payments(context):
                         )
                         conn.commit()
 
+                        # Bulk orders (>5 items): keep the chat message short and
+                        # attach the complete numbered delivery as a .txt file
+                        # (the full delivery is stored on the order regardless).
+                        _bulk_delivery = is_bulk_delivery(quantity, delivery_text)
+                        if _bulk_delivery:
+                            _codes_section = f"📎 <b>Your {quantity} items are attached as a numbered TXT file below.</b>\n\n"
+                        else:
+                            _codes_section = (
+                                "🔑 <b>Code(s):</b>\n"
+                                f"<code>{html.escape(delivery_text, quote=False)}</code>\n\n"
+                            )
+
                         try:
                             await context.bot.send_message(
                                 chat_id=user_id,
@@ -497,8 +510,7 @@ async def check_payments(context):
                                     f"🔢 <b>Quantity:</b> <code>{quantity}</code>\n"
                                     f"💰 <b>Paid:</b> <code>${float(base_amount):.2f}</code>\n"
                                     f"🔗 <b>TX:</b> <a href='{tx_link}'>{short_tx}</a>\n\n"
-                                    "🔑 <b>Code(s):</b>\n"
-                                    f"<code>{html.escape(delivery_text, quote=False)}</code>\n\n"
+                                    + _codes_section +
                                     "━━━━━━━━━━━━━━━━━━━\n"
                                     "Thank you for your purchase! 🎉"
                                 ),
@@ -507,6 +519,21 @@ async def check_payments(context):
                             )
                         except Exception as exc:
                             log_error("Failed to send direct checkout delivery", exc, extra=f"user={user_id} deposit={deposit_id}")
+
+                        if _bulk_delivery:
+                            try:
+                                await send_delivery_txt(
+                                    bot_document_sender(context.bot, user_id),
+                                    order_id=order_id,
+                                    product_name=product_name,
+                                    quantity=quantity,
+                                    items=deliveries,
+                                    paid=float(base_amount),
+                                    balance=get_balance(user_id),
+                                )
+                            except Exception as file_exc:
+                                # Log only the failure, never the delivery contents.
+                                log_error("Failed to send direct checkout delivery file", file_exc, extra=f"user={user_id} deposit={deposit_id}")
 
                         try:
                             await context.bot.send_message(
