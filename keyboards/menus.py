@@ -68,8 +68,21 @@ def deposit_menu():
     ])
 
 
-def deposit_invoice_menu(invoice_id=None):
+def deposit_invoice_menu(invoice_id=None, method=None):
+    """Invoice keyboard. When the payment method is known, the first row offers
+    one-tap copy buttons (they send the value in a tap-to-copy <code> message --
+    Telegram buttons cannot write to the clipboard directly)."""
     rows = []
+    if invoice_id and method in ("bep20", "trc20"):
+        rows.append([
+            InlineKeyboardButton("📋 Copy Address", callback_data=f"copydep_{invoice_id}_addr"),
+            InlineKeyboardButton("📋 Copy Exact Amount", callback_data=f"copydep_{invoice_id}_amt"),
+        ])
+    elif invoice_id and method == "binance":
+        rows.append([
+            InlineKeyboardButton("📋 Copy Binance ID", callback_data=f"copydep_{invoice_id}_payid"),
+            InlineKeyboardButton("📋 Copy Caption", callback_data=f"copydep_{invoice_id}_note"),
+        ])
     if invoice_id:
         rows.append([InlineKeyboardButton("❌ Cancel Payment", callback_data=f"canceldep_{invoice_id}")])
     rows.append([InlineKeyboardButton("🏠 Main Menu", callback_data="home")])
