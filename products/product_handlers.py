@@ -964,8 +964,8 @@ Please select a lower quantity or check again later.""",
             cur.execute("UPDATE products SET stock=stock-1 WHERE id=? AND stock > 0", (pid,))
 
             cur.execute(
-                "INSERT INTO orders(user_id, product_name, price, delivery, product_id) VALUES(?,?,?,?,?)",
-                (uid, f"{raw_name} x1", total_price, encrypt_text("Microsoft 365 Family invite — waiting for customer email"), pid)
+                "INSERT INTO orders(user_id, product_name, price, delivery, product_id, payment_method) VALUES(?,?,?,?,?,?)",
+                (uid, f"{raw_name} x1", total_price, encrypt_text("Microsoft 365 Family invite — waiting for customer email"), pid, "Wallet")
             )
             # product_id is required for warranty/replacement lookups, and
             # lastrowid must be read before commit.
@@ -1061,8 +1061,8 @@ Please select a lower quantity or check again later.""",
             cur.execute("UPDATE products SET stock=stock-1 WHERE id=? AND stock > 0", (pid,))
 
             cur.execute(
-                "INSERT INTO orders(user_id, product_name, price, delivery, product_id) VALUES(?,?,?,?,?)",
-                (uid, f"{raw_name} x1", total_price, encrypt_text("Canva invite — waiting for customer email"), pid)
+                "INSERT INTO orders(user_id, product_name, price, delivery, product_id, payment_method) VALUES(?,?,?,?,?,?)",
+                (uid, f"{raw_name} x1", total_price, encrypt_text("Canva invite — waiting for customer email"), pid, "Wallet")
             )
             # product_id is required for warranty/replacement lookups, and
             # lastrowid must be read before commit.
@@ -1182,8 +1182,8 @@ Please select a lower quantity or check again later.""",
         delivery_text = format_delivery_items(deliveries)
 
         cur.execute(
-            "INSERT INTO orders(user_id, product_name, price, delivery, product_id) VALUES(?,?,?,?,?)",
-            (uid, f"{raw_name} x{quantity}", total_price, encrypt_text(delivery_text), pid)
+            "INSERT INTO orders(user_id, product_name, price, delivery, product_id, payment_method) VALUES(?,?,?,?,?,?)",
+            (uid, f"{raw_name} x{quantity}", total_price, encrypt_text(delivery_text), pid, "Wallet")
         )
         order_id = cur.lastrowid
         conn.commit()
@@ -1509,8 +1509,8 @@ async def buy_bundle(q, uid: int, bundle_id: int):
         delivery_text = delivery_text.strip()
 
         cur.execute(
-            "INSERT INTO orders(user_id, product_name, price, delivery) VALUES(?,?,?,?)",
-            (uid, f"🎁 {bname_raw} (bundle)", bprice, encrypt_text(delivery_text))
+            "INSERT INTO orders(user_id, product_name, price, delivery, payment_method) VALUES(?,?,?,?,?)",
+            (uid, f"🎁 {bname_raw} (bundle)", bprice, encrypt_text(delivery_text), "Wallet (Bundle)")
         )
         # lastrowid must be read BEFORE commit -- after commit the cursor is
         # reset and this returned None/stale ids.
