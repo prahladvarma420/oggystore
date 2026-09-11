@@ -15,7 +15,7 @@ from utils.texts import welcome_text
 from utils.ui import edit_or_send
 from utils.states import user_state
 from products.product_handlers import show_shop, show_product, buy_product, show_order_preview, start_direct_checkout, show_quantity_menu, show_bundles, show_bundle_details, buy_bundle
-from payments.deposit_handlers import start_deposit, handle_deposit_amount, deposit_shortfall, create_deposit_invoice
+from payments.deposit_handlers import start_deposit, handle_deposit_amount, deposit_shortfall, create_deposit_invoice, handle_copy_invoice
 from admin.admin_handlers import show_admin_panel, handle_admin_callback, handle_admin_message
 from config import ADMIN_USERNAME, ADMIN_ID
 from database.db import create_gift_code, redeem_gift_code, get_user_gift_codes, get_warranty_orders, get_order_for_warranty, is_warranty_banned, count_recent_replacements, create_replacement, reserve_stock_item
@@ -671,6 +671,17 @@ Example:
             f"🚫 <b>Payment Cancelled</b>\n\nInvoice <b>#{invoice_id}</b> has been cancelled.\nNo payment will be matched for it anymore.\n\nYou can create a new deposit anytime from 💰 Deposit.",
             main_menu(uid)
         )
+        return
+
+    if data.startswith("copydep_"):
+        await handle_copy_invoice(q, uid, data)
+        return
+
+    if data == "copymsg_dismiss":
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
         return
 
     if data == "bundles":
