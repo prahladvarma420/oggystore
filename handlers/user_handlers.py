@@ -576,9 +576,22 @@ async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
         await show_shop(q)
         return
 
-    if data.startswith("shopcat_"):
+    if data.startswith("shopcats_"):
         try:
-            await show_category(q, int(data.split("_", 1)[1]))
+            await show_shop(q, int(data.split("_", 1)[1]))
+        except Exception:
+            await show_shop(q)
+        return
+
+    if data.startswith("shopcat_"):
+        parts = data.split("_")
+        try:
+            _cid = int(parts[1])
+            _cpage = int(parts[2]) if len(parts) > 2 else 1
+        except (ValueError, IndexError):
+            _cid, _cpage = 0, 1
+        try:
+            await show_category(q, _cid, _cpage)
         except Exception:
             await show_shop(q)
         return
