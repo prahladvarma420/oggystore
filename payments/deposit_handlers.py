@@ -245,8 +245,8 @@ def _invoice_text_for(method, amount, unique_amount, invoice_id, note_code=None)
     return _invoice_text(amount, unique_amount, invoice_id)
 
 
-def _invoice_menu_for(method, invoice_id):
-    return deposit_invoice_menu(invoice_id, method)
+def _invoice_menu_for(method, invoice_id, unique_amount=None, note_code=None):
+    return deposit_invoice_menu(invoice_id, method, amount=unique_amount, note_code=note_code)
 
 
 async def create_deposit_invoice(q, uid, method, amount):
@@ -263,7 +263,7 @@ async def create_deposit_invoice(q, uid, method, amount):
     await edit_or_send(
         q,
         _invoice_text_for(method, amount, unique_amount, invoice_id, note_code),
-        _invoice_menu_for(method, invoice_id),
+        _invoice_menu_for(method, invoice_id, unique_amount, note_code),
     )
 
 
@@ -281,7 +281,7 @@ async def deposit_shortfall(q, uid, amount):
         return
     method = methods[0][0] if methods else "bep20"
     invoice_id, unique_amount, note_code = _create_invoice(uid, amount, method)
-    await edit_or_send(q, _invoice_text_for(method, amount, unique_amount, invoice_id, note_code), _invoice_menu_for(method, invoice_id))
+    await edit_or_send(q, _invoice_text_for(method, amount, unique_amount, invoice_id, note_code), _invoice_menu_for(method, invoice_id, unique_amount, note_code))
 
 
 async def handle_deposit_amount(update, uid, text):
@@ -307,7 +307,7 @@ async def handle_deposit_amount(update, uid, text):
             invoice_id, unique_amount, note_code = _create_invoice(uid, amount, method)
             await update.message.reply_text(
                 _invoice_text_for(method, amount, unique_amount, invoice_id, note_code),
-                reply_markup=_invoice_menu_for(method, invoice_id),
+                reply_markup=_invoice_menu_for(method, invoice_id, unique_amount, note_code),
                 parse_mode="HTML",
                 disable_web_page_preview=True
             )
