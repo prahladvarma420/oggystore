@@ -12,6 +12,10 @@ from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, qu
 from utils.crypto import encrypt_text
 from utils.ui import edit_or_send
 from utils.delivery_file import is_bulk_delivery, send_delivery_txt
+
+# Shop category browsing: page sizes (picker / products inside a category).
+SHOP_CATEGORY_PAGE_SIZE = 10
+SHOP_PRODUCT_PAGE_SIZE = 8
 from utils.error_logger import log_error
 from utils.states import user_state
 
@@ -501,39 +505,57 @@ Rate Used: <b>${unit_price:.2f}</b> each
     await edit_or_send(q, text, order_preview_menu(product_id, quantity, balance, total_price, coupon_code))
 
 
-async def show_shop(q):
+async def show_shop(q, page=1):
     """Shop entry point. With categories configured, shows the category picker
     (📦 Other collects uncategorized products). Without any categories it
     falls back to the classic flat product list, so existing stores keep
-    working completely unchanged."""
+    working completely unchanged. Paginated so huge catalogs stay usable."""
     categories = get_categories(active_only=True)
     counts = get_category_counts()
 
     if categories:
+        try:
+            page = max(1, int(page or 1))
+        except (TypeError, ValueError):
+            page = 1
+        total_pages = max(1, math.ceil(len(categories) / SHOP_CATEGORY_PAGE_SIZE))
+        page = min(page, total_pages)
+        page_cats = categories[(page - 1) * SHOP_CATEGORY_PAGE_SIZE: page * SHOP_CATEGORY_PAGE_SIZE]
+
         kb = []
         bundles = get_active_bundles()
         if bundles:
             kb.append([InlineKeyboardButton(get_message_template("btn_bundle_deals", BTN_BUNDLE_DEALS_DEFAULT), callback_data="bundles")])
 
-        for cid, cname, _sort, _cactive in categories:
+        for cid, cname, _sort, _cactive, cicon in page_cats:
             count = counts.get(cid, 0)
             kb.append([
                 InlineKeyboardButton(
-                    f"\U0001f4c2 {strip_premium(cname)} ({count})",
+                    f"{cicon or chr(0x1F4C2)} {strip_premium(cname)} ({count})",
                     callback_data=f"shopcat_{cid}",
                     style="primary"
                 )
             ])
 
-        other_count = counts.get(0, 0)
-        if other_count:
-            kb.append([
-                InlineKeyboardButton(
-                    f"\U0001f4e6 Other ({other_count})",
-                    callback_data="shopcat_0",
-                    style="primary"
-                )
-            ])
+        if page == total_pages:
+            other_count = counts.get(0, 0)
+            if other_count:
+                kb.append([
+                    InlineKeyboardButton(
+                        f"\U0001f4e6 Other ({other_count})",
+                        callback_data="shopcat_0",
+                        style="primary"
+                    )
+                ])
+
+        if total_pages > 1:
+            nav = []
+            if page > 1:
+                nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"shopcats_{page - 1}"))
+            nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data=f"shopcats_{page}"))
+            if page < total_pages:
+                nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"shopcats_{page + 1}"))
+            kb.append(nav)
 
         kb.append([
             InlineKeyboardButton("🔄 Refresh", callback_data="shop"),
@@ -608,27 +630,49 @@ def _product_button_rows(products):
     return rows
 
 
-async def show_category(q, category_id):
-    """Product list of one shop category. category_id 0 = 📦 Other
+async def show_category(q, category_id, page=1):
+    """Product list of one shop category, paginated. category_id 0 = 📦 Other
     (uncategorized products -- the NULL-category fallback)."""
     try:
         category_id = int(category_id or 0)
     except (TypeError, ValueError):
         category_id = 0
+    try:
+        page = max(1, int(page or 1))
+    except (TypeError, ValueError):
+        page = 1
 
     if category_id:
         cat = get_category(category_id)
         if not cat or not int(cat[3]):
             await show_shop(q)
             return
-        title = f"\U0001f4c2 <b>{html.escape(strip_premium(cat[1]))}</b>"
+        title = f"{cat[4] or chr(0x1F4C2)} <b>{html.escape(strip_premium(cat[1]))}</b>"
         products = get_category_products(category_id)
     else:
         title = "\U0001f4e6 <b>Other Products</b>"
         products = get_category_products(None)
 
-    kb = _product_button_rows(products)
-    kb.append([InlineKeyboardButton("◀️ Back to Categories", callback_data="shop")])
+    total_pages = max(1, math.ceil(len(products) / SHOP_PRODUCT_PAGE_SIZE))
+    page = min(page, total_pages)
+    page_products = products[(page - 1) * SHOP_PRODUCT_PAGE_SIZE: page * SHOP_PRODUCT_PAGE_SIZE]
+
+    kb = _product_button_rows(page_products)
+
+    if total_pages > 1:
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"shopcat_{category_id}_{page - 1}"))
+        nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data=f"shopcat_{category_id}_{page}"))
+        if page < total_pages:
+            nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"shopcat_{category_id}_{page + 1}"))
+        kb.append(nav)
+
+    kb.append([
+        InlineKeyboardButton("◀️ Back", callback_data="shop"),
+        InlineKeyboardButton("🔄 Refresh", callback_data=f"shopcat_{category_id}_{page}"),
+        InlineKeyboardButton("🏠 Main Menu", callback_data="home"),
+    ])
 
     text = title
     if not products:
