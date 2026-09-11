@@ -455,20 +455,58 @@ async function delTier(id, qty) {
 async function reloadProducts() { const d = await api("/api/products"); cache.products = d.products || []; }
 
 /* =====================================================  ORDERS  =========== */
+let orderFilters = {};
+let orderPage = 1;
+
+function applyOrderFilters() {
+  orderFilters = {
+    order_id: val("of_oid"),
+    user_id: val("of_uid"),
+    username: val("of_user").replace(/^@+/, ""),
+    from: val("of_from"),
+    to: val("of_to"),
+  };
+  orderPage = 1;
+  render();
+}
+function clearOrderFilters() { orderFilters = {}; orderPage = 1; render(); }
+function orderPageGo(p) { orderPage = p; render(); }
+
 async function viewOrders() {
+  const params = new URLSearchParams({ page: orderPage, per_page: 25 });
+  for (const [k, v] of Object.entries(orderFilters)) if (v) params.set(k, v);
   const search = $("#searchInput").value.trim();
-  const d = await api("/api/orders?search=" + encodeURIComponent(search));
+  if (search) params.set("search", search);
+  const d = await api("/api/orders?" + params.toString());
+  if (!d.ok) { toast(d.error || "Search failed", "err"); return; }
+  const f = orderFilters;
   const rows = (d.orders || []).map(o => `<tr>
-    <td>#${o.id}</td><td>${escName(o.product_name)}</td>
-    <td>${esc(o.first_name || "")} <span class="muted">${o.user_id}</span></td>
-    <td>${money(o.price)}</td><td class="muted">${fmtDate(o.created)}</td>
+    <td>#${o.id}</td><td>${escName(o.product_name)}</td><td class="mono">${o.quantity || 1}</td>
+    <td>${esc(o.first_name || "")} <span class="muted">${o.username && o.username !== "No username" ? "@" + esc(o.username) + " \u00b7 " : ""}${o.user_id}</span></td>
+    <td>${money(o.price)}</td><td>${esc(o.method_label || "Wallet")}</td>
+    <td>${esc(o.status_label || "")}</td><td class="muted">${fmtDate(o.created)}</td>
     <td><div class="row-actions">
       <button class="btn btn-sm btn-ghost" onclick="resendOrder(${o.id})">Resend</button>
       <button class="btn btn-sm btn-red" onclick="refundOrder(${o.id},${o.price})"><span>Refund</span></button>
     </div></td></tr>`).join("");
   $("#content").innerHTML = `<div class="panel glass">
-    <div class="toolbar"><div class="grow"></div><button class="btn btn-ghost" onclick="exportCsv('orders')">\u2b07 Export CSV</button></div>
-    ${(d.orders || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Product</th><th>User</th><th>Price</th><th>When</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No orders", "\ud83d\uded2")}</div>`;
+    <div class="toolbar">
+      <input class="inp" id="of_oid" placeholder="Order ID" value="${esc(f.order_id || "")}" style="width:90px">
+      <input class="inp" id="of_uid" placeholder="User ID" value="${esc(f.user_id || "")}" style="width:120px">
+      <input class="inp" id="of_user" placeholder="Username" value="${esc(f.username || "")}" style="width:130px">
+      <input class="inp" id="of_from" type="date" value="${esc(f.from || "")}">
+      <input class="inp" id="of_to" type="date" value="${esc(f.to || "")}">
+      <button class="btn btn-sm btn-glow" onclick="applyOrderFilters()"><span>Apply</span></button>
+      <button class="btn btn-sm btn-ghost" onclick="clearOrderFilters()">Clear</button>
+      <div class="grow"></div>
+      <button class="btn btn-ghost" onclick="exportCsv('orders')">\u2b07 Export CSV</button>
+    </div>
+    ${(d.orders || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Product</th><th>Qty</th><th>User</th><th>Amount</th><th>Method</th><th>Status</th><th>When</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="toolbar" style="margin-top:12px;margin-bottom:0">
+      <button class="btn btn-sm btn-ghost" ${d.page <= 1 ? "disabled" : ""} onclick="orderPageGo(${d.page - 1})">\u25c0 Prev</button>
+      <span class="muted">Page ${d.page} of ${d.pages} \u00b7 ${d.total} orders</span>
+      <button class="btn btn-sm btn-ghost" ${d.page >= d.pages ? "disabled" : ""} onclick="orderPageGo(${d.page + 1})">Next \u25b6</button>
+    </div>` : empty("No orders found", "\ud83d\uded2")}</div>`;
 }
 async function refundOrder(id, price) {
   if (!confirm(`Refund order #${id} (${money(price)}) back to the user's wallet and delete the order?`)) return;
@@ -515,12 +553,16 @@ async function blockUser(uid, block) {
 async function userDetail(uid) {
   const d = await api(`/api/users/${uid}`);
   const u = d.user || {};
+  const s = d.stats || {};
   const orders = (d.orders || []).map(o => `<div class="kv"><span>#${o.id} ${escName(o.product_name)}</span><b>${money(o.price)}</b></div>`).join("") || '<p class="muted">No orders</p>';
   const deps = (d.deposits || []).map(o => `<div class="kv"><span>${fmtDate(o.created)} \u00b7 ${esc(o.status)}</span><b>${money(o.amount)}</b></div>`).join("") || '<p class="muted">No deposits</p>';
   openModal("\ud83d\udc64 " + (u.first_name || uid), `
     <div class="kv"><span>User ID</span><b class="mono">${u.user_id}</b></div>
-    <div class="kv"><span>Username</span><b>${u.username ? "@" + esc(u.username) : "-"}</b></div>
+    <div class="kv"><span>Username</span><b>${u.username && u.username !== "No username" ? "@" + esc(u.username) : "-"}</b></div>
     <div class="kv"><span>Balance</span><b>${money(u.balance)}</b></div>
+    <div class="kv"><span>Total orders</span><b>${s.total_orders ?? "-"}</b></div>
+    <div class="kv"><span>Total spent</span><b>${money(s.total_spent)}</b></div>
+    <div class="kv"><span>Total deposited</span><b>${money(s.total_deposited)} (${s.deposits_count ?? 0})</b></div>
     <div class="kv"><span>Joined</span><b>${fmtDate(u.joined)}</b></div>
     <div class="kv"><span>Referral earnings</span><b>${money(u.referral_earnings)}</b></div>
     <h3 style="margin:16px 0 6px">Orders</h3>${orders}
