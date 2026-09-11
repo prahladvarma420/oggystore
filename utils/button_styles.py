@@ -84,3 +84,33 @@ class AutoStyledButton(_InlineKeyboardButton):
         elif style == "":
             style = None
         super().__init__(text, url, callback_data, *args, style=style, **kwargs)
+
+
+def copy_amount_text(value):
+    """Exact invoice amount for copy buttons: full precision, only trailing
+    zeros trimmed (the numeric value is never altered)."""
+    try:
+        return f"{float(value):.6f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return str(value or "")
+
+
+def make_copy_button(text, value, fallback_callback):
+    """Inline button that copies ``value`` straight to the clipboard when
+    tapped (Bot API 7.10+ ``copy_text`` buttons): Telegram shows a native
+    \"Copied\" toast and NO message is sent to the chat -- the user just
+    pastes, on phone, desktop or web.
+
+    If the installed python-telegram-bot is too old for copy buttons, a
+    normal callback button with ``fallback_callback`` is returned instead;
+    its handler sends the value in a tap-to-copy <code> message (legacy UX).
+    """
+    try:
+        from telegram import CopyTextButton
+        try:
+            return _InlineKeyboardButton(text, copy_text=CopyTextButton(text=str(value)))
+        except TypeError:
+            # PTB variant whose copy_text takes the plain string directly
+            return _InlineKeyboardButton(text, copy_text=str(value))
+    except Exception:
+        return _InlineKeyboardButton(text, callback_data=fallback_callback)
