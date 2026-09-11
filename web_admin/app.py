@@ -1109,7 +1109,12 @@ def api_category_create():
     name = (d.get("name") or "").strip()
     if not name:
         return jsonify({"ok": False, "error": "Name required"}), 400
-    cid = botdb.create_category(name)
+    cid = botdb.create_category(name, d.get("icon") or "")
+    try:
+        if d.get("sort_order") not in (None, ""):
+            botdb.set_category_sort(cid, int(d.get("sort_order")))
+    except (TypeError, ValueError):
+        pass
     log_action("create_category", "#{} {}".format(cid, name))
     return jsonify({"ok": True, "id": cid})
 
@@ -1125,6 +1130,13 @@ def api_category_update(cid):
         if not name:
             return jsonify({"ok": False, "error": "Name required"}), 400
         botdb.rename_category(cid, name)
+    if "icon" in d and d["icon"] is not None:
+        botdb.set_category_icon(cid, d["icon"])
+    if "sort_order" in d and d["sort_order"] not in (None, ""):
+        try:
+            botdb.set_category_sort(cid, int(d["sort_order"]))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "Invalid sort order"}), 400
     if "active" in d and d["active"] is not None:
         botdb.set_category_active(cid, 1 if bool(d["active"]) else 0)
     log_action("update_category", "#{}".format(cid))
