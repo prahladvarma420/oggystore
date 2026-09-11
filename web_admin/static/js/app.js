@@ -232,15 +232,25 @@ async function loadDashCharts() {
 }
 
 /* =====================================================  PRODUCTS  ========= */
+let productCatFilter = "";
 async function viewProducts() {
   const search = $("#searchInput").value.trim();
-  const d = await api("/api/products?search=" + encodeURIComponent(search));
+  const [d, cd] = await Promise.all([
+    api("/api/products?search=" + encodeURIComponent(search)),
+    api("/api/categories"),
+  ]);
   cache.products = d.products || [];
-  const rows = cache.products.map(p => {
+  cache.categories = cd.categories || [];
+  const catOpts = ['<option value="">📂 All categories</option>']
+    .concat((cache.categories || []).map(c => `<option value="${c.id}" ${String(c.id) === productCatFilter ? "selected" : ""}>📂 ${escName(c.name)} (${c.product_count})</option>`))
+    .concat([`<option value="none" ${productCatFilter === "none" ? "selected" : ""}>📦 Uncategorized</option>`])
+    .join("");
+  const filtered = cache.products.filter(p => productCatFilter === "" ? true : (productCatFilter === "none" ? !p.category_id : String(p.category_id) === productCatFilter));
+  const rows = filtered.map(p => {
     const flash = p.flash_price ? `<span class="badge warn">\u26a1${money(p.flash_price)}</span>` : "";
     return `<tr>
       <td>#${p.id}</td>
-      <td><b>${escName(p.name)}</b> ${p.featured ? '<span class="badge purple">\u2b50</span>' : ""} ${flash}</td>
+      <td><b>${escName(p.name)}</b> ${p.category_name ? `<span class="badge">📂 ${escName(p.category_name)}</span>` : '<span class="badge off">📦</span>'} ${p.featured ? '<span class="badge purple">\u2b50</span>' : ""} ${flash}</td>
       <td>${p.flash_price ? `<s class="muted">${money(p.price)}</s> <b style="color:#ff5db1">${money(p.flash_price)}</b>` : money(p.price)}</td>
       <td>${p.available_stock} <span class="muted">avail</span> \u00b7 ${p.sold_count} sold</td>
       <td>${p.active ? '<span class="badge on">Active</span>' : '<span class="badge off">Hidden</span>'}</td>
@@ -257,10 +267,12 @@ async function viewProducts() {
   $("#content").innerHTML = `
     <div class="panel glass">
       <div class="toolbar"><div class="grow"></div>
+        <select class="inp" style="max-width:220px" onchange="productCatFilter=this.value;viewProducts()">${catOpts}</select>
+        <button class="btn btn-ghost" onclick="manageCategories()">🗂 Categories</button>
         <button class="btn btn-ghost" onclick="exportCsv('products')">\u2b07 Export CSV</button>
         <button class="btn btn-glow" onclick="addProduct()"><span>\u2795 Add Product</span></button>
       </div>
-      ${cache.products.length ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Name</th><th>Price</th><th>Stock</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No products yet \u2014 add one!", "\ud83d\udce6")}
+      ${filtered.length ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Name</th><th>Price</th><th>Stock</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No products yet \u2014 add one!", "\ud83d\udce6")}
     </div>`;
 }
 
@@ -268,6 +280,10 @@ function productForm(p = {}) {
   return `
   <div class="form-grid">
     <label class="full"><span>Name</span><input id="f_name" value="${esc(p.name || "")}"></label>
+    <label><span>Category</span><select id="f_cat">
+      <option value="">📦 Uncategorized</option>
+      ${(cache.categories || []).map(c => `<option value="${c.id}" ${p.category_id === c.id ? "selected" : ""}>${escName(c.name)}</option>`).join("")}
+    </select></label>
     <label><span>Price (USDT)</span><input id="f_price" type="number" step="0.01" value="${p.price ?? ""}"></label>
     <label><span>Cost / buy price (USDT)</span><input id="f_cost" type="number" step="0.01" value="${p.cost ?? ""}"></label>
     <label><span>Max per order</span><input id="f_max" type="number" value="${p.max_per_order ?? 1}"></label>
@@ -285,6 +301,7 @@ function productForm(p = {}) {
 }
 function collectProduct() {
   return { name: val("f_name"), price: parseFloat(val("f_price") || 0),
+    category_id: val("f_cat") ? parseInt(val("f_cat")) : null,
     cost: parseFloat(val("f_cost") || 0),
     max_per_order: parseInt(val("f_max") || 1), description: val("f_desc"),
     validity: val("f_validity"), warranty: val("f_warranty"), rules: val("f_rules"),
@@ -316,6 +333,56 @@ async function delProduct(id, name) {
   if (!confirm("Delete product '" + name + "'? This removes its stock & offers.")) return;
   const r = await post(`/api/products/${id}/delete`, {});
   if (r.ok) { toast("Deleted"); render(); } else toast("Failed", "err");
+}
+
+// ---------- Product categories (same data the bot shop uses) ----------
+async function manageCategories() {
+  const d = await api("/api/categories");
+  const cats = d.categories || [];
+  const rows = cats.map((c, i) => `<tr>
+    <td>#${c.id}</td>
+    <td><input class="inp" id="cat_name_${c.id}" value="${esc(c.name)}" style="min-width:160px"></td>
+    <td>${c.product_count} products</td>
+    <td>${c.active ? '<span class="badge on">Active</span>' : '<span class="badge off">Hidden</span>'}</td>
+    <td><div class="row-actions">
+      <button class="btn btn-sm btn-glow" onclick="saveCategory(${c.id})"><span>Save</span></button>
+      <button class="btn btn-sm btn-ghost" onclick="moveCategory(${c.id},'up')" ${i === 0 ? "disabled" : ""}>\u2b06</button>
+      <button class="btn btn-sm btn-ghost" onclick="moveCategory(${c.id},'down')" ${i === cats.length - 1 ? "disabled" : ""}>\u2b07</button>
+      <button class="btn btn-sm btn-ghost" onclick="toggleCategory(${c.id},${c.active ? 0 : 1})">${c.active ? "Deactivate" : "Activate"}</button>
+      <button class="btn btn-sm btn-red" onclick="delCategory(${c.id},'${esc(c.name).replace(/'/g, "\\'")}')"><span>Del</span></button>
+    </div></td></tr>`).join("");
+  openModal("🗂 Product Categories", `
+    <p class="muted">Categories organize the 🛍 shop menu in the bot (in this order). Products without a category appear under 📦 <b>Other</b>. Deleting a category never deletes products — they move back to Uncategorized.</p>
+    ${cats.length ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Name</th><th>Products</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted">No categories yet — the bot shop shows the classic flat product list until you create one.</p>'}
+    <div class="toolbar" style="margin-top:14px">
+      <input class="inp" id="new_cat_name" placeholder="New category name (e.g. LinkedIn)" style="min-width:220px">
+      <button class="btn btn-glow" onclick="createCategory()"><span>\u2795 Add Category</span></button>
+      <div class="grow"></div>
+      <button class="btn btn-ghost" onclick="closeModal()">Close</button>
+    </div>`);
+}
+async function createCategory() {
+  const name = val("new_cat_name");
+  if (!name) return toast("Name required", "err");
+  const r = await post("/api/categories/create", { name });
+  if (r.ok) { toast("Category created"); manageCategories(); render(); } else toast(r.error || "Failed", "err");
+}
+async function saveCategory(id) {
+  const r = await post(`/api/categories/${id}/update`, { name: val("cat_name_" + id) });
+  if (r.ok) { toast("Saved"); manageCategories(); render(); } else toast(r.error || "Failed", "err");
+}
+async function toggleCategory(id, active) {
+  const r = await post(`/api/categories/${id}/update`, { active });
+  if (r.ok) { toast(active ? "Activated" : "Deactivated"); manageCategories(); render(); } else toast("Failed", "err");
+}
+async function moveCategory(id, direction) {
+  const r = await post(`/api/categories/${id}/move`, { direction });
+  if (r.ok) { manageCategories(); } else toast("Failed", "err");
+}
+async function delCategory(id, name) {
+  if (!confirm("Delete category '" + name + "'? Its products move to Uncategorized.")) return;
+  const r = await post(`/api/categories/${id}/delete`, {});
+  if (r.ok) { toast("Deleted"); manageCategories(); render(); } else toast("Failed", "err");
 }
 function flashSale(id) {
   const p = cache.products.find(x => x.id === id);
@@ -1062,6 +1129,7 @@ async function sendBroadcastNow(id) {
 /* expose handlers used in inline onclick */
 Object.assign(window, {
   editProduct, addProduct, toggleProduct, delProduct, flashSale, manageStock,
+  manageCategories, createCategory, saveCategory, toggleCategory, moveCategory, delCategory,
   delStock, manageTiers, delTier, refundOrder, resendOrder, adjustBalance,
   blockUser, userDetail, addCoupon, toggleCoupon, delCoupon, saveTemplate,
   replyTicket, closeTicket, setTicketFilter, withdrawAction, removeAdmin,
