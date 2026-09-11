@@ -7,7 +7,7 @@ import time
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton, make_copy_button, copy_amount_text
 from utils.premium_emoji import strip_premium, first_premium_id, button_premium, premium_safe
-from database.db import render_message_template, get_message_template, BUNDLE_DETAILS_DEFAULT, SHOP_INTRO_DEFAULT, BUNDLES_INTRO_DEFAULT, BUNDLES_EMPTY_DEFAULT, BTN_BUNDLE_DEALS_DEFAULT, BTN_BACK_TO_PRODUCTS_DEFAULT, BTN_BACK_TO_BUNDLES_DEFAULT, BTN_BUY_BUNDLE_DEFAULT,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items, is_m365_product, is_canva_product, get_m365_product_warranty
+from database.db import render_message_template, get_message_template, BUNDLE_DETAILS_DEFAULT, SHOP_INTRO_DEFAULT, BUNDLES_INTRO_DEFAULT, BUNDLES_EMPTY_DEFAULT, BTN_BUNDLE_DEALS_DEFAULT, BTN_BACK_TO_PRODUCTS_DEFAULT, BTN_BACK_TO_BUNDLES_DEFAULT, BTN_BUY_BUNDLE_DEFAULT,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items, is_m365_product, is_canva_product, get_m365_product_warranty, get_categories, get_category, get_category_counts, get_category_products
 from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
 from utils.crypto import encrypt_text
 from utils.ui import edit_or_send
@@ -502,6 +502,51 @@ Rate Used: <b>${unit_price:.2f}</b> each
 
 
 async def show_shop(q):
+    """Shop entry point. With categories configured, shows the category picker
+    (📦 Other collects uncategorized products). Without any categories it
+    falls back to the classic flat product list, so existing stores keep
+    working completely unchanged."""
+    categories = get_categories(active_only=True)
+    counts = get_category_counts()
+
+    if categories:
+        kb = []
+        bundles = get_active_bundles()
+        if bundles:
+            kb.append([InlineKeyboardButton(get_message_template("btn_bundle_deals", BTN_BUNDLE_DEALS_DEFAULT), callback_data="bundles")])
+
+        for cid, cname, _sort, _cactive in categories:
+            count = counts.get(cid, 0)
+            kb.append([
+                InlineKeyboardButton(
+                    f"\U0001f4c2 {strip_premium(cname)} ({count})",
+                    callback_data=f"shopcat_{cid}",
+                    style="primary"
+                )
+            ])
+
+        other_count = counts.get(0, 0)
+        if other_count:
+            kb.append([
+                InlineKeyboardButton(
+                    f"\U0001f4e6 Other ({other_count})",
+                    callback_data="shopcat_0",
+                    style="primary"
+                )
+            ])
+
+        kb.append([
+            InlineKeyboardButton("🔄 Refresh", callback_data="shop"),
+            InlineKeyboardButton("Back", callback_data="home")
+        ])
+
+        text = render_message_template("shop_intro", SHOP_INTRO_DEFAULT)
+        if not counts:
+            text += "\n\nNo products are available right now.\nPlease check again later."
+        await edit_or_send(q, text, InlineKeyboardMarkup(kb))
+        return
+
+    # No categories configured -> classic flat product list (unchanged).
     cur.execute("SELECT id, name, price, stock, validity, featured, flash_price, flash_ends_at FROM products WHERE active=1 ORDER BY featured DESC, id DESC")
     products = cur.fetchall()
 
@@ -513,34 +558,7 @@ async def show_shop(q):
         )
         return
 
-    # One query for all live stock counts (faster than one query per product).
-    cur.execute("SELECT product_id, COUNT(*) FROM product_stock WHERE sold=0 GROUP BY product_id")
-    live_counts = {row[0]: row[1] for row in cur.fetchall()}
-
-    kb = []
-    visible_count = 0
-
-    for pid, name, price, old_stock, validity, featured, flash_price, flash_ends_at in products:
-        live_stock = live_counts.get(pid, 0)
-        stock = live_stock if live_stock > 0 else old_stock
-
-        # Show the active flash-sale price directly in the list (not just on the
-        # product detail page). Falls back to the normal price when no flash.
-        display_price, flash_active = get_effective_price(price, flash_price, flash_ends_at)
-        if flash_active:
-            price_label = f"\U0001f525 {format_price(display_price)} (was {format_price(price)})"
-        else:
-            price_label = format_price(display_price)
-
-        visible_count += 1
-        kb.append([
-            InlineKeyboardButton(
-                f"{'' if featured else ''}{button_premium(name)[0]} — {price_label} (Stock: {stock})",
-                callback_data=f"product_{pid}",
-                style="danger" if int(stock or 0) <= 0 else "primary",
-                icon_custom_emoji_id=button_premium(name)[1]
-            )
-        ])
+    kb = _product_button_rows(products)
 
     bundles = get_active_bundles()
     if bundles:
@@ -556,6 +574,67 @@ async def show_shop(q):
         render_message_template("shop_intro", SHOP_INTRO_DEFAULT),
         InlineKeyboardMarkup(kb)
     )
+
+
+def _product_button_rows(products):
+    """One shop button row per product (flash price + live stock + premium
+    emoji) -- the exact rendering the classic flat list used, shared by the
+    category view so product display stays identical everywhere."""
+    # One query for all live stock counts (faster than one query per product).
+    cur.execute("SELECT product_id, COUNT(*) FROM product_stock WHERE sold=0 GROUP BY product_id")
+    live_counts = {row[0]: row[1] for row in cur.fetchall()}
+
+    rows = []
+    for pid, name, price, old_stock, validity, featured, flash_price, flash_ends_at in products:
+        live_stock = live_counts.get(pid, 0)
+        stock = live_stock if live_stock > 0 else old_stock
+
+        # Show the active flash-sale price directly in the list (not just on the
+        # product detail page). Falls back to the normal price when no flash.
+        display_price, flash_active = get_effective_price(price, flash_price, flash_ends_at)
+        if flash_active:
+            price_label = f"\U0001f525 {format_price(display_price)} (was {format_price(price)})"
+        else:
+            price_label = format_price(display_price)
+
+        rows.append([
+            InlineKeyboardButton(
+                f"{'' if featured else ''}{button_premium(name)[0]} — {price_label} (Stock: {stock})",
+                callback_data=f"product_{pid}",
+                style="danger" if int(stock or 0) <= 0 else "primary",
+                icon_custom_emoji_id=button_premium(name)[1]
+            )
+        ])
+    return rows
+
+
+async def show_category(q, category_id):
+    """Product list of one shop category. category_id 0 = 📦 Other
+    (uncategorized products -- the NULL-category fallback)."""
+    try:
+        category_id = int(category_id or 0)
+    except (TypeError, ValueError):
+        category_id = 0
+
+    if category_id:
+        cat = get_category(category_id)
+        if not cat or not int(cat[3]):
+            await show_shop(q)
+            return
+        title = f"\U0001f4c2 <b>{html.escape(strip_premium(cat[1]))}</b>"
+        products = get_category_products(category_id)
+    else:
+        title = "\U0001f4e6 <b>Other Products</b>"
+        products = get_category_products(None)
+
+    kb = _product_button_rows(products)
+    kb.append([InlineKeyboardButton("◀️ Back to Categories", callback_data="shop")])
+
+    text = title
+    if not products:
+        text += "\n\nNo products in this category yet.\nPlease check again later."
+
+    await edit_or_send(q, text, InlineKeyboardMarkup(kb))
 
 
 async def show_product(q, pid: int):
