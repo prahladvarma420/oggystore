@@ -289,6 +289,16 @@ def init_db():
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS categories(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        sort_order INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        created TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS product_stock(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         product_id INTEGER NOT NULL,
@@ -435,6 +445,9 @@ def init_db():
     _safe_add_column("products", "flash_price", "REAL")
     _safe_add_column("products", "flash_ends_at", "TEXT")
     _safe_add_column("products", "low_stock_notified", "INTEGER DEFAULT 0")
+    # Product category for the shop menu. NULL = Uncategorized ("📦 Other") --
+    # existing products keep working with no manual editing.
+    _safe_add_column("products", "category_id", "INTEGER")
     # Payment method shown in admin order search/detail ("Wallet",
     # "USDT BEP20", "USDT TRC20", "Binance Pay"). NULL on legacy rows --
     # those are derived from the funding checkout deposit at display time.
@@ -710,7 +723,7 @@ def ensure_user(user):
         ),
         "delivery_success": (
             "Delivery Success Message",
-            "✅ <b>Payment Successful!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\n\n📦 <b>{product_name}</b>\n\n🔑 <b>Code(s):</b>\n<code>{delivery}</code>\n\n━━━━━━━━━━━━━━━━━━━━\n\n💰 <b>Paid:</b> <b>${paid}</b>\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\n\n━━━━━━━━━━━━━━━━━━━━\nThank you for your purchase! 🎉\n\nUse /orders to view your order history."
+            "✅ <b>Payment Successful!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\n\n📦 <b>{product_name}</b>\n\n🔑 <b>Code(s):</b>\n<code>{delivery}</code>\n\n━━━━━━━━━━━━━━━━━��━━\n\n💰 <b>Paid:</b> <b>${paid}</b>\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\n\n━━━━━━━━━━━━━━━━━━━━\nThank you for your purchase! 🎉\n\nUse /orders to view your order history."
         ),
         "coupon_broadcast": (
             "Coupon Broadcast Message",
@@ -2955,3 +2968,136 @@ def get_user_deposits_page(user_id, limit=5, offset=0):
     cur.execute("SELECT COUNT(*) FROM deposits WHERE user_id=?", (int(user_id),))
     row = cur.fetchone()
     return rows, (int(row[0] or 0) if row else 0)
+
+
+# ---------------- Product categories (bot shop + web admin share these) ----------------
+
+def get_categories(active_only=False):
+    """All categories in display order (sort_order ASC, then id ASC)."""
+    sql = "SELECT id, name, sort_order, active FROM categories"
+    if active_only:
+        sql += " WHERE active=1"
+    cur.execute(sql + " ORDER BY sort_order ASC, id ASC")
+    return cur.fetchall()
+
+
+def get_category(category_id):
+    try:
+        cur.execute(
+            "SELECT id, name, sort_order, active FROM categories WHERE id=?",
+            (int(category_id),),
+        )
+    except (TypeError, ValueError):
+        return None
+    return cur.fetchone()
+
+
+def create_category(name):
+    """Append a new category at the end of the display order."""
+    cur.execute("SELECT COALESCE(MAX(sort_order), 0) FROM categories")
+    next_order = int(cur.fetchone()[0] or 0) + 1
+    cur.execute(
+        "INSERT INTO categories(name, sort_order, active) VALUES(?, ?, 1)",
+        (str(name).strip(), next_order),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def rename_category(category_id, name):
+    cur.execute(
+        "UPDATE categories SET name=? WHERE id=?",
+        (str(name).strip(), int(category_id)),
+    )
+    conn.commit()
+
+
+def set_category_active(category_id, active):
+    cur.execute(
+        "UPDATE categories SET active=? WHERE id=?",
+        (1 if active else 0, int(category_id)),
+    )
+    conn.commit()
+
+
+def delete_category(category_id):
+    """Delete a category. Its products are NOT deleted -- they fall back to
+    Uncategorized (category_id NULL) so they stay visible in the shop."""
+    cur.execute(
+        "UPDATE products SET category_id=NULL WHERE category_id=?",
+        (int(category_id),),
+    )
+    cur.execute("DELETE FROM categories WHERE id=?", (int(category_id),))
+    conn.commit()
+
+
+def _normalize_category_order():
+    """Rewrite sort_order as 1..n so swaps always work, even after deletes."""
+    cur.execute("SELECT id FROM categories ORDER BY sort_order ASC, id ASC")
+    ids = [row[0] for row in cur.fetchall()]
+    for pos, cid in enumerate(ids, start=1):
+        cur.execute("UPDATE categories SET sort_order=? WHERE id=?", (pos, cid))
+    return ids
+
+
+def move_category(category_id, direction):
+    """Swap a category with its neighbor. direction: 'up' or 'down'."""
+    ids = _normalize_category_order()
+    try:
+        idx = ids.index(int(category_id))
+    except ValueError:
+        return False
+    swap_with = idx - 1 if direction == "up" else idx + 1
+    if swap_with < 0 or swap_with >= len(ids):
+        return False
+    ids[idx], ids[swap_with] = ids[swap_with], ids[idx]
+    for pos, cid in enumerate(ids, start=1):
+        cur.execute("UPDATE categories SET sort_order=? WHERE id=?", (pos, cid))
+    conn.commit()
+    return True
+
+
+def get_category_counts():
+    """Active-product counts per category. Key 0 = uncategorized products."""
+    cur.execute(
+        "SELECT COALESCE(category_id, 0) AS cid, COUNT(*) FROM products "
+        "WHERE active=1 GROUP BY COALESCE(category_id, 0)"
+    )
+    return {int(row[0]): int(row[1]) for row in cur.fetchall()}
+
+
+def get_category_products(category_id):
+    """Products of one category for the shop view. Existing ordering kept
+    (featured first, then newest). category_id None/0 = Uncategorized."""
+    if category_id:
+        cur.execute(
+            "SELECT id, name, price, stock, validity, featured, flash_price, flash_ends_at "
+            "FROM products WHERE active=1 AND category_id=? "
+            "ORDER BY featured DESC, id DESC",
+            (int(category_id),),
+        )
+    else:
+        cur.execute(
+            "SELECT id, name, price, stock, validity, featured, flash_price, flash_ends_at "
+            "FROM products WHERE active=1 AND category_id IS NULL "
+            "ORDER BY featured DESC, id DESC"
+        )
+    return cur.fetchall()
+
+
+def assign_product_category(product_id, category_id):
+    """Assign/move a product to a category. None = Uncategorized."""
+    if category_id is not None:
+        if not get_category(category_id):
+            return False
+        cur.execute(
+            "UPDATE products SET category_id=? WHERE id=?",
+            (int(category_id), int(product_id)),
+        )
+    else:
+        cur.execute(
+            "UPDATE products SET category_id=NULL WHERE id=?",
+            (int(product_id),),
+        )
+    conn.commit()
+    return True
