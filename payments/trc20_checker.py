@@ -131,8 +131,8 @@ async def _deliver_trc20_checkout(context, deposit_id, user_id, base_amount, pai
         except Exception:
             pass
         cur.execute(
-            "INSERT INTO orders(user_id, product_name, price, delivery) VALUES(?,?,?,?)",
-            (user_id, f"{product_name} x{quantity}", float(base_amount), encrypt_text(delivery_text)),
+            "INSERT INTO orders(user_id, product_name, price, delivery, payment_method) VALUES(?,?,?,?,?)",
+            (user_id, f"{product_name} x{quantity}", float(base_amount), encrypt_text(delivery_text), "USDT TRC20"),
         )
         order_id = cur.lastrowid
         cur.execute(
