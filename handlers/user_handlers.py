@@ -14,7 +14,7 @@ from keyboards.menus import main_menu, profile_menu, back_home, support_menu
 from utils.texts import welcome_text
 from utils.ui import edit_or_send
 from utils.states import user_state
-from products.product_handlers import show_shop, show_product, buy_product, show_order_preview, start_direct_checkout, show_quantity_menu, show_bundles, show_bundle_details, buy_bundle
+from products.product_handlers import show_shop, show_category, show_product, buy_product, show_order_preview, start_direct_checkout, show_quantity_menu, show_bundles, show_bundle_details, buy_bundle
 from payments.deposit_handlers import start_deposit, handle_deposit_amount, deposit_shortfall, create_deposit_invoice, handle_copy_invoice
 from admin.admin_handlers import show_admin_panel, handle_admin_callback, handle_admin_message
 from config import ADMIN_USERNAME, ADMIN_ID
@@ -383,7 +383,7 @@ async def admin(update, context: ContextTypes.DEFAULT_TYPE):
 
     from keyboards.menus import admin_menu
     await update.message.reply_text(
-        "👑 <b>Admin Panel</b>\n\n<i>Manage your shop from here.</i>",
+        "���� <b>Admin Panel</b>\n\n<i>Manage your shop from here.</i>",
         reply_markup=admin_menu(),
         parse_mode="HTML"
     )
@@ -574,6 +574,13 @@ async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "shop":
         await show_shop(q)
+        return
+
+    if data.startswith("shopcat_"):
+        try:
+            await show_category(q, int(data.split("_", 1)[1]))
+        except Exception:
+            await show_shop(q)
         return
 
     if data.startswith("product_"):
