@@ -292,6 +292,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS categories(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
+        icon TEXT DEFAULT '',
         sort_order INTEGER DEFAULT 0,
         active INTEGER DEFAULT 1,
         created TEXT DEFAULT CURRENT_TIMESTAMP
@@ -448,6 +449,8 @@ def init_db():
     # Product category for the shop menu. NULL = Uncategorized ("📦 Other") --
     # existing products keep working with no manual editing.
     _safe_add_column("products", "category_id", "INTEGER")
+    # Optional per-category emoji/icon shown in the bot shop picker.
+    _safe_add_column("categories", "icon", "TEXT DEFAULT ''")
     # Payment method shown in admin order search/detail ("Wallet",
     # "USDT BEP20", "USDT TRC20", "Binance Pay"). NULL on legacy rows --
     # those are derived from the funding checkout deposit at display time.
@@ -2973,8 +2976,9 @@ def get_user_deposits_page(user_id, limit=5, offset=0):
 # ---------------- Product categories (bot shop + web admin share these) ----------------
 
 def get_categories(active_only=False):
-    """All categories in display order (sort_order ASC, then id ASC)."""
-    sql = "SELECT id, name, sort_order, active FROM categories"
+    """All categories in display order (sort_order ASC, then id ASC).
+    Rows: (id, name, sort_order, active, icon)."""
+    sql = "SELECT id, name, sort_order, active, COALESCE(icon, '') FROM categories"
     if active_only:
         sql += " WHERE active=1"
     cur.execute(sql + " ORDER BY sort_order ASC, id ASC")
@@ -2984,7 +2988,7 @@ def get_categories(active_only=False):
 def get_category(category_id):
     try:
         cur.execute(
-            "SELECT id, name, sort_order, active FROM categories WHERE id=?",
+            "SELECT id, name, sort_order, active, COALESCE(icon, '') FROM categories WHERE id=?",
             (int(category_id),),
         )
     except (TypeError, ValueError):
@@ -2992,16 +2996,36 @@ def get_category(category_id):
     return cur.fetchone()
 
 
-def create_category(name):
+def create_category(name, icon=""):
     """Append a new category at the end of the display order."""
     cur.execute("SELECT COALESCE(MAX(sort_order), 0) FROM categories")
     next_order = int(cur.fetchone()[0] or 0) + 1
     cur.execute(
-        "INSERT INTO categories(name, sort_order, active) VALUES(?, ?, 1)",
-        (str(name).strip(), next_order),
+        "INSERT INTO categories(name, icon, sort_order, active) VALUES(?, ?, ?, 1)",
+        (str(name).strip(), str(icon or "").strip(), next_order),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def set_category_icon(category_id, icon):
+    cur.execute(
+        "UPDATE categories SET icon=? WHERE id=?",
+        (str(icon or "").strip(), int(category_id)),
+    )
+    conn.commit()
+
+
+def set_category_sort(category_id, sort_order):
+    """Set an explicit display position for a category."""
+    try:
+        cur.execute(
+            "UPDATE categories SET sort_order=? WHERE id=?",
+            (int(sort_order), int(category_id)),
+        )
+        conn.commit()
+    except (TypeError, ValueError):
+        pass
 
 
 def rename_category(category_id, name):
