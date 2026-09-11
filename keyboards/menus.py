@@ -1,10 +1,10 @@
 import math
 
 from telegram import InlineKeyboardMarkup
-from utils.button_styles import AutoStyledButton as InlineKeyboardButton
+from utils.button_styles import AutoStyledButton as InlineKeyboardButton, make_copy_button, copy_amount_text
 from database.db import get_product_price_tiers, cur, is_admin, get_setting
 from utils.premium_emoji import button_premium
-from config import ADMIN_ID, USDT_BEP20_ADDRESS, USDT_TRC20_ADDRESS
+from config import ADMIN_ID, USDT_BEP20_ADDRESS, USDT_TRC20_ADDRESS, BINANCE_PAY_ID
 
 
 MAIN_MENU_BUTTONS = [
@@ -68,20 +68,22 @@ def deposit_menu():
     ])
 
 
-def deposit_invoice_menu(invoice_id=None, method=None):
+def deposit_invoice_menu(invoice_id=None, method=None, amount=None, note_code=None):
     """Invoice keyboard. When the payment method is known, the first row offers
-    one-tap copy buttons (they send the value in a tap-to-copy <code> message --
-    Telegram buttons cannot write to the clipboard directly)."""
+    native copy-to-clipboard buttons: the value is embedded in the button, so
+    tapping it copies instantly (any device) without sending any chat message.
+    All values come from the invoice / payment config -- nothing hardcoded."""
     rows = []
     if invoice_id and method in ("bep20", "trc20"):
+        address = USDT_BEP20_ADDRESS if method == "bep20" else USDT_TRC20_ADDRESS
         rows.append([
-            InlineKeyboardButton("📋 Copy Address", callback_data=f"copydep_{invoice_id}_addr"),
-            InlineKeyboardButton("📋 Copy Exact Amount", callback_data=f"copydep_{invoice_id}_amt"),
+            make_copy_button("📋 Copy Address", address, f"copydep_{invoice_id}_addr"),
+            make_copy_button("📋 Copy Exact Amount", copy_amount_text(amount), f"copydep_{invoice_id}_amt"),
         ])
     elif invoice_id and method == "binance":
         rows.append([
-            InlineKeyboardButton("📋 Copy Binance ID", callback_data=f"copydep_{invoice_id}_payid"),
-            InlineKeyboardButton("📋 Copy Caption", callback_data=f"copydep_{invoice_id}_note"),
+            make_copy_button("📋 Copy Binance ID", str(BINANCE_PAY_ID), f"copydep_{invoice_id}_payid"),
+            make_copy_button("📋 Copy Caption", str(note_code or ""), f"copydep_{invoice_id}_note"),
         ])
     if invoice_id:
         rows.append([InlineKeyboardButton("❌ Cancel Payment", callback_data=f"canceldep_{invoice_id}")])
