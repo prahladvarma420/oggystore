@@ -1109,6 +1109,8 @@ def api_category_create():
     name = (d.get("name") or "").strip()
     if not name:
         return jsonify({"ok": False, "error": "Name required"}), 400
+    if botdb.get_category_by_name(name):
+        return jsonify({"ok": False, "error": "A category with this name already exists"}), 400
     cid = botdb.create_category(name, d.get("icon") or "")
     try:
         if d.get("sort_order") not in (None, ""):
@@ -1129,6 +1131,9 @@ def api_category_update(cid):
         name = str(d["name"]).strip()
         if not name:
             return jsonify({"ok": False, "error": "Name required"}), 400
+        existing = botdb.get_category_by_name(name)
+        if existing and int(existing[0]) != int(cid):
+            return jsonify({"ok": False, "error": "A category with this name already exists"}), 400
         botdb.rename_category(cid, name)
     if "icon" in d and d["icon"] is not None:
         botdb.set_category_icon(cid, d["icon"])
