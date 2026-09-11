@@ -756,6 +756,8 @@ async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1, method
 
 <b>{STORE_NAME}</b>""",
             InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 Copy Binance ID", callback_data=f"copydep_{invoice_id}_payid"),
+                 InlineKeyboardButton("📋 Copy Caption", callback_data=f"copydep_{invoice_id}_note")],
                 [InlineKeyboardButton("\U0001f504 Check Deposit History", callback_data="deposit_history")],
                 [InlineKeyboardButton("\u2b05\ufe0f Back To Product", callback_data=f"product_{pid}")]
             ])
@@ -801,6 +803,8 @@ async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1, method
 
 <b>{STORE_NAME}</b>""",
         InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 Copy Address", callback_data=f"copydep_{invoice_id}_addr"),
+             InlineKeyboardButton("📋 Copy Exact Amount", callback_data=f"copydep_{invoice_id}_amt")],
             [InlineKeyboardButton("🔄 Check Deposit History", callback_data="deposit_history")],
             [InlineKeyboardButton("⬅️ Back To Product", callback_data=f"product_{pid}")]
         ])
