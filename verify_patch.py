@@ -1,20 +1,23 @@
 """Run from the project root (where bot.py is):  python3 verify_patch.py
-Verifies all category-patch files (v2) are fully and correctly uploaded."""
+Verifies all Categories-v3 (in-bot admin) patch files are fully uploaded."""
 import ast, sys
 
 CHECKS = {
     "database/db.py": ["get_categories", "create_category", "assign_product_category",
-                       "get_category_products", "move_category", "delete_category",
-                       "set_category_icon", "set_category_sort"],
-    "products/product_handlers.py": ["show_shop", "show_category", "_product_button_rows"],
-    "handlers/user_handlers.py": ["start", "admin", "buttons", "message_handler",
-                                  "photo_handler", "document_handler"],
+                       "get_category_by_name", "set_category_icon", "set_category_sort",
+                       "move_category", "delete_category"],
+    "admin/admin_handlers.py": ["admin_categories_menu", "_show_categories_admin",
+                                "_show_category_detail", "_show_category_products_admin",
+                                "_admin_cat_handle_product_id", "handle_admin_callback",
+                                "handle_admin_message"],
+    "keyboards/menus.py": ["admin_menu"],
     "web_admin/app.py": ["api_categories", "api_category_create", "api_category_move"],
 }
 TEXT_CHECKS = {
-    "products/product_handlers.py": ["SHOP_CATEGORY_PAGE_SIZE", "SHOP_PRODUCT_PAGE_SIZE"],
-    "handlers/user_handlers.py": ["shopcat_", "shopcats_"],
-    "web_admin/app.py": ["set_category_icon"],
+    "keyboards/menus.py": ['"📂 Categories"', 'callback_data="admin_categories"'],
+    "admin/admin_handlers.py": ["admin_cat_create_name", "admin_cat_add_existing",
+                                "admin_cat_rename", "pending_category_id"],
+    "web_admin/app.py": ["get_category_by_name"],
 }
 
 ok = True
@@ -33,17 +36,6 @@ for path, names in CHECKS.items():
         ok = False; print(f"MISSING  {path}")
     except SyntaxError as e:
         ok = False; print(f"TRUNCATED  {path}  (syntax error: {e}) -- re-upload fully")
-
-js = "web_admin/static/js/app.js"
-try:
-    src = open(js, encoding="utf-8").read()
-    missing = [n for n in ("manageCategories", "createCategory", "productCatFilter", "cat_icon_") if n not in src]
-    if missing:
-        ok = False; print(f"STALE  {js}  (missing: {', '.join(missing)})")
-    else:
-        print(f"OK   {js}")
-except FileNotFoundError:
-    ok = False; print(f"MISSING  {js}")
 
 print()
 print("ALL FILES OK -- safe to restart the bot" if ok else "Fix the files above, then restart")
