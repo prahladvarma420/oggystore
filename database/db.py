@@ -435,6 +435,10 @@ def init_db():
     _safe_add_column("products", "flash_price", "REAL")
     _safe_add_column("products", "flash_ends_at", "TEXT")
     _safe_add_column("products", "low_stock_notified", "INTEGER DEFAULT 0")
+    # Payment method shown in admin order search/detail ("Wallet",
+    # "USDT BEP20", "USDT TRC20", "Binance Pay"). NULL on legacy rows --
+    # those are derived from the funding checkout deposit at display time.
+    _safe_add_column("orders", "payment_method", "TEXT")
     # Always keep main owner as admin
     cur.execute("INSERT OR IGNORE INTO admins(user_id, added_by) VALUES(?, ?)", (ADMIN_ID, ADMIN_ID))
     # Encrypt any product codes / delivered codes still stored in plaintext.
@@ -2759,3 +2763,195 @@ def count_queued_m365_invites():
     ensure_m365_table()
     cur.execute("SELECT COUNT(*) FROM m365_invites WHERE status='queued'")
     return int(cur.fetchone()[0])
+
+
+# ---------------- Admin order/user search (shared by bot admin + web admin) ----------------
+
+def payment_method_label(value):
+    """Display label for a stored payment-method key or label. New orders store
+    the label directly; legacy checkout deposits stored the key."""
+    v = str(value or "").strip()
+    if not v:
+        return "Wallet"
+    return {
+        "bep20": "USDT BEP20",
+        "trc20": "USDT TRC20",
+        "binance": "Binance Pay",
+        "wallet": "Wallet",
+    }.get(v.lower(), v)
+
+
+def get_order_payment_method(order_id, user_id=None, product_id=None, stored=None):
+    """Payment method label for one order. New orders carry it in
+    orders.payment_method; legacy rows (NULL) are recovered from the paid
+    direct-checkout deposit that funded the order (wallet purchases and
+    bundles have none, so they show Wallet)."""
+    if stored:
+        return payment_method_label(stored)
+    if user_id and product_id:
+        try:
+            cur.execute(
+                "SELECT method FROM deposits WHERE user_id=? AND checkout_product_id=? AND status='paid' ORDER BY id DESC LIMIT 1",
+                (user_id, product_id),
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                return payment_method_label(row[0])
+        except Exception:
+            pass
+    return "Wallet"
+
+
+def get_order_status_label(order_id):
+    """Derived order status. Orders complete instantly on creation and refunded
+    orders are deleted by design, so the only extra state is a warranty
+    replacement linked to the order."""
+    try:
+        cur.execute(
+            "SELECT status FROM replacements WHERE order_id=? ORDER BY id DESC LIMIT 1",
+            (int(order_id),),
+        )
+        row = cur.fetchone()
+    except Exception:
+        row = None
+    if row and row[0] in ("approved", "auto"):
+        return "\U0001f6e1 Replaced"
+    if row and row[0] == "pending":
+        return "\U0001f6e1 Warranty review"
+    return "\u2705 Completed"
+
+
+def _order_search_clauses(order_id=None, user_id=None, username=None, product=None, date_from=None, date_to=None):
+    """Parameterized WHERE for admin order search. Raises ValueError on a bad date."""
+    where = []
+    params = []
+    if order_id is not None:
+        where.append("o.id=?")
+        params.append(int(order_id))
+    if user_id is not None:
+        where.append("o.user_id=?")
+        params.append(int(user_id))
+    if username:
+        uname = str(username).strip().lstrip("@")
+        if uname:
+            where.append("LOWER(u.username)=LOWER(?)")
+            params.append(uname)
+    if product:
+        where.append("o.product_name LIKE ?")
+        params.append(f"%{product}%")
+    for value, op in ((date_from, ">="), (date_to, "<=")):
+        if value:
+            d = str(value).strip()
+            if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+                raise ValueError("invalid date")
+            where.append(f"o.created {op} ?")
+            params.append(d + (" 00:00:00" if op == ">=" else " 23:59:59"))
+    return (" WHERE " + " AND ".join(where), params) if where else ("", params)
+
+
+def search_orders(order_id=None, user_id=None, username=None, product=None, date_from=None, date_to=None, limit=5, offset=0):
+    """Paginated admin order search. All filtering runs in SQL with
+    LIMIT/OFFSET -- the whole table is never loaded into memory."""
+    where, params = _order_search_clauses(order_id, user_id, username, product, date_from, date_to)
+    cur.execute(
+        "SELECT o.id, o.user_id, o.product_name, o.price, o.created, o.payment_method, o.product_id, "
+        "u.username, u.first_name "
+        "FROM orders o LEFT JOIN users u ON u.user_id=o.user_id"
+        + where + " ORDER BY o.id DESC LIMIT ? OFFSET ?",
+        (*params, int(limit), int(offset)),
+    )
+    return cur.fetchall()
+
+
+def count_search_orders(order_id=None, user_id=None, username=None, product=None, date_from=None, date_to=None):
+    """Total matches for the same filters (drives pagination)."""
+    where, params = _order_search_clauses(order_id, user_id, username, product, date_from, date_to)
+    cur.execute(
+        "SELECT COUNT(*) FROM orders o LEFT JOIN users u ON u.user_id=o.user_id" + where,
+        params,
+    )
+    row = cur.fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def get_order_admin_detail(order_id):
+    """One order + its owner for admin views (bot + web)."""
+    cur.execute(
+        "SELECT o.id, o.user_id, o.product_name, o.price, o.delivery, o.created, "
+        "o.payment_method, o.product_id, u.username, u.first_name "
+        "FROM orders o LEFT JOIN users u ON u.user_id=o.user_id WHERE o.id=?",
+        (int(order_id),),
+    )
+    return cur.fetchone()
+
+
+def find_user_by_id(user_id):
+    """Read-only lookup by the canonical Telegram user ID. Never creates rows."""
+    cur.execute(
+        "SELECT user_id, first_name, username, balance, blocked, joined FROM users WHERE user_id=?",
+        (int(user_id),),
+    )
+    return cur.fetchone()
+
+
+def find_users_by_username(query, limit=10):
+    """Exact case-insensitive username match first, then a partial match list.
+    Users without a username are reachable only by their Telegram ID."""
+    uname = str(query or "").strip().lstrip("@")
+    if not uname:
+        return []
+    cur.execute(
+        "SELECT user_id, first_name, username, balance, blocked, joined FROM users "
+        "WHERE LOWER(username)=LOWER(?) LIMIT 1",
+        (uname,),
+    )
+    row = cur.fetchone()
+    if row:
+        return [row]
+    cur.execute(
+        "SELECT user_id, first_name, username, balance, blocked, joined FROM users "
+        "WHERE username LIKE ? AND username != 'No username' ORDER BY joined DESC LIMIT ?",
+        (f"%{uname}%", int(limit)),
+    )
+    return cur.fetchall()
+
+
+def get_user_overview(user_id):
+    """Account row + order/deposit/referral aggregates for the admin user card.
+    Read-only: searching must never create a user row."""
+    cur.execute(
+        "SELECT user_id, first_name, username, balance, blocked, joined, "
+        "COALESCE(referral_earnings,0), COALESCE(referral_pending,0), "
+        "COALESCE(loyalty_points,0), COALESCE(vip_rank,'Bronze') FROM users WHERE user_id=?",
+        (int(user_id),),
+    )
+    user = cur.fetchone()
+    if not user:
+        return None
+    cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (int(user_id),))
+    orders_count, total_spent = cur.fetchone()
+    cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM deposits WHERE user_id=? AND status='paid'", (int(user_id),))
+    dep_count, dep_total = cur.fetchone()
+    return {
+        "user": user,
+        "orders_count": int(orders_count or 0),
+        "total_spent": float(total_spent or 0),
+        "deposits_count": int(dep_count or 0),
+        "total_deposited": float(dep_total or 0),
+        "referral_earnings": float(user[6] or 0),
+        "referral_pending": float(user[7] or 0),
+        "loyalty_points": float(user[8] or 0),
+        "vip_rank": str(user[9] or "Bronze"),
+    }
+
+
+def get_user_deposits_page(user_id, limit=5, offset=0):
+    """Paginated deposit history for one user (newest first) + total count."""
+    cur.execute(
+        "SELECT id, amount, method, status, created FROM deposits WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+        (int(user_id), int(limit), int(offset)),
+    )
+    rows = cur.fetchall()
+    cur.execute("SELECT COUNT(*) FROM deposits WHERE user_id=?", (int(user_id),))
+    row = cur.fetchone()
+    return rows, (int(row[0] or 0) if row else 0)
