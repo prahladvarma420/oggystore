@@ -2996,6 +2996,15 @@ def get_category(category_id):
     return cur.fetchone()
 
 
+def get_category_by_name(name):
+    """Case-insensitive exact-name lookup (duplicate-name prevention)."""
+    cur.execute(
+        "SELECT id, name, sort_order, active, COALESCE(icon, '') FROM categories WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))",
+        (str(name),),
+    )
+    return cur.fetchone()
+
+
 def create_category(name, icon=""):
     """Append a new category at the end of the display order."""
     cur.execute("SELECT COALESCE(MAX(sort_order), 0) FROM categories")
