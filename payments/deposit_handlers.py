@@ -1,13 +1,15 @@
+import html
 import random
 import secrets
 import string
+from datetime import timedelta
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 from database.db import cur, conn, get_balance
 from keyboards.menus import deposit_menu, deposit_invoice_menu
 from utils.texts import deposit_text
 from utils.ui import edit_or_send
-from utils.timezone import now_text
+from utils.timezone import now, now_text
 from utils.states import user_state
 from config import (
     USDT_BEP20_ADDRESS,
@@ -244,7 +246,7 @@ def _invoice_text_for(method, amount, unique_amount, invoice_id, note_code=None)
 
 
 def _invoice_menu_for(method, invoice_id):
-    return deposit_invoice_menu(invoice_id)
+    return deposit_invoice_menu(invoice_id, method)
 
 
 async def create_deposit_invoice(q, uid, method, amount):
@@ -321,3 +323,106 @@ async def handle_deposit_amount(update, uid, text):
         user_state.pop(uid, None)
 
     return True
+
+
+async def handle_copy_invoice(q, uid, data):
+    """Copy buttons on deposit / direct-checkout invoices.
+
+    Telegram inline buttons cannot write arbitrary text to the clipboard, so
+    the reliable UX is: send the requested value alone in a <code> block
+    (native tap-to-copy) with a dismiss button. Every value is read FRESH from
+    the invoice row + payment config, so the exact address / amount / caption
+    of THAT invoice is shown -- nothing is hardcoded, and the payable amount
+    is never altered.
+    """
+    try:
+        await q.answer()
+    except Exception:
+        pass
+
+    parts = str(data or "").split("_")
+    if len(parts) != 3:
+        return
+    try:
+        invoice_id = int(parts[1])
+    except Exception:
+        return
+    field = parts[2]
+
+    cur.execute(
+        "SELECT user_id, amount, unique_amount, method, note_code, status, created FROM deposits WHERE id=?",
+        (invoice_id,),
+    )
+    row = cur.fetchone()
+
+    # Ownership: one user may never read another user's invoice details.
+    if not row or int(row[0]) != int(uid):
+        try:
+            await q.answer("❌ Invoice not found.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    _uid, amount, unique_amount, method, note_code, status, created = row
+
+    if status != "pending":
+        try:
+            await q.answer("⚠️ This invoice is no longer active.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    # Expired invoices cannot be paid -- copying payment data would mislead.
+    try:
+        cutoff = (now() - timedelta(hours=DEPOSIT_EXPIRE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+        if str(created)[:19] < cutoff:
+            try:
+                await q.answer("⚠️ This invoice has expired. Please create a new one.", show_alert=True)
+            except Exception:
+                pass
+            return
+    except Exception:
+        pass
+
+    method = str(method or "bep20")
+    title = None
+    value = None
+    hint = "Tap the text above to copy it."
+
+    if field == "addr" and method in ("bep20", "trc20"):
+        address = USDT_BEP20_ADDRESS if method == "bep20" else USDT_TRC20_ADDRESS
+        network = "BEP20 (BNB Smart Chain)" if method == "bep20" else "TRC20 (Tron)"
+        title = f"🏦 <b>Deposit Address — {network}</b>"
+        value = address
+    elif field == "amt" and method in ("bep20", "trc20"):
+        # Exact invoice amount at full precision (only trailing zeros trimmed,
+        # which never changes the numeric value).
+        amt = f"{float(unique_amount):.6f}".rstrip("0").rstrip(".")
+        title = "💰 <b>Exact Amount (USDT)</b>"
+        value = amt
+        hint = "Tap the amount above to copy it. Send <b>exactly</b> this amount."
+    elif field == "payid" and method == "binance":
+        title = "🟡 <b>Binance ID (Pay ID)</b>"
+        value = str(BINANCE_PAY_ID)
+    elif field == "note" and method == "binance":
+        title = "📝 <b>Transfer Caption / Note Code</b>"
+        value = str(note_code or "")
+        hint = "Tap to copy, then paste it into the <b>Note / Remark</b> field in Binance Pay."
+
+    if not value:
+        try:
+            await q.answer("❌ Not available for this invoice.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    try:
+        await q.answer("📋 Tap to copy below 👇")
+    except Exception:
+        pass
+
+    await q.message.reply_text(
+        f"{title}\n\n<code>{html.escape(str(value), quote=False)}</code>\n\n<i>{hint}</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Dismiss", callback_data="copymsg_dismiss")]]),
+    )
