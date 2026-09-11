@@ -1,14 +1,20 @@
 """Run from the project root (where bot.py is):  python3 verify_patch.py
-Verifies all Issue-4 patch files are fully and correctly uploaded."""
+Verifies all category-patch files (v2) are fully and correctly uploaded."""
 import ast, sys
 
 CHECKS = {
     "database/db.py": ["get_categories", "create_category", "assign_product_category",
-                       "get_category_products", "move_category", "delete_category"],
+                       "get_category_products", "move_category", "delete_category",
+                       "set_category_icon", "set_category_sort"],
     "products/product_handlers.py": ["show_shop", "show_category", "_product_button_rows"],
     "handlers/user_handlers.py": ["start", "admin", "buttons", "message_handler",
                                   "photo_handler", "document_handler"],
     "web_admin/app.py": ["api_categories", "api_category_create", "api_category_move"],
+}
+TEXT_CHECKS = {
+    "products/product_handlers.py": ["SHOP_CATEGORY_PAGE_SIZE", "SHOP_PRODUCT_PAGE_SIZE"],
+    "handlers/user_handlers.py": ["shopcat_", "shopcats_"],
+    "web_admin/app.py": ["set_category_icon"],
 }
 
 ok = True
@@ -18,11 +24,9 @@ for path, names in CHECKS.items():
         tree = ast.parse(src)
         found = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
         missing = [n for n in names if n not in found]
-        if path == "handlers/user_handlers.py" and "shopcat_" not in src:
-            missing.append("shopcat_ route")
+        missing += [t for t in TEXT_CHECKS.get(path, []) if t not in src]
         if missing:
-            ok = False
-            print(f"STALE/INCOMPLETE  {path}  (missing: {', '.join(missing)})")
+            ok = False; print(f"STALE/INCOMPLETE  {path}  (missing: {', '.join(missing)})")
         else:
             print(f"OK   {path}  ({len(src.splitlines())} lines)")
     except FileNotFoundError:
@@ -33,7 +37,7 @@ for path, names in CHECKS.items():
 js = "web_admin/static/js/app.js"
 try:
     src = open(js, encoding="utf-8").read()
-    missing = [n for n in ("manageCategories", "createCategory", "productCatFilter") if n not in src]
+    missing = [n for n in ("manageCategories", "createCategory", "productCatFilter", "cat_icon_") if n not in src]
     if missing:
         ok = False; print(f"STALE  {js}  (missing: {', '.join(missing)})")
     else:
