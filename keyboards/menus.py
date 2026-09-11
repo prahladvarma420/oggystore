@@ -109,6 +109,7 @@ def admin_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Smart Dashboard", callback_data="admin_smart_dashboard")],
         [InlineKeyboardButton("📦 Products & Stock", callback_data="admin_section_products")],
+        [InlineKeyboardButton("📂 Categories", callback_data="admin_categories")],
         [InlineKeyboardButton("🛒 Orders & Users", callback_data="admin_section_orders_users")],
         [InlineKeyboardButton("📢 Marketing & Growth", callback_data="admin_section_marketing")],
         [InlineKeyboardButton("🛡 Security & System", callback_data="admin_section_system")],
