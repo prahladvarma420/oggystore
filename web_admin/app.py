@@ -1080,12 +1080,76 @@ def product_row(p):
 @login_required
 def api_products():
     search = (request.args.get("search") or "").strip()
+    base = ("SELECT p.*, c.name AS category_name FROM products p "
+            "LEFT JOIN categories c ON c.id = p.category_id")
     if search:
-        rows = q("SELECT * FROM products WHERE name LIKE ? ORDER BY id DESC",
+        rows = q(base + " WHERE p.name LIKE ? ORDER BY p.id DESC",
                  ("%" + search + "%",))
     else:
-        rows = q("SELECT * FROM products ORDER BY id DESC")
+        rows = q(base + " ORDER BY p.id DESC")
     return jsonify({"ok": True, "products": [product_row(p) for p in rows]})
+
+
+# ---------------- Product categories (same data the bot shop uses) ----------------
+
+@app.route("/api/categories")
+@login_required
+def api_categories():
+    rows = q(
+        "SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id) AS product_count "
+        "FROM categories c ORDER BY c.sort_order ASC, c.id ASC"
+    )
+    return jsonify({"ok": True, "categories": rows})
+
+
+@app.route("/api/categories/create", methods=["POST"])
+@login_required
+def api_category_create():
+    d = request.get_json(force=True)
+    name = (d.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "Name required"}), 400
+    cid = botdb.create_category(name)
+    log_action("create_category", "#{} {}".format(cid, name))
+    return jsonify({"ok": True, "id": cid})
+
+
+@app.route("/api/categories/<int:cid>/update", methods=["POST"])
+@login_required
+def api_category_update(cid):
+    d = request.get_json(force=True)
+    if not botdb.get_category(cid):
+        return jsonify({"ok": False, "error": "Category not found"}), 404
+    if "name" in d and d["name"] is not None:
+        name = str(d["name"]).strip()
+        if not name:
+            return jsonify({"ok": False, "error": "Name required"}), 400
+        botdb.rename_category(cid, name)
+    if "active" in d and d["active"] is not None:
+        botdb.set_category_active(cid, 1 if bool(d["active"]) else 0)
+    log_action("update_category", "#{}".format(cid))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/categories/<int:cid>/delete", methods=["POST"])
+@login_required
+def api_category_delete(cid):
+    if not botdb.get_category(cid):
+        return jsonify({"ok": False, "error": "Category not found"}), 404
+    # Products are NOT deleted: they fall back to Uncategorized (NULL) and
+    # stay visible in the bot shop under "Other".
+    botdb.delete_category(cid)
+    log_action("delete_category", "#{}".format(cid))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/categories/<int:cid>/move", methods=["POST"])
+@login_required
+def api_category_move(cid):
+    d = request.get_json(force=True)
+    direction = "up" if str(d.get("direction", "")).lower() == "up" else "down"
+    botdb.move_category(cid, direction)
+    return jsonify({"ok": True})
 
 
 def _broadcast_to_all(msg, pid=None, button_text=None, button_callback=None):
@@ -1218,6 +1282,14 @@ def api_product_create():
          int(d.get("max_per_order", 1) or 1),
          float(d.get("cost", 0) or 0)),
     )
+    # Optional category assignment (null/0/"" = Uncategorized)
+    try:
+        cat_raw = d.get("category_id")
+        if cat_raw not in (None, "", 0, "0") and botdb.get_category(int(cat_raw)):
+            ex("UPDATE products SET category_id=? WHERE id=?", (int(cat_raw), pid))
+    except Exception:
+        pass
+
     # Optional initial stock codes
     codes = (d.get("stock_codes") or "").strip()
     added = 0
@@ -1271,6 +1343,21 @@ def api_product_update(pid):
                         )
         except Exception:
             pass
+    # Category assignment: null/0/"" clears it (product becomes Uncategorized).
+    if "category_id" in d:
+        cat_raw = d.get("category_id")
+        if cat_raw in (None, "", 0, "0"):
+            fields.append("category_id=?")
+            vals.append(None)
+        else:
+            try:
+                cat_id = int(cat_raw)
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "Invalid category"}), 400
+            if not botdb.get_category(cat_id):
+                return jsonify({"ok": False, "error": "Unknown category"}), 400
+            fields.append("category_id=?")
+            vals.append(cat_id)
     allowed = {"name": str, "price": float, "delivery": str, "active": int,
                "featured": int, "description": str, "validity": str,
                "warranty": str, "rules": str, "redeem_link": str,
