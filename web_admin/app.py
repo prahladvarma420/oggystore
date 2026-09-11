@@ -1590,23 +1590,92 @@ def api_tier_delete(pid):
 
 
 # ================================================================= API: ORDERS
+_ORDER_METHOD_LABELS = {"bep20": "USDT BEP20", "trc20": "USDT TRC20", "binance": "Binance Pay", "wallet": "Wallet"}
+
+
+def _order_method_label(value, product_name=None):
+    """Payment method label for the orders API. New orders store the label in
+    orders.payment_method; legacy rows fall back to the funding checkout
+    deposit (resolved in SQL), then to Wallet."""
+    v = str(value or "").strip()
+    label = _ORDER_METHOD_LABELS.get(v.lower(), v) if v else "Wallet"
+    if label == "Wallet" and str(product_name or "").endswith("(bundle)"):
+        return "Wallet (Bundle)"
+    return label
+
+
 @app.route("/api/orders")
 @login_required
 def api_orders():
-    search = (request.args.get("search") or "").strip()
-    limit = int(request.args.get("limit", 100))
-    base = ("SELECT o.*, u.first_name, u.username FROM orders o "
-            "LEFT JOIN users u ON o.user_id=u.user_id ")
+    args = request.args
+    order_id = (args.get("order_id") or "").strip()
+    user_id = (args.get("user_id") or "").strip()
+    username = (args.get("username") or "").strip().lstrip("@")
+    date_from = (args.get("from") or "").strip()
+    date_to = (args.get("to") or "").strip()
+    search = (args.get("search") or "").strip()  # legacy free-text box keeps working
+    try:
+        page = max(1, int(args.get("page", 1) or 1))
+        per_page = min(100, max(5, int(args.get("per_page", 25) or 25)))
+    except (TypeError, ValueError):
+        page, per_page = 1, 25
+
+    # All filters are parameterized; only the requested page is ever read.
+    where = []
+    params = []
+    if order_id.isdigit():
+        where.append("o.id=?")
+        params.append(int(order_id))
+    if user_id.isdigit():
+        where.append("o.user_id=?")
+        params.append(int(user_id))
+    if username:
+        where.append("LOWER(u.username)=LOWER(?)")
+        params.append(username)
     if search:
-        rows = q(base + "WHERE o.product_name LIKE ? OR CAST(o.user_id AS TEXT) LIKE ? "
-                 "OR CAST(o.id AS TEXT)=? ORDER BY o.id DESC LIMIT ?",
-                 ("%" + search + "%", "%" + search + "%", search, limit))
-    else:
-        rows = q(base + "ORDER BY o.id DESC LIMIT ?", (limit,))
+        where.append("(o.product_name LIKE ? OR CAST(o.user_id AS TEXT) LIKE ? OR CAST(o.id AS TEXT)=?)")
+        params.extend(["%" + search + "%", "%" + search + "%", search])
+    for value, op in ((date_from, ">="), (date_to, "<=")):
+        if value:
+            if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                return jsonify({"ok": False, "error": "dates must be YYYY-MM-DD"}), 400
+            where.append("o.created {} ?".format(op))
+            params.append(value + (" 00:00:00" if op == ">=" else " 23:59:59"))
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+
+    total_row = q("SELECT COUNT(*) AS c FROM orders o LEFT JOIN users u ON o.user_id=u.user_id" + where_sql,
+                  params, one=True)
+    total = int(total_row["c"] if total_row else 0)
+
+    rows = q(
+        "SELECT o.*, u.first_name, u.username, "
+        "COALESCE(o.payment_method, (SELECT d2.method FROM deposits d2 "
+        "WHERE d2.user_id=o.user_id AND d2.checkout_product_id=o.product_id AND d2.status='paid' "
+        "ORDER BY d2.id DESC LIMIT 1), 'wallet') AS method "
+        "FROM orders o LEFT JOIN users u ON o.user_id=u.user_id" + where_sql +
+        " ORDER BY o.id DESC LIMIT ? OFFSET ?",
+        (*params, per_page, (page - 1) * per_page))
+
+    # Warranty status for just this page (one grouped query -- no N+1).
+    status_map = {}
+    ids = [int(r["id"]) for r in rows]
+    if ids:
+        ph = ",".join("?" for _ in ids)
+        for srow in q("SELECT order_id, status FROM replacements WHERE order_id IN ({}) ORDER BY id DESC".format(ph), ids):
+            status_map.setdefault(int(srow["order_id"]), srow["status"])
+
     for r in rows:
         if r.get("delivery") is not None:
             r["delivery"] = decrypt_text(r["delivery"])
-    return jsonify({"ok": True, "orders": rows})
+        m = _re.search(r"\s+x(\d+)$", str(r.get("product_name") or ""))
+        r["quantity"] = int(m.group(1)) if m else 1
+        r["method_label"] = _order_method_label(r.pop("method", None), r.get("product_name"))
+        st = status_map.get(int(r["id"]))
+        r["status_label"] = ("\U0001f6e1 Replaced" if st in ("approved", "auto")
+                             else "\U0001f6e1 Warranty review" if st == "pending"
+                             else "\u2705 Completed")
+    pages = max(1, (total + per_page - 1) // per_page)
+    return jsonify({"ok": True, "orders": rows, "total": total, "page": page, "pages": pages, "per_page": per_page})
 
 
 @app.route("/api/orders/<int:oid>/refund", methods=["POST"])
@@ -1676,7 +1745,17 @@ def api_user_detail(uid):
     user = q("SELECT * FROM users WHERE user_id=?", (uid,), one=True)
     orders = q("SELECT * FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 50", (uid,))
     deposits = q("SELECT * FROM deposits WHERE user_id=? ORDER BY id DESC LIMIT 50", (uid,))
-    return jsonify({"ok": True, "user": user, "orders": orders, "deposits": deposits})
+    stats = None
+    if user:
+        o = q("SELECT COUNT(*) AS c, COALESCE(SUM(price),0) AS s FROM orders WHERE user_id=?", (uid,), one=True) or {}
+        d = q("SELECT COUNT(*) AS c, COALESCE(SUM(amount),0) AS s FROM deposits WHERE user_id=? AND status='paid'", (uid,), one=True) or {}
+        stats = {
+            "total_orders": int(o.get("c") or 0),
+            "total_spent": float(o.get("s") or 0),
+            "deposits_count": int(d.get("c") or 0),
+            "total_deposited": float(d.get("s") or 0),
+        }
+    return jsonify({"ok": True, "user": user, "orders": orders, "deposits": deposits, "stats": stats})
 
 
 @app.route("/api/users/<int:uid>/balance", methods=["POST"])
