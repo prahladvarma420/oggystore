@@ -16,6 +16,8 @@ from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_or
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
 from utils.premium_emoji import premium_html, strip_premium, first_premium_id, sanitize_premium_name, button_premium, premium_safe
+from database.db import search_orders, count_search_orders, get_order_admin_detail, get_order_payment_method, get_order_status_label, find_user_by_id, find_users_by_username, get_user_overview, get_user_deposits_page, payment_method_label
+import math
 
 
 def _admin_name(value):
@@ -27,7 +29,7 @@ def _admin_name(value):
     return premium_safe(str(value))
 from keyboards.menus import MAIN_MENU_BUTTONS
 from utils.states import user_state
-from utils.timezone import now, now_text, today_prefix, month_prefix
+from utils.timezone import now, now_text, today_prefix, month_prefix, display_time
 
 admin_temp_data = {}
 
@@ -644,31 +646,40 @@ def admin_order_detail_keyboard(order_id: int, user_id: int):
     ])
 
 def get_order_detail_text(order_id: int):
-    cur.execute("SELECT id, user_id, product_name, price, delivery, created FROM orders WHERE id=?", (order_id,))
-    order = cur.fetchone()
+    order = get_order_admin_detail(order_id)
     if not order:
         return None, None, None
-    oid, user_id, product_name, price, delivery, created = order
+    oid, user_id, product_name, price, delivery, created, method_stored, product_id, username, first_name = order
     delivery = decrypt_text(delivery)
-    cur.execute("SELECT first_name, username, balance, blocked, joined FROM users WHERE user_id=?", (user_id,))
+    cur.execute("SELECT balance, blocked FROM users WHERE user_id=?", (user_id,))
     u = cur.fetchone()
     if u:
-        first_name, username, balance, blocked, joined = u
+        balance, blocked = u
         uname = f"@{username}" if username and username != "No username" else "No username"
         status = "🚫 Blocked" if blocked else "✅ Active"
     else:
-        first_name, uname, balance, status, joined = "Unknown", "Unknown", 0, "Unknown", "Unknown"
+        first_name = first_name or "Unknown"
+        uname, balance, status = "No username", 0, "Unknown"
     qty = 1
     if " x" in str(product_name):
         try: qty = int(str(product_name).split(" x")[-1])
         except Exception: qty = 1
+    pay_method = get_order_payment_method(oid, user_id, product_id, method_stored)
+    order_status = get_order_status_label(oid)
+    # Telegram messages cap at 4096 chars: never let a huge bulk delivery
+    # break the detail view. Admins can still resend/download the full text.
+    delivery_block = str(delivery or "")
+    if len(delivery_block) > 3000:
+        delivery_block = delivery_block[:3000] + "\n… (truncated here -- use 🔄 Resend Delivery for the full text)"
     text = f"""🧾 <b>Order Detail</b>
 
 🆔 <b>Order ID:</b> <code>#{oid}</code>
 📦 <b>Product:</b> {_admin_name(product_name)}
 🔢 <b>Quantity:</b> <code>{qty}</code>
-💰 <b>Paid:</b> <code>${price:.2f}</code>
-🕒 <b>Date:</b> <code>{created}</code>
+💰 <b>Amount:</b> <code>${price:.2f}</code>
+💳 <b>Payment Method:</b> {pay_method}
+🚦 <b>Status:</b> {order_status}
+🕒 <b>Date:</b> <code>{display_time(created) or created}</code>
 
 ━━━━━━━━━━━━━━
 👤 <b>User</b>
@@ -677,13 +688,230 @@ def get_order_detail_text(order_id: int):
 👤 <b>Name:</b> {first_name or 'User'}
 🔗 <b>Username:</b> {uname}
 💼 <b>Balance:</b> <code>${float(balance or 0):.2f}</code>
-🚦 <b>Status:</b> {status}
+🚦 <b>Account:</b> {status}
 
 ━━━━━━━━━━━━━━
 🔑 <b>Delivered Code/Account</b>
 
-<code>{delivery}</code>"""
+<code>{delivery_block}</code>"""
     return text, user_id, delivery
+
+# ===================== Admin search: orders & users =====================
+
+ORDER_SEARCH_PAGE_SIZE = 5
+ADMIN_USER_PAGE_SIZE = 5
+
+
+class _MsgQuery:
+    """Adapt a message context to the query-like object edit_or_send expects
+    (search results first arrive via a typed message, not a button tap)."""
+    def __init__(self, message, from_user):
+        self.message = message
+        self.from_user = from_user
+        self.data = ""
+
+    async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
+        await self.message.reply_text(
+            text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+            disable_web_page_preview=disable_web_page_preview,
+        )
+
+
+def admin_order_search_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🧾 By Order ID", callback_data="admin_osearch_id"),
+         InlineKeyboardButton("👤 By User ID", callback_data="admin_osearch_uid")],
+        [InlineKeyboardButton("🔖 By Username", callback_data="admin_osearch_user"),
+         InlineKeyboardButton("📅 By Date / Range", callback_data="admin_osearch_date")],
+        [InlineKeyboardButton("⬅️ Orders & Users", callback_data="admin_section_orders_users")],
+    ])
+
+
+def _osearch_prompt_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_search_orders")]])
+
+
+def _osearch_kwargs(mode, value):
+    """Search context (mode, value) -> (search_orders kwargs, human label)."""
+    if mode == "uid":
+        return {"user_id": int(value)}, f"user ID <code>{value}</code>"
+    if mode == "user":
+        return {"username": value}, f"username <code>@{html.escape(str(value), quote=False)}</code>"
+    if mode == "date":
+        date_from, date_to = value
+        label = f"📅 <code>{date_from}</code>" + (f" → <code>{date_to}</code>" if date_to != date_from else "")
+        return {"date_from": date_from, "date_to": date_to}, label
+    return {}, "all orders"
+
+
+async def _show_order_search_results(q, uid, ctx, page):
+    """Render one page of order search results. Only ORDER_SEARCH_PAGE_SIZE
+    rows are ever queried -- the full orders table is never loaded."""
+    mode, value = ctx
+    kwargs, label = _osearch_kwargs(mode, value)
+    total = count_search_orders(**kwargs)
+    pages = max(1, math.ceil(total / ORDER_SEARCH_PAGE_SIZE))
+    page = max(0, min(int(page), pages - 1))
+    rows = search_orders(limit=ORDER_SEARCH_PAGE_SIZE, offset=page * ORDER_SEARCH_PAGE_SIZE, **kwargs)
+
+    text = (
+        f"🔎 <b>Order Search</b> — {label}\n\n"
+        f"Found: <code>{total}</code> order(s) | Page <code>{page + 1}/{pages}</code>\n\n"
+    )
+    kb = []
+    if not rows:
+        text += "No orders found."
+    for oid, user_id, product_name, price, created, method_stored, product_id, username, first_name in rows:
+        uname = f"@{username}" if username and username != "No username" else "No username"
+        text += (
+            f"🧾 <b>#{oid}</b> — {_admin_name(product_name)}\n"
+            f"👤 <code>{user_id}</code> • {uname} • 💰 <code>${float(price):.2f}</code>\n"
+            f"🕒 <code>{display_time(created) or created}</code>\n\n"
+        )
+        kb.append([InlineKeyboardButton(f"🧾 Order #{oid} details", callback_data=f"admin_order_detail_{oid}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"admin_osearch_page_{page - 1}"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton("▶️ Next", callback_data=f"admin_osearch_page_{page + 1}"))
+    if nav:
+        kb.append(nav)
+    kb.append([InlineKeyboardButton("🔎 New Search", callback_data="admin_search_orders")])
+    kb.append([InlineKeyboardButton("⬅️ Orders & Users", callback_data="admin_section_orders_users")])
+
+    await edit_or_send(q, text, InlineKeyboardMarkup(kb))
+
+
+def admin_user_card_keyboard(target):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📦 Orders", callback_data=f"admin_usr_orders_{target}_0"),
+         InlineKeyboardButton("💰 Deposits", callback_data=f"admin_usr_deps_{target}_0")],
+        [InlineKeyboardButton("📊 Statistics", callback_data=f"admin_usr_stats_{target}")],
+        [InlineKeyboardButton("🔎 New Search", callback_data="admin_search_user"),
+         InlineKeyboardButton("⬅️ Orders & Users", callback_data="admin_section_orders_users")],
+    ])
+
+
+def _admin_user_card_text(overview):
+    user_id, first_name, username, balance, blocked, joined = overview["user"][:6]
+    uname = f"@{username}" if username and username != "No username" else "No username"
+    status = "🚫 Blocked" if blocked else "✅ Active"
+    return f"""👤 <b>User Information</b>
+
+🆔 <b>User ID:</b> <code>{user_id}</code>
+🔗 <b>Username:</b> {uname}
+👤 <b>Name:</b> {html.escape(str(first_name or "User"), quote=False)}
+💼 <b>Balance:</b> <code>{float(balance or 0):.2f} USDT</code>
+🚦 <b>Status:</b> {status}
+🕒 <b>Joined:</b> <code>{display_time(joined) or joined}</code>
+
+🛒 <b>Total Orders:</b> <code>{overview["orders_count"]}</code>
+💸 <b>Total Spent:</b> <code>${overview["total_spent"]:.2f}</code>
+📥 <b>Total Deposited:</b> <code>{overview["total_deposited"]:.2f} USDT</code> ({overview["deposits_count"]} paid)"""
+
+
+async def _show_admin_user_card(q, target):
+    overview = get_user_overview(target)
+    if not overview:
+        await edit_or_send(q, f"❌ <b>No user found with ID</b> <code>{target}</code>.", admin_menu())
+        return
+    await edit_or_send(q, _admin_user_card_text(overview), admin_user_card_keyboard(target))
+
+
+async def _show_admin_user_orders(q, target, page):
+    total = count_search_orders(user_id=target)
+    pages = max(1, math.ceil(total / ADMIN_USER_PAGE_SIZE))
+    page = max(0, min(int(page), pages - 1))
+    rows = search_orders(user_id=target, limit=ADMIN_USER_PAGE_SIZE, offset=page * ADMIN_USER_PAGE_SIZE)
+
+    text = (
+        f"📦 <b>User Orders</b>\n\n"
+        f"🆔 User: <code>{target}</code>\n"
+        f"Total: <code>{total}</code> order(s) | Page <code>{page + 1}/{pages}</code>\n\n"
+    )
+    kb = []
+    if not rows:
+        text += "No orders found for this user."
+    for oid, user_id, product_name, price, created, method_stored, product_id, username, first_name in rows:
+        text += (
+            f"🧾 <b>#{oid}</b> — {_admin_name(product_name)} — <code>${float(price):.2f}</code>\n"
+            f"🕒 <code>{display_time(created) or created}</code>\n\n"
+        )
+        kb.append([InlineKeyboardButton(f"🧾 Order #{oid} details", callback_data=f"admin_order_detail_{oid}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"admin_usr_orders_{target}_{page - 1}"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton("▶️ Next", callback_data=f"admin_usr_orders_{target}_{page + 1}"))
+    if nav:
+        kb.append(nav)
+    kb.append([InlineKeyboardButton("⬅️ Back to User", callback_data=f"admin_usrcard_{target}")])
+    await edit_or_send(q, text, InlineKeyboardMarkup(kb))
+
+
+async def _show_admin_user_deposits(q, target, page):
+    rows, total = get_user_deposits_page(target, ADMIN_USER_PAGE_SIZE, max(0, int(page)) * ADMIN_USER_PAGE_SIZE)
+    pages = max(1, math.ceil(total / ADMIN_USER_PAGE_SIZE))
+    if int(page) > pages - 1:
+        page = pages - 1
+        rows, total = get_user_deposits_page(target, ADMIN_USER_PAGE_SIZE, page * ADMIN_USER_PAGE_SIZE)
+    page = max(0, int(page))
+
+    text = (
+        f"💰 <b>User Deposits</b>\n\n"
+        f"🆔 User: <code>{target}</code>\n"
+        f"Total: <code>{total}</code> deposit(s) | Page <code>{page + 1}/{pages}</code>\n\n"
+    )
+    if not rows:
+        text += "No deposits found for this user."
+    for dep_id, amount, method, status, created in rows:
+        icon = "✅" if status == "paid" else "🟠" if status == "pending" else "🚫"
+        mlabel = payment_method_label(method) if method else "USDT BEP20"
+        text += (
+            f"{icon} <b>#{dep_id}</b> — <code>{float(amount):.2f} USDT</code> — {mlabel}\n"
+            f"🕒 <code>{display_time(created) or created}</code>\n\n"
+        )
+    kb = []
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"admin_usr_deps_{target}_{page - 1}"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton("▶️ Next", callback_data=f"admin_usr_deps_{target}_{page + 1}"))
+    if nav:
+        kb.append(nav)
+    kb.append([InlineKeyboardButton("⬅️ Back to User", callback_data=f"admin_usrcard_{target}")])
+    await edit_or_send(q, text, InlineKeyboardMarkup(kb))
+
+
+async def _show_admin_user_stats(q, target):
+    overview = get_user_overview(target)
+    if not overview:
+        await edit_or_send(q, "❌ <b>User not found.</b>", admin_menu())
+        return
+    cur.execute("SELECT MIN(created), MAX(created) FROM orders WHERE user_id=?", (target,))
+    row = cur.fetchone() or (None, None)
+    first_order, last_order = row
+    avg = overview["total_spent"] / overview["orders_count"] if overview["orders_count"] else 0.0
+    text = f"""📊 <b>User Statistics</b>
+
+🆔 <b>User ID:</b> <code>{target}</code>
+
+🛒 <b>Total Orders:</b> <code>{overview["orders_count"]}</code>
+💸 <b>Total Spent:</b> <code>${overview["total_spent"]:.2f}</code>
+📈 <b>Average Order:</b> <code>${avg:.2f}</code>
+📥 <b>Total Deposited:</b> <code>${overview["total_deposited"]:.2f}</code> ({overview["deposits_count"]} paid)
+🎁 <b>Referral Earned:</b> <code>{overview["referral_earnings"]:.6f} USDT</code>
+⏳ <b>Referral Pending:</b> <code>{overview["referral_pending"]:.6f} USDT</code>
+⭐ <b>Loyalty Points:</b> <code>{overview["loyalty_points"]:g}</code>
+🏆 <b>VIP Rank:</b> {overview["vip_rank"]}
+🕒 <b>First Order:</b> <code>{display_time(first_order) or "—"}</code>
+🕒 <b>Last Order:</b> <code>{display_time(last_order) or "—"}</code>"""
+    kb = [[InlineKeyboardButton("⬅️ Back to User", callback_data=f"admin_usrcard_{target}")]]
+    await edit_or_send(q, text, InlineKeyboardMarkup(kb))
+
 
 def price_offers_keyboard(product_id: int):
     return InlineKeyboardMarkup([
@@ -1600,18 +1828,12 @@ or:
         return True
 
     if data == "admin_search_orders":
-        user_state[uid] = "admin_search_orders"
         await edit_or_send(
             q,
             """🔎 <b>Search Orders</b>
 
-Send order ID, user ID, or product keyword.
-
-Examples:
-<code>15</code>
-<code>7499348138</code>
-<code>Netflix</code>""",
-            admin_menu()
+Choose what to search by:""",
+            admin_order_search_menu()
         )
         return True
 
@@ -1641,11 +1863,13 @@ Examples:
             q,
             """🔎 <b>Search User</b>
 
-Send Telegram user ID, username, or name.
+Send a Telegram user ID (exact) or a username.
 
 Examples:
 <code>7499348138</code>
-<code>Oggy</code>""",
+<code>@durov</code>
+
+Users without a username can only be found by their Telegram user ID.""",
             admin_menu()
         )
         return True
@@ -2310,26 +2534,9 @@ Send:
 
     if data.startswith("admin_order_user_"):
         target_id = int(data.split("_")[-1])
-        cur.execute("SELECT user_id, first_name, username, balance, blocked, joined FROM users WHERE user_id=?", (target_id,))
-        u = cur.fetchone()
-        if not u:
-            await edit_or_send(q, "❌ <b>User not found.</b>", admin_orders_list_keyboard())
-            return True
-        user_id, first_name, username, balance, blocked, joined = u
-        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (user_id,))
-        order_count, spent = cur.fetchone()
-        uname = f"@{username}" if username and username != "No username" else "No username"
-        status = "🚫 Blocked" if blocked else "✅ Active"
-        await edit_or_send(q, f"""👤 <b>User Detail</b>
-
-<b>ID:</b> <code>{user_id}</code>
-👤 <b>Name:</b> {first_name or 'User'}
-🔗 <b>Username:</b> {uname}
-💼 <b>Balance:</b> <code>${float(balance or 0):.2f}</code>
-🛒 <b>Orders:</b> <code>{order_count}</code>
-💰 <b>Total Spent:</b> <code>${float(spent or 0):.2f}</code>
-🚦 <b>Status:</b> {status}
-🕒 <b>Joined:</b> <code>{joined}</code>""", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back To Orders", callback_data="admin_orders")]]))
+        # One canonical user view: the searchable user card (with Orders /
+        # Deposits / Statistics buttons) instead of a static text dump.
+        await _show_admin_user_card(q, target_id)
         return True
 
     if data.startswith("admin_order_delete_"):
@@ -2429,16 +2636,12 @@ Example:
         return True
 
     if data == "admin_search_order_menu":
-        user_state[uid] = "admin_search_order_query"
         await edit_or_send(
             q,
             """🔎 <b>Search Orders</b>
 
-Send any one:
-• Order ID: <code>25</code>
-• User ID: <code>7499348138</code>
-• Product keyword: <code>LinkedIn</code>""",
-            admin_orders_users_menu()
+Choose what to search by:""",
+            admin_order_search_menu()
         )
         return True
 
@@ -3499,6 +3702,70 @@ Use carefully. This will be sent to every saved user.""",
         )
         return True
 
+    # ---------- Order search (paginated) ----------
+    if data in ("admin_osearch_id", "admin_osearch_uid", "admin_osearch_user", "admin_osearch_date"):
+        prompts = {
+            "admin_osearch_id": ("admin_osearch:id", "🧾 <b>Search Order by ID</b>\n\nSend the order ID.\n\nExample: <code>123</code>"),
+            "admin_osearch_uid": ("admin_osearch:uid", "👤 <b>Search Orders by User ID</b>\n\nSend the buyer's Telegram user ID.\n\nExample: <code>7499348138</code>"),
+            "admin_osearch_user": ("admin_osearch:user", "🔖 <b>Search Orders by Username</b>\n\nSend the username (with or without @).\n\nExample: <code>@durov</code>"),
+            "admin_osearch_date": ("admin_osearch:date", "📅 <b>Search Orders by Date</b>\n\nSend a single date or a date range:\n\n<code>2026-09-10</code>\n<code>2026-09-01 2026-09-10</code>"),
+        }
+        state_value, prompt = prompts[data]
+        user_state[uid] = state_value
+        await edit_or_send(q, prompt, _osearch_prompt_kb())
+        return True
+
+    if data.startswith("admin_osearch_page_"):
+        try:
+            page = int(data.rsplit("_", 1)[1])
+        except Exception:
+            page = 0
+        ctx = admin_temp_data.get(uid, {}).get("osearch")
+        if not ctx:
+            await edit_or_send(q, "⌛ <b>That search expired.</b>\n\nPlease run it again.", admin_order_search_menu())
+            return True
+        await _show_order_search_results(q, uid, ctx, page)
+        return True
+
+    # ---------- User card + sub-views ----------
+    if data.startswith("admin_usrcard_"):
+        try:
+            target = int(data.rsplit("_", 1)[1])
+        except Exception:
+            await edit_or_send(q, "❌ <b>Invalid user.</b>", admin_menu())
+            return True
+        await _show_admin_user_card(q, target)
+        return True
+
+    if data.startswith("admin_usr_orders_"):
+        try:
+            _parts = data.split("_")
+            target, page = int(_parts[3]), int(_parts[4])
+        except Exception:
+            await edit_or_send(q, "❌ <b>Invalid request.</b>", admin_menu())
+            return True
+        await _show_admin_user_orders(q, target, page)
+        return True
+
+    if data.startswith("admin_usr_deps_"):
+        try:
+            _parts = data.split("_")
+            target, page = int(_parts[3]), int(_parts[4])
+        except Exception:
+            await edit_or_send(q, "❌ <b>Invalid request.</b>", admin_menu())
+            return True
+        await _show_admin_user_deposits(q, target, page)
+        return True
+
+    if data.startswith("admin_usr_stats_"):
+        try:
+            target = int(data.rsplit("_", 1)[1])
+        except Exception:
+            await edit_or_send(q, "❌ <b>Invalid request.</b>", admin_menu())
+            return True
+        await _show_admin_user_stats(q, target)
+        return True
+
     return False
 
 
@@ -3979,51 +4246,83 @@ Code: <code>{code}</code>
             return True
         return True
 
-    if state == "admin_search_order_query" and is_admin(uid):
-        query = text.strip()
-        try:
-            if query.isdigit():
-                qid = int(query)
-                cur.execute("""
-                    SELECT id, user_id, product_name, price, created
-                    FROM orders
-                    WHERE id=? OR user_id=?
-                    ORDER BY id DESC
-                    LIMIT 20
-                """, (qid, qid))
-            else:
-                cur.execute("""
-                    SELECT id, user_id, product_name, price, created
-                    FROM orders
-                    WHERE product_name LIKE ?
-                    ORDER BY id DESC
-                    LIMIT 20
-                """, (f"%{query}%",))
-
-            rows = cur.fetchall()
-            user_state.pop(uid, None)
-
-            if not rows:
-                await update.message.reply_text(
-                    "❌ <b>No orders found.</b>",
-                    reply_markup=admin_orders_users_menu(),
-                    parse_mode="HTML"
-                )
-                return True
-
-            msg = f"🔎 <b>Order Search Results</b>\n\nFound: <code>{len(rows)}</code>\n\nChoose an order:"
+    # ---------- Order search modes (results are paginated via _show_order_search_results) ----------
+    if state == "admin_osearch:id" and is_admin(uid):
+        raw = text.strip().lstrip("#")
+        if not raw.isdigit():
             await update.message.reply_text(
-                msg,
-                reply_markup=order_search_results_keyboard(rows),
-                parse_mode="HTML"
-            )
-
-        except Exception as exc:
-            await update.message.reply_text(
-                f"❌ <b>Search failed.</b>\n\n<code>{exc}</code>",
-                parse_mode="HTML"
+                "❌ <b>Invalid Order ID.</b>\n\nSend digits only. Example: <code>123</code>",
+                parse_mode="HTML",
             )
             return True
+        order_id = int(raw)
+        user_state.pop(uid, None)
+        detail_text, target_user, _delivery = get_order_detail_text(order_id)
+        if not detail_text:
+            await update.message.reply_text(
+                f"❌ <b>Order <code>#{order_id}</code> not found.</b>",
+                reply_markup=admin_order_search_menu(),
+                parse_mode="HTML",
+            )
+            return True
+        await update.message.reply_text(
+            detail_text,
+            reply_markup=admin_order_detail_keyboard(order_id, target_user),
+            parse_mode="HTML",
+        )
+        return True
+
+    if state == "admin_osearch:uid" and is_admin(uid):
+        raw = text.strip()
+        if not raw.isdigit():
+            await update.message.reply_text(
+                "❌ <b>Invalid User ID.</b>\n\nSend digits only. Example: <code>7499348138</code>",
+                parse_mode="HTML",
+            )
+            return True
+        target = int(raw)
+        user_state.pop(uid, None)
+        ctx = ("uid", target)
+        admin_temp_data.setdefault(uid, {})["osearch"] = ctx
+        await _show_order_search_results(_MsgQuery(update.message, update.message.from_user), uid, ctx, 0)
+        return True
+
+    if state == "admin_osearch:user" and is_admin(uid):
+        uname = text.strip().lstrip("@")
+        if not uname:
+            await update.message.reply_text(
+                "❌ Send a username, e.g. <code>@durov</code> or <code>durov</code>.",
+                parse_mode="HTML",
+            )
+            return True
+        user_state.pop(uid, None)
+        ctx = ("user", uname)
+        admin_temp_data.setdefault(uid, {})["osearch"] = ctx
+        await _show_order_search_results(_MsgQuery(update.message, update.message.from_user), uid, ctx, 0)
+        return True
+
+    if state == "admin_osearch:date" and is_admin(uid):
+        parts = text.split()
+        if len(parts) == 1:
+            date_from = date_to = parts[0]
+        elif len(parts) == 2:
+            date_from, date_to = parts
+        else:
+            date_from = date_to = None
+        try:
+            if not date_from:
+                raise ValueError("bad range")
+            count_search_orders(date_from=date_from, date_to=date_to)  # validates format
+        except ValueError:
+            await update.message.reply_text(
+                "❌ <b>Invalid date.</b>\n\nUse <code>YYYY-MM-DD</code> or a range: <code>2026-09-01 2026-09-10</code>",
+                parse_mode="HTML",
+            )
+            return True
+        user_state.pop(uid, None)
+        ctx = ("date", (date_from, date_to))
+        admin_temp_data.setdefault(uid, {})["osearch"] = ctx
+        await _show_order_search_results(_MsgQuery(update.message, update.message.from_user), uid, ctx, 0)
         return True
 
     if state and state.startswith("admin_order_refund_confirm:") and is_admin(uid):
@@ -4767,99 +5066,63 @@ Now send the image/photo.""",
 
         return True
 
-    if state == "admin_search_orders" and is_admin(uid):
-        try:
-            query = text.strip()
-            if query.isdigit():
-                cur.execute("""
-                    SELECT id, user_id, product_name, price, delivery, created
-                    FROM orders
-                    WHERE id=? OR user_id=?
-                    ORDER BY id DESC
-                    LIMIT 30
-                """, (int(query), int(query)))
-            else:
-                cur.execute("""
-                    SELECT id, user_id, product_name, price, delivery, created
-                    FROM orders
-                    WHERE product_name LIKE ?
-                    ORDER BY id DESC
-                    LIMIT 30
-                """, (f"%{query}%",))
-
-            rows = cur.fetchall()
-            msg = f"🔎 <b>Order Search</b> — <code>{query}</code>\n\n"
-
-            if not rows:
-                msg += "No orders found."
-            else:
-                for order_id, user_id, product_name, price, delivery, created in rows:
-                    delivery = decrypt_text(delivery)
-                    msg += (
-                        f"🧾 <b>Order:</b> <code>#{order_id}</code>\n"
-                        f"👤 <b>User:</b> <code>{user_id}</code>\n"
-                        f"📦 <b>Product:</b> {_admin_name(product_name)}\n"
-                        f"💰 <b>Price:</b> <code>{price:.2f} USDT</code>\n"
-                        f"🕒 <code>{created}</code>\n"
-                        f"🔄 Resend: <code>{order_id}</code>\n"
-                        f"💸 Refund: <code>{order_id} REFUND</code>\n\n"
-                    )
-
-            if len(msg) > 3900:
-                msg = msg[:3900] + "\n..."
-
-            await update.message.reply_text(msg, reply_markup=admin_menu(), parse_mode="HTML")
-
-        finally:
-            user_state.pop(uid, None)
-        return True
-
     if state == "admin_search_user" and is_admin(uid):
-        try:
-            query = text.strip().replace("@", "")
-            if query.isdigit():
-                cur.execute("""
-                    SELECT user_id, first_name, username, balance, blocked, joined
-                    FROM users
-                    WHERE user_id=?
-                    LIMIT 20
-                """, (int(query),))
-            else:
-                cur.execute("""
-                    SELECT user_id, first_name, username, balance, blocked, joined
-                    FROM users
-                    WHERE username LIKE ? OR first_name LIKE ?
-                    ORDER BY joined DESC
-                    LIMIT 20
-                """, (f"%{query}%", f"%{query}%"))
-
-            rows = cur.fetchall()
-            msg = f"🔎 <b>User Search</b> — <code>{query}</code>\n\n"
-
-            if not rows:
-                msg += "No users found."
-            else:
-                for user_id, first_name, username, balance, blocked, joined in rows:
-                    cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (user_id,))
-                    order_count, spent = cur.fetchone()
-                    uname = f"@{username}" if username and username != "No username" else "No username"
-                    status = "🚫 Blocked" if blocked else "✅ Active"
-                    msg += (
-                        f"👤 <b>{first_name or 'User'}</b> / {uname}\n"
-                        f"🆔 <code>{user_id}</code>\n"
-                        f"💰 Balance: <code>{balance:.2f} USDT</code>\n"
-                        f"🛒 Orders: <code>{order_count}</code> | Spent: <code>{spent:.2f}</code>\n"
-                        f"🚦 {status}\n"
-                        f"🕒 <code>{joined}</code>\n\n"
-                    )
-
-            if len(msg) > 3900:
-                msg = msg[:3900] + "\n..."
-
-            await update.message.reply_text(msg, reply_markup=admin_menu(), parse_mode="HTML")
-
-        finally:
+        query = text.strip()
+        # Telegram user ID is the canonical identifier: exact, read-only lookup.
+        if query.isdigit():
+            target = int(query)
+            overview = get_user_overview(target)
+            if not overview:
+                await update.message.reply_text(
+                    f"❌ <b>No user found with ID</b> <code>{target}</code>.",
+                    reply_markup=admin_menu(),
+                    parse_mode="HTML",
+                )
+                user_state.pop(uid, None)
+                return True
             user_state.pop(uid, None)
+            await update.message.reply_text(
+                _admin_user_card_text(overview),
+                reply_markup=admin_user_card_keyboard(target),
+                parse_mode="HTML",
+            )
+            return True
+
+        # Username search (exact case-insensitive first, then partial matches).
+        # Users without a username can only be found by their Telegram ID.
+        uname = query.lstrip("@")
+        if not uname:
+            await update.message.reply_text(
+                "❌ Send a Telegram user ID or a username.",
+                parse_mode="HTML",
+            )
+            return True
+        candidates = find_users_by_username(uname)
+        user_state.pop(uid, None)
+        if not candidates:
+            await update.message.reply_text(
+                f"❌ <b>No user found for username</b> <code>@{html.escape(uname, quote=False)}</code>\n\nTip: search by Telegram User ID for an exact match.",
+                reply_markup=admin_menu(),
+                parse_mode="HTML",
+            )
+            return True
+        if len(candidates) == 1:
+            target = candidates[0][0]
+            overview = get_user_overview(target)
+            await update.message.reply_text(
+                _admin_user_card_text(overview),
+                reply_markup=admin_user_card_keyboard(target),
+                parse_mode="HTML",
+            )
+            return True
+        kb = []
+        msg = f"🔎 <b>User Search</b> — <code>@{html.escape(uname, quote=False)}</code>\n\nFound <code>{len(candidates)}</code> users. Choose one:"
+        for user_id, first_name, username, balance, blocked, joined in candidates:
+            label_name = strip_premium(str(first_name or "User"))[:20]
+            label_uname = f"@{username}" if username and username != "No username" else "No username"
+            kb.append([InlineKeyboardButton(f"👤 {label_name} • {label_uname} • {user_id}", callback_data=f"admin_usrcard_{user_id}")])
+        kb.append([InlineKeyboardButton("🔎 New Search", callback_data="admin_search_user")])
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
         return True
 
     if state == "admin_user_orders" and is_admin(uid):
