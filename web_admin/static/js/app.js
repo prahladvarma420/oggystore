@@ -341,7 +341,9 @@ async function manageCategories() {
   const cats = d.categories || [];
   const rows = cats.map((c, i) => `<tr>
     <td>#${c.id}</td>
-    <td><input class="inp" id="cat_name_${c.id}" value="${esc(c.name)}" style="min-width:160px"></td>
+    <td><input class="inp" id="cat_icon_${c.id}" value="${esc(c.icon || "")}" placeholder="📺" style="width:52px;text-align:center"></td>
+    <td><input class="inp" id="cat_name_${c.id}" value="${esc(c.name)}" style="min-width:150px"></td>
+    <td><input class="inp" id="cat_sort_${c.id}" type="number" value="${c.sort_order}" style="width:64px"></td>
     <td>${c.product_count} products</td>
     <td>${c.active ? '<span class="badge on">Active</span>' : '<span class="badge off">Hidden</span>'}</td>
     <td><div class="row-actions">
@@ -353,9 +355,11 @@ async function manageCategories() {
     </div></td></tr>`).join("");
   openModal("🗂 Product Categories", `
     <p class="muted">Categories organize the 🛍 shop menu in the bot (in this order). Products without a category appear under 📦 <b>Other</b>. Deleting a category never deletes products — they move back to Uncategorized.</p>
-    ${cats.length ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Name</th><th>Products</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted">No categories yet — the bot shop shows the classic flat product list until you create one.</p>'}
+    ${cats.length ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Icon</th><th>Name</th><th>Order</th><th>Products</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="muted">No categories yet — the bot shop shows the classic flat product list until you create one.</p>'}
     <div class="toolbar" style="margin-top:14px">
-      <input class="inp" id="new_cat_name" placeholder="New category name (e.g. LinkedIn)" style="min-width:220px">
+      <input class="inp" id="new_cat_icon" placeholder="📺" style="width:56px;text-align:center">
+      <input class="inp" id="new_cat_name" placeholder="New category name (e.g. Streaming)" style="min-width:180px">
+      <input class="inp" id="new_cat_sort" type="number" placeholder="Order" style="width:76px">
       <button class="btn btn-glow" onclick="createCategory()"><span>\u2795 Add Category</span></button>
       <div class="grow"></div>
       <button class="btn btn-ghost" onclick="closeModal()">Close</button>
@@ -364,11 +368,13 @@ async function manageCategories() {
 async function createCategory() {
   const name = val("new_cat_name");
   if (!name) return toast("Name required", "err");
-  const r = await post("/api/categories/create", { name });
+  const body = { name, icon: val("new_cat_icon") };
+  if (val("new_cat_sort")) body.sort_order = parseInt(val("new_cat_sort"));
+  const r = await post("/api/categories/create", body);
   if (r.ok) { toast("Category created"); manageCategories(); render(); } else toast(r.error || "Failed", "err");
 }
 async function saveCategory(id) {
-  const r = await post(`/api/categories/${id}/update`, { name: val("cat_name_" + id) });
+  const r = await post(`/api/categories/${id}/update`, { name: val("cat_name_" + id), icon: val("cat_icon_" + id), sort_order: val("cat_sort_" + id) });
   if (r.ok) { toast("Saved"); manageCategories(); render(); } else toast(r.error || "Failed", "err");
 }
 async function toggleCategory(id, active) {
