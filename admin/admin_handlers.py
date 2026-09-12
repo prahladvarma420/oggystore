@@ -668,7 +668,7 @@ def get_order_detail_text(order_id: int):
     order_status = get_order_status_label(oid)
     # Telegram messages cap at 4096 chars: never let a huge bulk delivery
     # break the detail view. Admins can still resend/download the full text.
-    delivery_block = str(delivery or "")
+    delivery_block = html.escape(str(delivery or ""), quote=False)
     if len(delivery_block) > 3000:
         delivery_block = delivery_block[:3000] + "\n… (truncated here -- use 🔄 Resend Delivery for the full text)"
     text = f"""🧾 <b>Order Detail</b>
@@ -685,12 +685,12 @@ def get_order_detail_text(order_id: int):
 👤 <b>User</b>
 
 🆔 <code>{user_id}</code>
-👤 <b>Name:</b> {first_name or 'User'}
+👤 <b>Name:</b> {html.escape(str(first_name or 'User'), quote=False)}
 🔗 <b>Username:</b> {uname}
 💼 <b>Balance:</b> <code>${float(balance or 0):.2f}</code>
 🚦 <b>Account:</b> {status}
 
-━━━━━���━━━━━━━━
+━━━━━�����━━━━━━━━
 🔑 <b>Delivered Code/Account</b>
 
 <code>{delivery_block}</code>"""
@@ -796,7 +796,9 @@ def admin_user_card_keyboard(target):
 
 
 def _admin_user_card_text(overview):
-    user_id, first_name, username, balance, blocked, joined = overview["user"][:6]
+    # list() first: the row can be a pgcompat _Row on PostgreSQL, which
+    # supports int/str indexing but NOT slicing -- list() works everywhere.
+    user_id, first_name, username, balance, blocked, joined = list(overview["user"])[:6]
     uname = f"@{username}" if username and username != "No username" else "No username"
     status = "🚫 Blocked" if blocked else "✅ Active"
     return f"""👤 <b>User Information</b>
