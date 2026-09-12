@@ -1,19 +1,20 @@
 """Run from the project root (where bot.py is):  python3 verify_patch.py
-Verifies the ID-list / multi-ID / premium-name patch is fully uploaded."""
+Verifies the user-search crash fix + users pagination patch is fully uploaded."""
 import ast, sys
 
 CHECKS = {
-    "admin/admin_handlers.py": ["admin_categories_menu", "_show_categories_admin",
-                                "_admin_cat_handle_product_id", "_products_id_list_text",
-                                "_cat_name_html", "handle_admin_callback",
-                                "handle_admin_message"],
-    "database/db.py": ["get_category_by_name", "assign_product_category", "get_categories"],
-    "products/product_handlers.py": ["show_shop", "show_category"],
+    "database/db.py": ["get_user_overview", "get_category_by_name", "find_user_by_id"],
+    "admin/admin_handlers.py": ["_admin_user_card_text", "get_order_detail_text",
+                                "handle_admin_message", "handle_admin_callback"],
+    "web_admin/app.py": ["api_users", "api_user_detail"],
 }
 TEXT_CHECKS = {
-    "admin/admin_handlers.py": ["admin_cat_moveall", "sanitize_premium_name(premium_html",
-                                "1,2,3,4,5"],
-    "products/product_handlers.py": ["button_premium(cname)"],
+    "database/db.py": ["user = tuple(user)"],
+    "admin/admin_handlers.py": ["list(overview[\"user\"])[:6]",
+                                "html.escape(str(first_name or 'User')",
+                                "html.escape(str(delivery or \"\")"],
+    "web_admin/app.py": ["per_page", '"pages": pages'],
+    "web_admin/static/js/app.js": ["usersGo", "usersLastSearch"],
 }
 
 ok = True
