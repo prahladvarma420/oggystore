@@ -2997,12 +2997,18 @@ def get_category(category_id):
 
 
 def get_category_by_name(name):
-    """Case-insensitive exact-name lookup (duplicate-name prevention)."""
-    cur.execute(
-        "SELECT id, name, sort_order, active, COALESCE(icon, '') FROM categories WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))",
-        (str(name),),
-    )
-    return cur.fetchone()
+    """Case-insensitive exact-name lookup. Premium-emoji (<tg-emoji>) tags are
+    ignored, so "Gaming" and a premium-emoji "Gaming" are the same category."""
+    def _plain(s):
+        return _re.sub(r"<tg-emoji[^>]*>.*?</tg-emoji>", "", str(s or "")).strip().lower()
+    target = _plain(name)
+    if not target:
+        return None
+    cur.execute("SELECT id, name, sort_order, active, COALESCE(icon, '') FROM categories")
+    for row in cur.fetchall():
+        if _plain(row[1]) == target:
+            return row
+    return None
 
 
 def create_category(name, icon=""):
