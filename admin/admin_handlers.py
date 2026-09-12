@@ -690,7 +690,7 @@ def get_order_detail_text(order_id: int):
 💼 <b>Balance:</b> <code>${float(balance or 0):.2f}</code>
 🚦 <b>Account:</b> {status}
 
-━━━━━━━━━━━━━━
+━━━━━���━━━━━━━━
 🔑 <b>Delivered Code/Account</b>
 
 <code>{delivery_block}</code>"""
@@ -1413,9 +1413,11 @@ def _category_picker_kb(action):
     """Inline category buttons for a follow-up action: edit / del / addex / addnew."""
     rows = []
     for cid, cname, _sort, _active, cicon in get_categories():
+        _ptext, _picon = button_premium(cname)
         rows.append([InlineKeyboardButton(
-            f"{cicon or chr(0x1F4C2)} {strip_premium(cname)}",
-            callback_data=f"admin_cat_pickdo:{action}:{cid}"
+            f"{cicon or chr(0x1F4C2)} {_ptext}",
+            callback_data=f"admin_cat_pickdo:{action}:{cid}",
+            icon_custom_emoji_id=_picon
         )])
     rows.append([InlineKeyboardButton("◀️ Back", callback_data="admin_categories")])
     return InlineKeyboardMarkup(rows)
@@ -1436,10 +1438,34 @@ def _find_product_for_category(pid):
     return cur.fetchone()
 
 
+def _cat_name_html(name):
+    """Name for HTML messages: premium-emoji (<tg-emoji>) names render as-is;
+    plain names are HTML-escaped. Names are sanitized at capture time."""
+    s = str(name or "")
+    if "<tg-emoji" in s:
+        return s
+    return html.escape(strip_premium(s))
+
+
+def _products_id_list_text(limit=40):
+    """Live Product ID -> name cheat sheet for the category flows. Always
+    queried fresh, so newly added products appear automatically."""
+    cur.execute("SELECT COUNT(*) FROM products")
+    total = int(cur.fetchone()[0] or 0)
+    cur.execute("SELECT id, name FROM products ORDER BY id ASC LIMIT ?", (int(limit),))
+    rows = cur.fetchall()
+    if not rows:
+        return "<i>No products yet.</i>"
+    lines = [f"<code>{r[0]}</code> — {_cat_name_html(r[1])}" for r in rows]
+    if total > len(rows):
+        lines.append(f"<i>…and {total - len(rows)} more — just send its Product ID.</i>")
+    return "\n".join(lines)
+
+
 def _cat_added_list_text(uid):
     added = admin_temp_data.get(uid, {}).get("cat_added", [])
     return "\n".join(
-        f"{i}. 🆔 <code>{pid}</code> — {html.escape(strip_premium(pname))}"
+        f"{i}. 🆔 <code>{pid}</code> — {_cat_name_html(pname)}"
         for i, (pid, pname) in enumerate(added, 1)
     )
 
@@ -1463,7 +1489,7 @@ async def _show_category_detail(q, cid):
     count = _cat_products_count(cid)
     await edit_or_send(
         q,
-        f"""📂 <b>Category: {html.escape(strip_premium(cat[1]))}</b>
+        f"""📂 <b>Category: {_cat_name_html(cat[1])}</b>
 
 📦 <b>Products:</b> <code>{count}</code>
 
@@ -1485,13 +1511,13 @@ async def _show_category_products_admin(q, cid, notice=None):
     cur.execute("SELECT id, name FROM products WHERE category_id=? ORDER BY id DESC LIMIT 25", (int(cid),))
     rows = cur.fetchall()
     if rows:
-        listing = "\n".join(f"🆔 <code>{r[0]}</code> — {html.escape(strip_premium(r[1]))}" for r in rows)
+        listing = "\n".join(f"🆔 <code>{r[0]}</code> — {_cat_name_html(r[1])}" for r in rows)
         total = _cat_products_count(cid)
         if total > len(rows):
             listing += f"\n\n<i>…and {total - len(rows)} more.</i>"
     else:
         listing = "<i>No products in this category yet.</i>"
-    text = (notice + "\n\n" if notice else "") + f"""📂 <b>{html.escape(strip_premium(cat[1]))}</b>
+    text = (notice + "\n\n" if notice else "") + f"""📂 <b>{_cat_name_html(cat[1])}</b>
 
 Products in this category:
 
@@ -1519,12 +1545,16 @@ async def _admin_cat_prompt_add_existing(q, uid, cid):
         q,
         f"""📦 <b>Add Existing Product</b>
 
-📂 Category: <b>{html.escape(strip_premium(cat[1]))}</b>
+📂 Category: <b>{_cat_name_html(cat[1])}</b>
 
-Send the Product ID.
+Send the Product ID — or several at once, separated by commas.
 
-Example:
-<code>12345</code>""",
+Examples:
+<code>30</code>
+<code>1,2,3,4,5</code>
+
+📦 <b>Products:</b>
+{_products_id_list_text()}""",
         _cat_cancel_kb(),
     )
 
@@ -1540,7 +1570,7 @@ async def _admin_cat_start_addnew(q, uid, cid):
     admin_temp_data[uid] = {"pending_category_id": cid}
     await edit_or_send(
         q,
-        f"""📂 <b>Category: {html.escape(strip_premium(cat[1]))}</b>
+        f"""📂 <b>Category: {_cat_name_html(cat[1])}</b>
 
 ➕ Creating new product...
 
@@ -1564,7 +1594,7 @@ async def _admin_cat_delete_confirm(q, cid):
         q,
         f"""⚠️ <b>Delete Category?</b>
 
-📂 {html.escape(strip_premium(cat[1]))}
+📂 {_cat_name_html(cat[1])}
 
 Products inside:
 <code>{count}</code>
@@ -1581,86 +1611,108 @@ The products will become:
 
 
 async def _admin_cat_handle_product_id(update, uid, text, cat, in_create_flow):
-    """Validate a typed Product ID and assign it to `cat`, following the rules:
-    not found / already here / move-confirm (other category) / direct (uncategorized).
-    Assigning NEVER duplicates the product row -- only category_id is updated."""
+    """Validate typed Product ID(s) and assign them to `cat`.
+
+    Accepts one ID or several at once ("30", "1,2,3,4,5", one per line...).
+    Rules per ID: not found / already here / move-confirm (other category) /
+    direct assign (uncategorized). Assigning NEVER duplicates the product row.
+    """
     cid = int(cat[0])
     raw = (text or "").strip()
-    if not raw.isdigit():
+    tokens = [t for t in raw.replace("\n", " ").replace(",", " ").split() if t]
+    if not tokens or not all(t.isdigit() for t in tokens):
         await update.message.reply_text(
-            "❌ <b>Product not found.</b>\n\nPlease check the Product ID and try again.\n\nExample: <code>12345</code>",
+            "❌ <b>Product not found.</b>\n\nSend numeric Product IDs — one, or several separated by commas.\n\nExample: <code>30</code> or <code>1,2,3,4,5</code>",
             parse_mode="HTML",
         )
         return
-    prow = _find_product_for_category(int(raw))
-    if not prow:
-        await update.message.reply_text(
-            "❌ <b>Product not found.</b>\n\nPlease check the Product ID and try again.",
-            parse_mode="HTML",
-        )
-        return
-    pid, pname, pcat = prow
-    if pcat and int(pcat) == cid:
-        await update.message.reply_text(
-            "⚠️ <b>This product is already in this category.</b>",
-            parse_mode="HTML",
-        )
-        return
-    if pcat:
-        other = get_category(pcat)
+
+    added, already, notfound, need_move = [], [], [], []
+    seen = set()
+    for t in tokens:
+        pid = int(t)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        prow = _find_product_for_category(pid)
+        if not prow:
+            notfound.append(pid)
+            continue
+        _pid, pname, pcat = prow
+        if pcat and int(pcat) == cid:
+            already.append(pid)
+        elif pcat:
+            need_move.append((pid, pname, pcat))
+        else:
+            assign_product_category(pid, cid)
+            added.append((pid, pname))
+
+    if added and in_create_flow:
+        admin_temp_data.setdefault(uid, {}).setdefault("cat_added", []).extend(added)
+
+    parts = []
+    if added:
+        if in_create_flow:
+            total_added = len(admin_temp_data.get(uid, {}).get("cat_added", []))
+            parts.append(
+                f"✅ <b>{len(added)} product{'s' if len(added) > 1 else ''} added successfully.</b>\n\n"
+                f"📂 <b>Category:</b> {_cat_name_html(cat[1])}\n"
+                f"📦 <b>Products:</b> <code>{total_added}</code>\n\n{_cat_added_list_text(uid)}"
+            )
+        else:
+            names = "\n".join(f"🆔 <code>{p}</code> — {_cat_name_html(n)}" for p, n in added)
+            parts.append(
+                f"✅ <b>{len(added)} product{'s' if len(added) > 1 else ''} added successfully.</b>\n\n"
+                f"📂 <b>Category:</b> {_cat_name_html(cat[1])}\n\n{names}"
+            )
+    if notfound:
+        parts.append("❌ Not found: " + ", ".join(f"<code>{p}</code>" for p in notfound))
+    if already:
+        parts.append("⚠️ Already in this category: " + ", ".join(f"<code>{p}</code>" for p in already))
+
+    if parts:
+        if in_create_flow:
+            parts.append("Send more Product IDs (one or many, e.g. <code>1,2,3,4,5</code>) — or press ✅ Done")
+            await update.message.reply_text(
+                "\n\n".join(parts), reply_markup=_cat_done_kb(), parse_mode="HTML"
+            )
+        else:
+            user_state.pop(uid, None)
+            await update.message.reply_text(
+                "\n\n".join(parts),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📦 Manage this category", callback_data=f"admin_cat_prods:{cid}")],
+                    [InlineKeyboardButton("◀️ Back", callback_data="admin_categories")],
+                ]),
+                parse_mode="HTML",
+            )
+
+    # Products living in OTHER categories need an explicit move confirmation.
+    if need_move:
         admin_temp_data.setdefault(uid, {})["cat_move"] = {
-            "pid": int(pid), "target": cid, "in_create": bool(in_create_flow),
+            "pids": [p for p, _n, _c in need_move],
+            "target": cid,
+            "in_create": bool(in_create_flow),
         }
+        lines = []
+        for pid, pname, pcat in need_move:
+            other = get_category(pcat)
+            lines.append(
+                f"• 🆔 <code>{pid}</code> — {_cat_name_html(pname)}  "
+                f"(now: 📂 {_cat_name_html(other[1]) if other else 'other'})"
+            )
         await update.message.reply_text(
-            f"""⚠️ <b>This product already belongs to:</b>
+            f"""⚠️ <b>{len(need_move)} product{'s' if len(need_move) > 1 else ''} already belong{'s' if len(need_move) == 1 else ''} to other categories:</b>
 
-📂 {html.escape(strip_premium(other[1])) if other else "another category"}
+{chr(10).join(lines)}
 
-Do you want to move it to:
+Do you want to move {'them' if len(need_move) > 1 else 'it'} to:
 
-📂 {html.escape(strip_premium(cat[1]))}?""",
+📂 {_cat_name_html(cat[1])}?""",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Move Product", callback_data=f"admin_cat_move:{pid}"),
+                InlineKeyboardButton("✅ Move Product" + ("s" if len(need_move) > 1 else ""), callback_data="admin_cat_moveall"),
                 InlineKeyboardButton("❌ Cancel", callback_data="admin_cat_movecancel"),
             ]]),
-            parse_mode="HTML",
-        )
-        return
-    assign_product_category(pid, cid)
-    if in_create_flow:
-        added = admin_temp_data.setdefault(uid, {}).setdefault("cat_added", [])
-        added.append((int(pid), pname))
-        await update.message.reply_text(
-            f"""✅ <b>Product added successfully.</b>
-
-📂 <b>Category:</b> {html.escape(strip_premium(cat[1]))}
-📦 <b>Products:</b> <code>{len(added)}</code>
-
-{_cat_added_list_text(uid)}
-
-Send another Product ID to add another product.
-
-Or press: ✅ Done""",
-            reply_markup=_cat_done_kb(),
-            parse_mode="HTML",
-        )
-    else:
-        user_state.pop(uid, None)
-        await update.message.reply_text(
-            f"""✅ <b>Product added successfully.</b>
-
-📂 <b>Category:</b>
-{html.escape(strip_premium(cat[1]))}
-
-📦 <b>Product:</b>
-{html.escape(strip_premium(pname))}
-
-🆔 <b>Product ID:</b>
-<code>{pid}</code>""",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📦 Manage this category", callback_data=f"admin_cat_prods:{cid}")],
-                [InlineKeyboardButton("◀️ Back", callback_data="admin_categories")],
-            ]),
             parse_mode="HTML",
         )
 
@@ -1936,7 +1988,7 @@ Choose an option below:""",
     if data == "admin_section_marketing":
         await edit_or_send(
             q,
-            """📢 <b>Marketing & Growth</b>
+            """��� <b>Marketing & Growth</b>
 
 Broadcast messages, referral settings, featured products, and sales stats.
 
@@ -4133,7 +4185,7 @@ Please enter the category name:""",
             f"""✏️ <b>Rename Category</b>
 
 Current name:
-{html.escape(strip_premium(cat[1]))}
+{_cat_name_html(cat[1])}
 
 Send the new category name:""",
             _cat_cancel_kb(),
@@ -4176,7 +4228,7 @@ Send the new category name:""",
         if not prows:
             await edit_or_send(
                 q,
-                f"📂 <b>{html.escape(strip_premium(cat[1]))}</b>\n\nNo products to remove.",
+                f"📂 <b>{_cat_name_html(cat[1])}</b>\n\nNo products to remove.",
                 _cat_back_kb(f"admin_cat_prods:{cid}"),
             )
             return True
@@ -4186,7 +4238,7 @@ Send the new category name:""",
             q,
             f"""➖ <b>Remove Product</b>
 
-Tap a product to remove it from 📂 <b>{html.escape(strip_premium(cat[1]))}</b>.
+Tap a product to remove it from 📂 <b>{_cat_name_html(cat[1])}</b>.
 
 <i>The product itself is NOT deleted -- it becomes Uncategorized.</i>""",
             InlineKeyboardMarkup(rows),
@@ -4201,7 +4253,7 @@ Tap a product to remove it from 📂 <b>{html.escape(strip_premium(cat[1]))}</b>
             return True
         prow = _find_product_for_category(_pid)
         assign_product_category(_pid, None)
-        notice = f"✅ Removed: {html.escape(strip_premium(prow[1]))} → Uncategorized" if prow else None
+        notice = f"✅ Removed: {_cat_name_html(prow[1])} → Uncategorized" if prow else None
         await _show_category_products_admin(q, _cid, notice=notice)
         return True
 
@@ -4223,7 +4275,7 @@ Tap a product to remove it from 📂 <b>{html.escape(strip_premium(cat[1]))}</b>
             await edit_or_send(q, "❌ <b>Category not found.</b>", _cat_back_kb())
             return True
         count = _cat_products_count(cid)
-        cname = html.escape(strip_premium(cat[1]))
+        cname = strip_premium(cat[1])
         delete_category(cid)  # products -> Uncategorized (NULL), never deleted
         log_admin_action(uid, "DELETE_CATEGORY", f"Category {cname} | {count} products uncategorized")
         msg = "✅ <b>Category deleted.</b>\n\n"
@@ -4244,7 +4296,7 @@ Tap a product to remove it from 📂 <b>{html.escape(strip_premium(cat[1]))}</b>
             q,
             f"""✅ <b>Category created.</b>
 
-📂 <b>{html.escape(strip_premium(cat[1]))}</b>
+📂 <b>{_cat_name_html(cat[1])}</b>
 📦 <b>Products:</b> <code>{len(added)}</code>""",
             InlineKeyboardMarkup([
                 [InlineKeyboardButton("📦 Manage this category", callback_data=f"admin_cat_prods:{cat[0]}")],
@@ -4263,35 +4315,45 @@ Tap a product to remove it from 📂 <b>{html.escape(strip_premium(cat[1]))}</b>
         await edit_or_send(q, "❌ <b>Cancelled.</b>", admin_categories_menu())
         return True
 
-    if data.startswith("admin_cat_move:"):
-        try:
-            pid = int(data.split(":", 1)[1])
-        except Exception:
-            await edit_or_send(q, "❌ <b>Invalid request.</b>", _cat_back_kb())
-            return True
+    if data == "admin_cat_moveall":
         mv = admin_temp_data.get(uid, {}).get("cat_move") or {}
+        pids = mv.get("pids") or []
         target = get_category(mv.get("target")) if mv.get("target") else None
-        prow = _find_product_for_category(pid)
-        if mv.get("pid") != pid or not target or not prow:
+        if not pids or not target:
             await edit_or_send(q, "❌ <b>Request expired.</b> Please try again.", _cat_back_kb())
             return True
-        old_cat = get_category(prow[2]) if prow[2] else None
-        assign_product_category(pid, target[0])
-        if mv.get("in_create"):
-            admin_temp_data.setdefault(uid, {}).setdefault("cat_added", []).append((int(pid), prow[1]))
+        moved = 0
+        last_name = None
+        for pid in pids:
+            prow = _find_product_for_category(pid)
+            if not prow:
+                continue
+            assign_product_category(pid, target[0])
+            moved += 1
+            last_name = prow[1]
+            if mv.get("in_create"):
+                admin_temp_data.setdefault(uid, {}).setdefault("cat_added", []).append((int(pid), prow[1]))
         admin_temp_data.get(uid, {}).pop("cat_move", None)
+        if moved == 0:
+            await edit_or_send(q, "❌ <b>Request expired.</b> Please try again.", _cat_back_kb())
+            return True
+        if moved == 1:
+            text = f"✅ <b>Product moved successfully.</b>\n\n{_cat_name_html(last_name)}\n⬇️\n📂 {_cat_name_html(target[1])}"
+        else:
+            text = f"✅ <b>{moved} products moved successfully.</b>\n\n⬇️\n📂 {_cat_name_html(target[1])}"
         await edit_or_send(
             q,
-            f"""✅ <b>Product moved successfully.</b>
-
-{html.escape(strip_premium(old_cat[1])) if old_cat else "Uncategorized"}
-⬇️
-{html.escape(strip_premium(target[1]))}""",
+            text,
             InlineKeyboardMarkup([
                 [InlineKeyboardButton("📦 Manage this category", callback_data=f"admin_cat_prods:{target[0]}")],
                 [InlineKeyboardButton("◀️ Back", callback_data="admin_categories")],
             ]),
         )
+        return True
+
+    if data.startswith("admin_cat_move:"):
+        # Legacy single-product confirm (pre-batch buttons on old messages).
+        await edit_or_send(q, "❌ <b>Request expired.</b> Please try again.", _cat_back_kb())
         return True
 
     if data == "admin_cat_movecancel":
@@ -5600,8 +5662,10 @@ Now send the image/photo.""",
         return True
 
     if state == "admin_cat_create_name" and is_admin(uid):
-        name = text.strip()[:60]
-        if not name:
+        # Same premium-emoji capture as the Add Product wizard: names with
+        # Telegram premium emoji are stored with <tg-emoji> tags intact.
+        name = sanitize_premium_name(premium_html(update, text).strip())[:120]
+        if not strip_premium(name):
             await update.message.reply_text("❌ Please send a category name.", parse_mode="HTML")
             return True
         if get_category_by_name(name):
@@ -5614,14 +5678,18 @@ Now send the image/photo.""",
         admin_temp_data[uid] = {"cat_create_id": cid, "cat_added": []}
         user_state[uid] = "admin_cat_create_products"
         await update.message.reply_text(
-            f"""✅ <b>Category name:</b> {html.escape(name)}
+            f"""✅ <b>Category name:</b> {_cat_name_html(name)}
 
-Now send the <b>Product ID</b> that you want to add to this category.
+Now send the <b>Product IDs</b> that you want to add to this category.
 
-You can send one Product ID at a time.
+Send one ID — or several at once, separated by commas.
 
-Example:
-<code>12345</code>""",
+Examples:
+<code>30</code>
+<code>1,2,3,4,5</code>
+
+📦 <b>Products:</b>
+{_products_id_list_text()}""",
             reply_markup=_cat_done_kb(),
             parse_mode="HTML",
         )
@@ -5653,13 +5721,13 @@ Example:
         datax = admin_temp_data.get(uid, {})
         cid = datax.get("cat_rename_id")
         cat = get_category(cid) if cid else None
-        new_name = text.strip()[:60]
+        new_name = sanitize_premium_name(premium_html(update, text).strip())[:120]
         if not cat:
             user_state.pop(uid, None)
             admin_temp_data.pop(uid, None)
             await update.message.reply_text("❌ <b>Category not found.</b>", parse_mode="HTML")
             return True
-        if not new_name:
+        if not strip_premium(new_name):
             await update.message.reply_text("❌ Please send a category name.", parse_mode="HTML")
             return True
         dup = get_category_by_name(new_name)
@@ -5678,10 +5746,10 @@ Example:
             f"""✅ <b>Category renamed successfully.</b>
 
 Old:
-{html.escape(old_name)}
+{_cat_name_html(old_name)}
 
 New:
-{html.escape(new_name)}""",
+{_cat_name_html(new_name)}""",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📂 Open Category", callback_data=f"admin_cat_sel:{cid}")],
                 [InlineKeyboardButton("◀️ Back", callback_data="admin_categories")],
