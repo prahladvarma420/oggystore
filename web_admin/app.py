@@ -1833,14 +1833,21 @@ def api_order_resend(oid):
 @login_required
 def api_users():
     search = (request.args.get("search") or "").strip()
-    limit = int(request.args.get("limit", 100))
+    page = max(1, int(request.args.get("page", 1) or 1))
+    # `limit` kept as a legacy alias for per_page.
+    per_page = min(200, max(10, int(request.args.get("per_page", request.args.get("limit", 50)) or 50)))
+    where = ""
+    params = []
     if search:
-        rows = q("SELECT * FROM users WHERE CAST(user_id AS TEXT) LIKE ? OR "
-                 "first_name LIKE ? OR username LIKE ? ORDER BY joined DESC LIMIT ?",
-                 ("%" + search + "%", "%" + search + "%", "%" + search + "%", limit))
-    else:
-        rows = q("SELECT * FROM users ORDER BY joined DESC LIMIT ?", (limit,))
-    return jsonify({"ok": True, "users": rows})
+        where = "WHERE CAST(user_id AS TEXT) LIKE ? OR first_name LIKE ? OR username LIKE ?"
+        params = ["%" + search + "%"] * 3
+    total = int((q("SELECT COUNT(*) AS c FROM users " + where, tuple(params), one=True) or {}).get("c", 0))
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, pages)
+    rows = q("SELECT * FROM users " + where + " ORDER BY joined DESC LIMIT ? OFFSET ?",
+             tuple(params) + (per_page, (page - 1) * per_page))
+    return jsonify({"ok": True, "users": rows, "total": total, "page": page,
+                    "pages": pages, "per_page": per_page})
 
 
 @app.route("/api/users/<int:uid>")
