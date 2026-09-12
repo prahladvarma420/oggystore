@@ -592,9 +592,11 @@ async function resendOrder(id) {
 }
 
 /* =====================================================  USERS  ============ */
+let usersPage = 1, usersLastSearch = "";
 async function viewUsers() {
   const search = $("#searchInput").value.trim();
-  const d = await api("/api/users?search=" + encodeURIComponent(search));
+  if (search !== usersLastSearch) { usersPage = 1; usersLastSearch = search; }
+  const d = await api(`/api/users?search=${encodeURIComponent(search)}&page=${usersPage}&per_page=50`);
   const rows = (d.users || []).map(u => `<tr>
     <td class="mono">${u.user_id}</td><td>${esc(u.first_name || "")}</td>
     <td>${u.username && u.username !== "No username" ? "@" + esc(u.username) : '<span class="muted">-</span>'}</td>
@@ -605,10 +607,16 @@ async function viewUsers() {
       <button class="btn btn-sm btn-green" onclick="adjustBalance(${u.user_id},'${esc(u.first_name)}')"><span>Balance</span></button>
       <button class="btn btn-sm ${u.blocked ? "btn-green" : "btn-red"}" onclick="blockUser(${u.user_id},${u.blocked ? 0 : 1})"><span>${u.blocked ? "Unblock" : "Block"}</span></button>
     </div></td></tr>`).join("");
+  const pgBar = (d.pages || 1) > 1 ? `<div class="toolbar" style="margin-top:12px">
+      <button class="btn btn-sm btn-ghost" onclick="usersGo(-1)" ${d.page <= 1 ? "disabled" : ""}>◀ Prev</button>
+      <span class="muted">Page ${d.page}/${d.pages} · ${d.total} users</span>
+      <button class="btn btn-sm btn-ghost" onclick="usersGo(1)" ${d.page >= d.pages ? "disabled" : ""}>Next ▶</button>
+    </div>` : `<div class="muted" style="margin-top:10px">${d.total || 0} users</div>`;
   $("#content").innerHTML = `<div class="panel glass">
     <div class="toolbar"><div class="grow"></div><button class="btn btn-ghost" onclick="exportCsv('users')">\u2b07 Export CSV</button></div>
-    ${(d.users || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>User ID</th><th>Name</th><th>Username</th><th>Balance</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No users", "\ud83d\udc65")}</div>`;
+    ${(d.users || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>User ID</th><th>Name</th><th>Username</th><th>Balance</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>${pgBar}` : empty("No users", "\ud83d\udc65")}</div>`;
 }
+function usersGo(delta) { usersPage = Math.max(1, usersPage + delta); render(); }
 function adjustBalance(uid, name) {
   openModal("\ud83d\udcb0 Balance \u2014 " + name, `
     <label class="field"><span>Amount (use negative to remove)</span><input id="bal_amt" type="number" step="0.01" placeholder="e.g. 10 or -5"></label>
@@ -1139,7 +1147,7 @@ Object.assign(window, {
   delStock, manageTiers, delTier, refundOrder, resendOrder, adjustBalance,
   blockUser, userDetail, addCoupon, toggleCoupon, delCoupon, saveTemplate,
   replyTicket, closeTicket, setTicketFilter, withdrawAction, removeAdmin,
-  clearLogs, exportCsv, closeModal, deleteBackup,
+  clearLogs, exportCsv, closeModal, deleteBackup, usersGo,
   depositFilter, twofaSetup, twofaDisable, twofaRecovery, showRecoveryCodes, copyRecovery, signoutAll, revokeSession,
   createWebAdmin, resetWebAdminPw, resetWebAdmin2fa, toggleWebAdmin, deleteWebAdmin, sendBroadcastNow, toggleTheme, toggleSidebar,
 });
