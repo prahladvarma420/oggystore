@@ -445,6 +445,103 @@ def _confirmation_screenshot(page):
         return None
 
 
+# --- Invite dialog helpers (module-level so they can be tested/mocked) ---
+
+_FAMILY_URL = "https://account.microsoft.com/family"
+
+_EMAIL_BOX_SELECTORS = (
+    'input[placeholder="Add email" i]',
+    'input[placeholder*="email" i]',
+    'input[type="email"]',
+    'input[name*="mail" i]',
+    'input[id*="mail" i]',
+    'input[aria-label*="mail" i]',
+    '[role="dialog"] input[type="text"]',
+    '[role="dialog"] input',
+)
+
+_SHARE_OPEN_LABELS = (
+    "Start sharing", "Add a family member", "Add family member", "Add member",
+    "Invite people", "Invite someone", "Add people", "Share subscription",
+    "Share", "Invite",
+)
+
+_CHOOSER_EMAIL_LABELS = (
+    "Email invite", "Invite via email", "Invite by email", "Send an email", "Email",
+)
+
+
+def _find_email_box(page, wait_ms=0):
+    """Locate the invite email input; optionally poll briefly for it.
+    is_visible() without a timeout returns immediately, so this stays bounded."""
+    deadline = time.monotonic() + (wait_ms / 1000.0)
+    while True:
+        for selector in _EMAIL_BOX_SELECTORS:
+            try:
+                box = page.locator(selector).first
+                if box.is_visible():
+                    return box
+            except Exception:
+                continue
+        if time.monotonic() >= deadline:
+            return None
+        page.wait_for_timeout(500)
+
+
+def _choose_email_invite(page):
+    """In the 'Share your benefits' chooser dialog, pick the email option."""
+    for label in _CHOOSER_EMAIL_LABELS:
+        for role in ("button", "link"):
+            try:
+                el = page.get_by_role(role, name=label, exact=False).first
+                if el.is_visible(timeout=1200):
+                    el.click()
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _open_invite_dialog(page):
+    """Click share/add controls until the email box actually appears --
+    verifies after every click instead of assuming the dialog opened."""
+    for role in ("button", "link"):
+        for label in _SHARE_OPEN_LABELS:
+            try:
+                el = page.get_by_role(role, name=label, exact=False).first
+                if not el.is_visible():
+                    continue
+                el.click()
+                page.wait_for_timeout(1800)
+                if not _find_email_box(page):
+                    _choose_email_invite(page)  # chooser dialog -> pick email
+                    page.wait_for_timeout(1500)
+                if _find_email_box(page, wait_ms=2500):
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _open_invite_anywhere(page, snap=None):
+    """Try the current (subscription) page, then the family page.
+    Returns (email_box_or_None, where_found_description)."""
+    if _open_invite_dialog(page):
+        return _find_email_box(page), "subscription page"
+    _log(f"invite dialog not found on subscription page; trying family page {_FAMILY_URL}")
+    try:
+        page.goto(_FAMILY_URL, wait_until="commit", timeout=20000)
+        page.wait_for_timeout(4000)
+    except Exception as fam_nav_exc:
+        _log(f"family page navigation failed: {repr(fam_nav_exc)[:150]}")
+        return None, "family page unreachable"
+    if snap:
+        snap()
+    if _open_invite_dialog(page):
+        return _find_email_box(page), "family page"
+    return None, "neither page"
+
+
 def send_family_invite_sync(email: str, forced_session=None, warranty=None):
     """Send a Microsoft 365 Family invite to `email`.
 
@@ -742,9 +839,32 @@ def send_family_invite_sync(email: str, forced_session=None, warranty=None):
                     "Upload a fresh session: Admin → 📩 M365 Auto-Invite → 🔑 Upload Session."
                 ), screenshot
 
-            # The Share/Manage control never appeared: return the screenshot +
-            # URL + on-page text so we can see EXACTLY what the page shows
-            # (consent wall, error, empty page, different button label, etc.).
+            # The Share/Manage control never appeared on the subscription page:
+            # detour to the family page (the other canonical invite location)
+            # before giving up -- Microsoft keeps moving this control around.
+            if not sharing_ui_found:
+                _log("share UI not found on subscription page; trying family page")
+                try:
+                    page.goto(_FAMILY_URL, wait_until="commit", timeout=20000)
+                    page.wait_for_timeout(4000)
+                    for _fp in range(5):
+                        for probe in _SHARE_OPEN_LABELS + ("Manage sharing",):
+                            try:
+                                if page.get_by_role("button", name=probe, exact=False).first.is_visible():
+                                    sharing_ui_found = True
+                                    break
+                                if page.get_by_role("link", name=probe, exact=False).first.is_visible():
+                                    sharing_ui_found = True
+                                    break
+                            except Exception:
+                                continue
+                        if sharing_ui_found:
+                            break
+                        page.wait_for_timeout(1500)
+                    screenshot = _snap()
+                except Exception as fam_exc:
+                    _log(f"family page probe failed: {repr(fam_exc)[:150]}")
+
             if not sharing_ui_found:
                 snippet = ""
                 try:
@@ -757,85 +877,56 @@ def send_family_invite_sync(email: str, forced_session=None, warranty=None):
                 _log("browser closed (not-found path)")
                 return (
                     False,
-                    "Loaded the account page but the Share/Manage button never appeared. "
+                    "Loaded the account page but the Share/Manage button never appeared "
+                    "(checked the subscription page AND the family page). "
                     f"URL: {cur_url or 'unknown'} | Page text: {snippet or '(empty)'}",
                     screenshot,
                 )
 
-            # 1) Open the invite dialog (several possible button labels).
-            _LAST_PHASE = "clicking the blue Share button"
+            # 1) Open the invite dialog and locate the email box. Verifies the
+            #    dialog actually opened after every click, and tries BOTH
+            #    canonical locations (subscription page, then family page) --
+            #    Microsoft keeps moving this control, so never trust one layout.
+            _LAST_PHASE = "opening the invite dialog"
             _log("share UI found; opening invite dialog")
-            opened = False
-            for label in ("Start sharing", "Invite people", "Invite someone", "Add people", "Share", "Invite"):
+            box, where_found = _open_invite_anywhere(page, _snap)
+
+            if not box:
+                screenshot = _snap()
                 try:
-                    btn = page.get_by_role("button", name=label, exact=False).first
-                    if btn.is_visible(timeout=2500):
-                        btn.click()
-                        opened = True
-                        break
+                    cur_url = page.url
                 except Exception:
-                    continue
+                    cur_url = ""
+                btns = ""
+                try:
+                    btns = " | ".join(
+                        t.strip() for t in page.locator("button").all_inner_texts() if t.strip()
+                    )[:220]
+                except Exception:
+                    pass
+                _log(f"email box not found anywhere; url={cur_url[:120]} | buttons={btns[:200]}")
+                browser.close()
+                return False, (
+                    "Could not find the email box in the Microsoft invite dialog — tried the "
+                    "subscription page AND the family page. "
+                    f"URL now: {cur_url or 'unknown'} | Buttons on screen: {btns or '(none)'}"
+                ), screenshot
 
-            # Fallback: some layouts use a link (e.g. "Manage sharing" at the top).
-            if not opened:
-                for label in ("Manage sharing", "Share"):
-                    try:
-                        lnk = page.get_by_role("link", name=label, exact=False).first
-                        if lnk.is_visible(timeout=2000):
-                            lnk.click()
-                            opened = True
-                            break
-                    except Exception:
-                        continue
-
-            page.wait_for_timeout(2500)
-
-            # 1b) "Share your benefits" chooser dialog: pick "Email invite"
-            #     (the other option is "Copy link").
-            _LAST_PHASE = "choosing 'Email invite'"
-            _log(f"dialog open attempt done (opened={opened}); choosing Email invite")
-            for label in ("Email invite", "Invite via email", "Invite by email", "Email"):
-                clicked_chooser = False
-                for role in ("button", "link"):
-                    try:
-                        el = page.get_by_role(role, name=label, exact=True).first
-                        if el.is_visible(timeout=1200):
-                            el.click()
-                            clicked_chooser = True
-                            break
-                    except Exception:
-                        continue
-                if clicked_chooser:
-                    break
-
-            page.wait_for_timeout(2000)
-
-            # 2) Fill the customer's email into the "Add email" box.
+            # 2) Fill the customer's email into the invite box.
             _LAST_PHASE = "entering the email address"
-            _log("entering email address")
+            _log(f"invite dialog open ({where_found}); entering email address")
             filled = False
-            for selector in (
-                'input[placeholder="Add email" i]',
-                'input[type="email"]',
-                'input[name="email"]',
-                'input[placeholder*="mail" i]',
-                'input[aria-label*="mail" i]',
-                'input[type="text"]',
-            ):
-                try:
-                    box = page.locator(selector).first
-                    if box.is_visible(timeout=2000):
-                        box.click()
-                        box.fill(email)
-                        filled = True
-                        break
-                except Exception:
-                    continue
+            try:
+                box.click()
+                box.fill(email)
+                filled = True
+            except Exception as fill_exc:
+                _log(f"email fill failed: {repr(fill_exc)[:150]}")
 
             if not filled:
                 screenshot = _snap()
                 browser.close()
-                return False, "Could not find the email box in the Microsoft invite dialog (layout may have changed).", screenshot
+                return False, "Found the invite box but could not type the email into it.", screenshot
 
             # Commit the email chip (some layouts require Enter/Tab to register
             # it before the Share button becomes enabled).
