@@ -2944,6 +2944,9 @@ def get_user_overview(user_id):
     user = cur.fetchone()
     if not user:
         return None
+    # Plain tuple: safe on both SQLite and the Postgres pgcompat row wrapper
+    # (whose __getitem__ supports int/str keys but NOT slices).
+    user = tuple(user)
     cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (int(user_id),))
     orders_count, total_spent = cur.fetchone()
     cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM deposits WHERE user_id=? AND status='paid'", (int(user_id),))
