@@ -64,7 +64,7 @@ const VIEW_TITLES = {
   deposits: "Deposits & Payments", restock: "Restock Requests",
   profit: "Profit & Cost", security: "Security",
 };
-const SEARCH_VIEWS = { products: "Search products...", orders: "Search orders / user id...", users: "Search users..." };
+const SEARCH_VIEWS = { products: "Search products...", orders: "Search orders / user id..." };  // users: has its own in-panel search box
 
 function setView(view) {
   currentView = view;
@@ -592,11 +592,9 @@ async function resendOrder(id) {
 }
 
 /* =====================================================  USERS  ============ */
-let usersPage = 1, usersLastSearch = "";
+let usersPage = 1, usersSearchTerm = "", usersSearchTimer = null, usersBoxFocused = false;
 async function viewUsers() {
-  const search = $("#searchInput").value.trim();
-  if (search !== usersLastSearch) { usersPage = 1; usersLastSearch = search; }
-  const d = await api(`/api/users?search=${encodeURIComponent(search)}&page=${usersPage}&per_page=50`);
+  const d = await api(`/api/users?search=${encodeURIComponent(usersSearchTerm)}&page=${usersPage}&per_page=50`);
   const rows = (d.users || []).map(u => `<tr>
     <td class="mono">${u.user_id}</td><td>${esc(u.first_name || "")}</td>
     <td>${u.username && u.username !== "No username" ? "@" + esc(u.username) : '<span class="muted">-</span>'}</td>
@@ -613,8 +611,15 @@ async function viewUsers() {
       <button class="btn btn-sm btn-ghost" onclick="usersGo(1)" ${d.page >= d.pages ? "disabled" : ""}>Next ▶</button>
     </div>` : `<div class="muted" style="margin-top:10px">${d.total || 0} users</div>`;
   $("#content").innerHTML = `<div class="panel glass">
-    <div class="toolbar"><div class="grow"></div><button class="btn btn-ghost" onclick="exportCsv('users')">\u2b07 Export CSV</button></div>
-    ${(d.users || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>User ID</th><th>Name</th><th>Username</th><th>Balance</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>${pgBar}` : empty("No users", "\ud83d\udc65")}</div>`;
+    <div class="toolbar">
+      <input class="inp" id="usersSearchBox" placeholder="🔎 Search by User ID / username / name..." value="${esc(usersSearchTerm)}" style="max-width:320px"
+        oninput="clearTimeout(usersSearchTimer);usersSearchTerm=this.value;usersPage=1;usersSearchTimer=setTimeout(viewUsers,300)"
+        onfocus="usersBoxFocused=true" onblur="usersBoxFocused=false">
+      <div class="grow"></div>
+      <button class="btn btn-ghost" onclick="exportCsv('users')">\u2b07 Export CSV</button>
+    </div>
+    ${(d.users || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>User ID</th><th>Name</th><th>Username</th><th>Balance</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>${pgBar}` : empty(usersSearchTerm ? "No users match that search" : "No users", "\ud83d\udc65")}</div>`;
+  if (usersBoxFocused) { const sb = $("#usersSearchBox"); if (sb) { sb.focus(); sb.setSelectionRange(sb.value.length, sb.value.length); } }
 }
 function usersGo(delta) { usersPage = Math.max(1, usersPage + delta); render(); }
 function adjustBalance(uid, name) {
