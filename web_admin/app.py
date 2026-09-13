@@ -1064,11 +1064,19 @@ def api_revenue_restore():
 
 
 # =============================================================== API: PRODUCTS
-def product_row(p):
+def product_row(p, avail_map=None, sold_map=None, tiers_map=None):
+    """Serialize one product row. When the *_map lookups are provided (from the
+    grouped queries in api_products) NO extra queries run per product; without
+    them it falls back to the per-product helpers (backward compatible)."""
     pid = p["id"]
-    avail = botdb.get_available_stock_count(pid)
-    sold = botdb.get_sold_stock_count(pid)
-    tiers = [{"quantity": t[1], "price": t[2]} for t in botdb.get_product_price_tiers(pid)]
+    if avail_map is None:
+        avail = botdb.get_available_stock_count(pid)
+        sold = botdb.get_sold_stock_count(pid)
+        tiers = [{"quantity": t[1], "price": t[2]} for t in botdb.get_product_price_tiers(pid)]
+    else:
+        avail = avail_map.get(pid, 0)
+        sold = (sold_map or {}).get(pid, 0)
+        tiers = (tiers_map or {}).get(pid, [])
     p = dict(p)
     p["available_stock"] = avail
     p["sold_count"] = sold
@@ -1087,7 +1095,15 @@ def api_products():
                  ("%" + search + "%",))
     else:
         rows = q(base + " ORDER BY p.id DESC")
-    return jsonify({"ok": True, "products": [product_row(p) for p in rows]})
+    # Stock counts + price tiers via 3 grouped queries TOTAL instead of 3 per
+    # product -- the per-product round trips made this page lag badly on
+    # remote PostgreSQL.
+    avail_map = {r["product_id"]: r["c"] for r in q("SELECT product_id, COUNT(*) AS c FROM product_stock WHERE sold=0 GROUP BY product_id")}
+    sold_map = {r["product_id"]: r["c"] for r in q("SELECT product_id, COUNT(*) AS c FROM product_stock WHERE sold=1 GROUP BY product_id")}
+    tiers_map = {}
+    for t in q("SELECT product_id, quantity, price FROM product_price_tiers ORDER BY quantity ASC"):
+        tiers_map.setdefault(t["product_id"], []).append({"quantity": t["quantity"], "price": t["price"]})
+    return jsonify({"ok": True, "products": [product_row(p, avail_map, sold_map, tiers_map) for p in rows]})
 
 
 # ---------------- Product categories (same data the bot shop uses) ----------------
