@@ -1546,12 +1546,47 @@ def api_product_flash(pid):
 @app.route("/api/products/<int:pid>/stock/add", methods=["POST"])
 @login_required
 def api_stock_add(pid):
-    codes = (request.get_json(force=True).get("codes") or "").strip()
+    body = request.get_json(force=True)
+    codes = (body.get("codes") or "").strip()
+    op_id = (body.get("op_id") or "").strip()
+
     if not codes:
         return jsonify({"ok": False, "error": "No codes provided"}), 400
+
+    # ── BACKEND IDEMPOTENCY ──────────────────────────────────────────────────
+    # If the frontend sent an op_id and we already recorded a completed result
+    # for it, return the original result immediately — no second insertion.
+    if op_id:
+        existing = q(
+            "SELECT added, available FROM stock_op_log WHERE op_id=? AND product_id=?",
+            (op_id, pid), one=True
+        )
+        if existing:
+            return jsonify({
+                "ok": True,
+                "added": existing["added"],
+                "available": existing["available"],
+                "broadcast_sent": 0,
+                "broadcast_failed": 0,
+                "replayed": True,
+            })
+    # ── END IDEMPOTENCY CHECK ────────────────────────────────────────────────
+
     added = botdb.restock_product(pid, codes)
-    log_action("add_stock", "#{} +{}".format(pid, added))
+    log_action("add_stock", "#{} +{} op={}".format(pid, added, op_id or "none"))
     available = botdb.get_available_stock_count(pid)
+
+    # Record completed operation for idempotency (only when op_id supplied).
+    if op_id and added > 0:
+        try:
+            admin_id = session.get("admin_id", 0)
+            ex(
+                "INSERT OR IGNORE INTO stock_op_log"
+                "(op_id, product_id, added, available, admin_id) VALUES(?,?,?,?,?)",
+                (op_id, pid, added, available, admin_id)
+            )
+        except Exception:
+            pass
 
     # Auto-broadcast new stock to all bot users (same as TG admin).
     sent = failed = 0
@@ -1574,14 +1609,46 @@ def api_stock_add_accounts(pid):
     d = request.get_json(force=True)
     accounts = (d.get("accounts") or "").strip()
     delimiter = (d.get("delimiter") or ":").strip() or ":"
+    op_id = (d.get("op_id") or "").strip()
+
     if not accounts:
         return jsonify({"ok": False, "error": "No accounts provided"}), 400
+
+    # ── BACKEND IDEMPOTENCY ──────────────────────────────────────────────────
+    if op_id:
+        existing = q(
+            "SELECT added, available FROM stock_op_log WHERE op_id=? AND product_id=?",
+            (op_id, pid), one=True
+        )
+        if existing:
+            return jsonify({
+                "ok": True,
+                "added": existing["added"],
+                "available": existing["available"],
+                "broadcast_sent": 0,
+                "broadcast_failed": 0,
+                "replayed": True,
+            })
+    # ── END IDEMPOTENCY CHECK ────────────────────────────────────────────────
+
     added = botdb.add_account_stock_items(pid, accounts, delimiter)
     if added == 0:
         return jsonify({"ok": False,
                         "error": "No valid accounts found - check the format / separator"}), 400
-    log_action("add_account_stock", "#{} +{}".format(pid, added))
+    log_action("add_account_stock", "#{} +{} op={}".format(pid, added, op_id or "none"))
     available = botdb.get_available_stock_count(pid)
+
+    # Record completed operation for idempotency.
+    if op_id:
+        try:
+            admin_id = session.get("admin_id", 0)
+            ex(
+                "INSERT OR IGNORE INTO stock_op_log"
+                "(op_id, product_id, added, available, admin_id) VALUES(?,?,?,?,?)",
+                (op_id, pid, added, available, admin_id)
+            )
+        except Exception:
+            pass
 
     # Auto-broadcast new stock to all bot users (same as plain code stock).
     sent = failed = 0
