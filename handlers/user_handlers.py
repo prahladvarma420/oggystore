@@ -1222,6 +1222,87 @@ Example:
             return
 
 
+async def _product_search_fallback(update, uid, text):
+    """Plain-text product/category search.
+
+    This only runs from the very bottom of message_handler, after every
+    active conversation state has already had first crack at the message
+    and returned -- so a deposit amount, a Binance Order ID, a product
+    quantity, an email, a coupon code, etc. never reach this function at
+    all. It exists purely to replace the old "Send /start" reply a user got
+    when they typed a bare keyword (e.g. "youtube", "linkedin") with no
+    active state in progress.
+
+    Returns True once it has sent a reply (a match list or a "no products
+    found" message) so the caller knows the message was handled. Returns
+    False for empty/whitespace-only text so the caller can fall back to its
+    original "use /start" message for that edge case instead of showing a
+    confusing empty-keyword search result.
+    """
+    from telegram import InlineKeyboardMarkup
+    from utils.button_styles import AutoStyledButton as InlineKeyboardButton
+    from utils.premium_emoji import button_premium
+    from database.db import search_products_and_categories, get_category_counts, get_category_stock_map
+    from products.product_handlers import _product_button_rows
+
+    keyword = text.strip()
+    if not keyword:
+        return False
+
+    products, categories = search_products_and_categories(keyword)
+    safe_keyword = html.escape(keyword, quote=False)
+
+    if not products and not categories:
+        await update.message.reply_text(
+            f'🔎 <b>No products found for</b> "<code>{safe_keyword}</code>"',
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🛍 Browse Products", callback_data="shop")]]
+            ),
+            parse_mode="HTML"
+        )
+        return True
+
+    kb = []
+    lines = [f'🔎 <b>Search results for</b> "<code>{safe_keyword}</code>"']
+
+    if categories:
+        counts = get_category_counts()
+        stock_map = get_category_stock_map()
+        lines.append("")
+        lines.append("📂 <b>Matching categories</b>")
+        for cid, cname, _sort, _cactive, cicon in categories:
+            _ctext, _cpremium = button_premium(cname)
+            _cic = (cicon or "").strip()
+            count = counts.get(cid, 0)
+            cat_has_stock = stock_map.get(cid, False)
+            kb.append([
+                InlineKeyboardButton(
+                    f"{_cic + ' ' if _cic else ''}{_ctext} ({count})",
+                    callback_data=f"shopcat_{cid}",
+                    style="primary" if cat_has_stock else "danger",
+                    icon_custom_emoji_id=_cpremium
+                )
+            ])
+
+    if products:
+        # Reuses the exact same row renderer the shop/category views use
+        # (live stock, flash price, premium emoji) so results look identical
+        # to browsing there normally.
+        kb.extend(_product_button_rows(products))
+    elif categories:
+        lines.append("")
+        lines.append("No individual products matched -- try opening a category above.")
+
+    kb.append([InlineKeyboardButton("🛍 Browse All Products", callback_data="shop")])
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="HTML"
+    )
+    return True
+
+
 async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
     if update.message is None or update.message.from_user is None:
         return
@@ -1786,6 +1867,18 @@ Admin will reply soon.""",
     if state and state.startswith("admin_"):
         handled = await handle_admin_message(update, context, uid, text, state)
         if handled:
+            return
+        # Unrecognised admin_* state: fall through to the plain "/start"
+        # message below rather than guessing -- an admin mid-flow typing
+        # something unexpected should not suddenly get a product search.
+
+    # No active conversation state consumed this message (every state branch
+    # above returns), so it isn't a deposit amount, an order ID, a quantity,
+    # a coupon code, etc. Only NOW do we treat it as a product/category
+    # search keyword -- this is what used to fall straight through to the
+    # generic "Send /start" reply for things like "youtube" or "linkedin".
+    if not state:
+        if await _product_search_fallback(update, uid, text):
             return
 
     await update.message.reply_text(
