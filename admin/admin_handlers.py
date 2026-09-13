@@ -1416,8 +1416,10 @@ def _category_picker_kb(action):
     rows = []
     for cid, cname, _sort, _active, cicon in get_categories():
         _ptext, _picon = button_premium(cname)
+        _cic = (cicon or "").strip()
+        # Category names render EXACTLY as the admin entered them (no auto icon).
         rows.append([InlineKeyboardButton(
-            f"{cicon or chr(0x1F4C2)} {_ptext}",
+            f"{_cic + ' ' if _cic else ''}{_ptext}",
             callback_data=f"admin_cat_pickdo:{action}:{cid}",
             icon_custom_emoji_id=_picon
         )])
@@ -5701,9 +5703,18 @@ Examples:
         datax = admin_temp_data.get(uid, {})
         cat = get_category(datax.get("cat_create_id")) if datax.get("cat_create_id") else None
         if not cat:
+            # Diagnostics for the deploy logs: losing the id here means the
+            # INSERT's id could not be read back (pgcompat lastrowid on PG).
+            log_error(
+                "Category create flow lost its category id",
+                extra=f"uid={uid} cat_create_id={datax.get('cat_create_id')!r} input={text[:60]!r}",
+            )
             user_state.pop(uid, None)
             admin_temp_data.pop(uid, None)
-            await update.message.reply_text("❌ <b>Category not found.</b>", parse_mode="HTML")
+            await update.message.reply_text(
+                "❌ <b>Category not found.</b>\nThe category's internal id could not be read back after creation. "
+                "Please try again — if it repeats, share the Deploy Logs line 'Category create flow lost its category id'.",
+                parse_mode="HTML")
             return True
         await _admin_cat_handle_product_id(update, uid, text, cat, in_create_flow=True)
         return True
