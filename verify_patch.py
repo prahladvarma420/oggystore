@@ -82,7 +82,7 @@ TEXT_CHECKS = {
     ],
     "web_admin/static/js/app.js": [
         "manageCategories", "productCatFilter", "cat_icon_",   # category manager
-        "usersGo", "usersLastSearch",                            # users pagination
+        "usersGo", "usersSearchBox",                              # users paging + search box
         "applyOrderFilters", "orderPageGo",                      # orders search/pagination
     ],
     "services/m365_family.py": ["account.microsoft.com/family"],
