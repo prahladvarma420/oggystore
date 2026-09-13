@@ -13,8 +13,7 @@ from utils.crypto import encrypt_text
 from utils.ui import edit_or_send
 from utils.delivery_file import is_bulk_delivery, send_delivery_txt
 
-# Shop category browsing: page sizes (picker / products inside a category).
-SHOP_CATEGORY_PAGE_SIZE = 10
+# Shop browsing page size: products shown per page inside a category.
 SHOP_PRODUCT_PAGE_SIZE = 8
 from utils.error_logger import log_error
 from utils.states import user_state
@@ -505,29 +504,21 @@ Rate Used: <b>${unit_price:.2f}</b> each
     await edit_or_send(q, text, order_preview_menu(product_id, quantity, balance, total_price, coupon_code))
 
 
-async def show_shop(q, page=1):
-    """Shop entry point. With categories configured, shows the category picker
-    (📦 Other collects uncategorized products). Without any categories it
-    falls back to the classic flat product list, so existing stores keep
-    working completely unchanged. Paginated so huge catalogs stay usable."""
+async def show_shop(q):
+    """Shop entry point. With categories configured, shows ALL categories in
+    one continuous list -- no pagination. Without any categories it falls back
+    to the classic flat product list, so existing stores keep working
+    completely unchanged."""
     categories = get_categories(active_only=True)
     counts = get_category_counts()
 
     if categories:
-        try:
-            page = max(1, int(page or 1))
-        except (TypeError, ValueError):
-            page = 1
-        total_pages = max(1, math.ceil(len(categories) / SHOP_CATEGORY_PAGE_SIZE))
-        page = min(page, total_pages)
-        page_cats = categories[(page - 1) * SHOP_CATEGORY_PAGE_SIZE: page * SHOP_CATEGORY_PAGE_SIZE]
-
         kb = []
         bundles = get_active_bundles()
         if bundles:
             kb.append([InlineKeyboardButton(get_message_template("btn_bundle_deals", BTN_BUNDLE_DEALS_DEFAULT), callback_data="bundles")])
 
-        for cid, cname, _sort, _cactive, cicon in page_cats:
+        for cid, cname, _sort, _cactive, cicon in categories:
             count = counts.get(cid, 0)
             _ctext, _cpremium = button_premium(cname)
             _cic = (cicon or "").strip()
@@ -542,25 +533,15 @@ async def show_shop(q, page=1):
                 )
             ])
 
-        if page == total_pages:
-            other_count = counts.get(0, 0)
-            if other_count:
-                kb.append([
-                    InlineKeyboardButton(
-                        f"\U0001f4e6 Other ({other_count})",
-                        callback_data="shopcat_0",
-                        style="primary"
-                    )
-                ])
-
-        if total_pages > 1:
-            nav = []
-            if page > 1:
-                nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"shopcats_{page - 1}"))
-            nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data=f"shopcats_{page}"))
-            if page < total_pages:
-                nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"shopcats_{page + 1}"))
-            kb.append(nav)
+        other_count = counts.get(0, 0)
+        if other_count:
+            kb.append([
+                InlineKeyboardButton(
+                    f"\U0001f4e6 Other ({other_count})",
+                    callback_data="shopcat_0",
+                    style="primary"
+                )
+            ])
 
         kb.append([
             InlineKeyboardButton("🔄 Refresh", callback_data="shop"),
