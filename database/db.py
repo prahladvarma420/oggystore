@@ -3015,7 +3015,14 @@ def get_category_by_name(name):
 
 
 def create_category(name, icon=""):
-    """Append a new category at the end of the display order."""
+    """Append a new category at the end of the display order.
+
+    Returns the new row's id on BOTH backends. On PostgreSQL the pgcompat
+    translation only adds RETURNING id for tables listed in ID_TABLES (and
+    "categories" is not one of them), so cur.lastrowid comes back None -- or
+    worse, stale from a previous INSERT on the shared cursor. That lost id is
+    what made the admin create-flow fail with "Category not found". Never
+    trust lastrowid blindly: verify it, else re-read the row we just wrote."""
     cur.execute("SELECT COALESCE(MAX(sort_order), 0) FROM categories")
     next_order = int(cur.fetchone()[0] or 0) + 1
     cur.execute(
@@ -3023,7 +3030,22 @@ def create_category(name, icon=""):
         (str(name).strip(), str(icon or "").strip(), next_order),
     )
     conn.commit()
-    return cur.lastrowid
+    cid = cur.lastrowid
+    valid = False
+    if cid:
+        try:
+            cur.execute("SELECT id FROM categories WHERE id=?", (int(cid),))
+            valid = cur.fetchone() is not None
+        except Exception:
+            valid = False
+    if not valid:
+        cur.execute(
+            "SELECT id FROM categories WHERE name=? ORDER BY id DESC LIMIT 1",
+            (str(name).strip(),),
+        )
+        row = cur.fetchone()
+        cid = row[0] if row else None
+    return cid
 
 
 def set_category_icon(category_id, icon):
