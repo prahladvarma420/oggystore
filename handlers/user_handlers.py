@@ -1,1754 +1,2165 @@
-from datetime import datetime
+import os
+from pathlib import Path
 import html
-import io
-import math
-import random
+import re
 import time
-from telegram import InlineKeyboardMarkup
-from utils.button_styles import AutoStyledButton as InlineKeyboardButton, make_copy_button, copy_amount_text
-from utils.premium_emoji import strip_premium, first_premium_id, button_premium, premium_safe
-from database.db import render_message_template, get_message_template, BUNDLE_DETAILS_DEFAULT, SHOP_INTRO_DEFAULT, BUNDLES_INTRO_DEFAULT, BUNDLES_EMPTY_DEFAULT, BTN_BUNDLE_DEALS_DEFAULT, BTN_BACK_TO_PRODUCTS_DEFAULT, BTN_BACK_TO_BUNDLES_DEFAULT, BTN_BUY_BUNDLE_DEFAULT,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items, is_m365_product, is_canva_product, get_m365_product_warranty, get_categories, get_category, get_category_counts, get_category_products, get_category_stock_map
-from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
-from utils.crypto import encrypt_text
-from utils.ui import edit_or_send
-from utils.delivery_file import is_bulk_delivery, send_delivery_txt
-
-# Shop browsing page size: products shown per page inside a category.
-SHOP_PRODUCT_PAGE_SIZE = 8
+from telegram.ext import ContextTypes
+from database.db import get_setting, set_user_coupon, render_message_template, cur, conn, ensure_user, get_balance, is_blocked, is_admin, create_ticket, get_user_tickets, add_referral, get_referral_stats, create_withdrawal_request, get_user_withdrawals, get_user_coupon, validate_coupon, get_coupon_user_uses, clear_user_coupon, restore_backup_zip, add_restock_notification
+from utils.crypto import decrypt_text
+from utils.premium_emoji import strip_premium
+from utils.delivery_file import split_delivery_items, send_delivery_txt
+from utils.timezone import display_time
 from utils.error_logger import log_error
+from keyboards.menus import main_menu, profile_menu, back_home, support_menu
+from utils.texts import welcome_text
+from utils.ui import edit_or_send
 from utils.states import user_state
-
-try:
-    from utils.timezone import now, now_text
-except Exception:
-    def now():
-        return datetime.now()
-
-    def now_text():
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-from config import ADMIN_ID, LOW_STOCK_ALERT_THRESHOLD, USDT_BEP20_ADDRESS, USDT_TRC20_ADDRESS, DEPOSIT_EXPIRE_HOURS, STORE_NAME
+from products.product_handlers import show_shop, show_category, show_product, buy_product, show_order_preview, start_direct_checkout, show_quantity_menu, show_bundles, show_bundle_details, buy_bundle
+from payments.deposit_handlers import start_deposit, handle_deposit_amount, deposit_shortfall, create_deposit_invoice, handle_copy_invoice
+from admin.admin_handlers import show_admin_panel, handle_admin_callback, handle_admin_message
+from config import ADMIN_USERNAME, ADMIN_ID
+from database.db import create_gift_code, redeem_gift_code, get_user_gift_codes, get_warranty_orders, get_order_for_warranty, is_warranty_banned, count_recent_replacements, create_replacement, reserve_stock_item
 
 
-# Prevents users from double-clicking Buy Now and buying twice at the same time.
-# Timestamp locks auto-expire if a stale lock remains.
-PURCHASE_LOCKS = {}
-PURCHASE_LOCK_TIMEOUT_SECONDS = 90
+# Security anti-spam settings.
+RATE_LIMIT_SECONDS = 1.5
+SPAM_WARN_LIMIT = 6
+SPAM_LOCK_SECONDS = 30
+
+user_last_action = {}
+user_warn_count = {}
+user_locked_until = {}
+
+# ---------------- Force-join gate ----------------
+# Users must join the official channels before using the bot.
+# Controlled by settings: force_join_enabled ('1'/'0') and
+# force_join_channels (comma-separated @usernames).
+# NOTE: the bot must be an ADMIN in each channel/group to check membership.
+
+_join_cache = {}  # uid -> cache expiry timestamp (positive results only)
+
+# These per-user dicts previously grew forever -- every user who ever touched
+# the bot stayed in memory until the process restarted. Prune them cheaply.
+_LAST_PRUNE = [0.0]
+_PRUNE_INTERVAL_SECONDS = 600
+_STALE_AFTER_SECONDS = 3600
 
 
-def _prune_purchase_locks(now_ts):
-    """Drop expired purchase locks so this dict cannot grow without bound."""
-    for _k, _ts in list(PURCHASE_LOCKS.items()):
-        if now_ts - _ts >= PURCHASE_LOCK_TIMEOUT_SECONDS:
-            PURCHASE_LOCKS.pop(_k, None)
+def _prune_memory_caches(now_ts=None):
+    """Drop stale per-user entries. Runs at most once every 10 minutes."""
+    now_ts = time.time() if now_ts is None else now_ts
+    if now_ts - _LAST_PRUNE[0] < _PRUNE_INTERVAL_SECONDS:
+        return
+    _LAST_PRUNE[0] = now_ts
+
+    for _k, _expiry in list(_join_cache.items()):
+        if _expiry <= now_ts:
+            _join_cache.pop(_k, None)
+
+    for _k, _ts in list(user_last_action.items()):
+        if now_ts - _ts > _STALE_AFTER_SECONDS:
+            user_last_action.pop(_k, None)
+            user_warn_count.pop(_k, None)
+
+    for _k, _until in list(user_locked_until.items()):
+        if _until <= now_ts:
+            user_locked_until.pop(_k, None)
 
 
+def _force_join_channels():
+    raw = get_setting("force_join_channels", "@oggypremiumstore,@oggypremiumchat") or ""
+    out = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if part.startswith("https://t.me/"):
+            part = "@" + part.split("t.me/")[1].strip("/")
+        if part and not part.startswith("@"):
+            part = "@" + part
+        if part and part != "@":
+            out.append(part)
+    return out
 
-async def notify_restock_users(context_bot, product_id: int, product_name: str, available_stock: int):
-    """Notify users who requested restock alerts."""
-    try:
-        if available_stock <= 0:
-            return
 
-        waiters = get_restock_waiters(product_id)
-        if not waiters:
-            return
+async def get_unjoined_channels(bot, uid):
+    """Return the list of required channels this user has NOT joined."""
+    if str(get_setting("force_join_enabled", "1")).strip() != "1":
+        return []
+    if bot is None:
+        return []
+    now_ts = time.time()
+    if _join_cache.get(uid, 0) > now_ts:
+        return []
 
-        sent = 0
-        for user_id in waiters:
+    missing = []
+    for ch in _force_join_channels():
+        try:
+            member = await bot.get_chat_member(chat_id=ch, user_id=uid)
+            if getattr(member, "status", "") in ("left", "kicked"):
+                missing.append(ch)
+        except Exception:
+            # Bot not admin in that channel / wrong username -> don't lock
+            # everyone out. Fix the channel setup and the gate resumes.
+            continue
+
+    if not missing:
+        _join_cache[uid] = now_ts + 30  # re-check at most every 30 sec
+    return missing
+
+
+def force_join_text():
+    return (
+        "🔐 <b>Join Our Channels To Continue</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "To use this bot, please join our official channels first:\n\n"
+        "📢 <b>Announcements</b> — offers, new stock &amp; updates\n"
+        "💬 <b>Discussion</b> — community &amp; support\n\n"
+        "1️⃣ Tap the buttons below to join\n"
+        "2️⃣ Then tap <b>✅ I Joined</b>"
+    )
+
+
+def force_join_markup(missing):
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    rows = []
+    for ch in missing:
+        uname = ch.lstrip("@")
+        rows.append([InlineKeyboardButton(f"➕ Join @{uname}", url=f"https://t.me/{uname}")])
+    rows.append([InlineKeyboardButton("✅ I Joined", callback_data="check_join")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def process_warranty_request(q, uid, order_id, context):
+    """Hybrid warranty: instant auto-replace for users in good standing,
+    manual admin review when abuse signals appear or stock is empty."""
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+
+    if str(get_setting("warranty_enabled", "1")).strip() != "1":
+        await edit_or_send(q, "🛡 <b>Warranty is currently disabled.</b>", back_home())
+        return
+
+    order = get_order_for_warranty(order_id, uid)
+
+    if not order:
+        await edit_or_send(
+            q,
+            "❌ <b>Not Eligible</b>\n\nThis order is outside the warranty window, was already replaced once, or does not support auto-replacement.\n\nPlease create a support ticket instead.",
+            back_home()
+        )
+        return
+
+    _oid, w_product_id, w_product_name, w_delivery_enc = order
+    old_delivery = decrypt_text(w_delivery_enc) or ""
+    safe_name = html.escape(strip_premium(str(w_product_name)), quote=False)
+
+    max_week = int(float(get_setting("warranty_max_week", "3") or 3))
+    suspicious = is_warranty_banned(uid) or count_recent_replacements(uid, 7) >= max_week
+
+    if not suspicious:
+        new_code = reserve_stock_item(w_product_id, uid)
+
+        if new_code:
+            cur.execute("UPDATE products SET stock=stock-1 WHERE id=? AND stock > 0", (w_product_id,))
+            conn.commit()
+            rid = create_replacement(order_id, uid, w_product_id, old_delivery, new_code, "auto")
+
+            await edit_or_send(
+                q,
+                "✅ <b>Replacement Sent</b>\n\n"
+                f"🧾 Order: <code>#{order_id}</code>\n"
+                f"📦 {safe_name}\n\n"
+                f"🔑 <b>New Delivery:</b>\n<code>{html.escape(new_code, quote=False)}</code>\n\n"
+                "This order's one-time warranty replacement has now been used.",
+                main_menu(uid)
+            )
+
             try:
-                await context_bot.send_message(
-                    chat_id=user_id,
-                    text=render_message_template(
-                        "restock_alert",
-                        "🔔 <b>Back In Stock!</b>\n\n📦 <b>{product_name}</b>\n📊 Available: <code>{stock}</code>\n\nTap below to buy now 👇",
-                        product_name=premium_safe(product_name),
-                        stock=available_stock,
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "🛡 <b>Auto Replacement Issued</b>\n\n"
+                        f"🧾 Replacement: <code>#{rid}</code> | Order: <code>#{order_id}</code>\n"
+                        f"👤 User: <code>{uid}</code>\n"
+                        f"📦 {safe_name}\n\n"
+                        f"🔴 <b>Old:</b>\n<code>{html.escape(old_delivery[:600], quote=False)}</code>\n\n"
+                        f"🟢 <b>New:</b>\n<code>{html.escape(new_code, quote=False)}</code>\n\n"
+                        "Verify the old code if you suspect abuse — Admin Panel → 🛡 Warranty Requests."
                     ),
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🛒 Buy Now", callback_data=f"product_{product_id}")]
-                    ]),
                     parse_mode="HTML"
                 )
-                sent += 1
             except Exception:
                 pass
 
-        # Only clear the waiting list if at least one alert actually went out.
-        # Previously a total send failure still wiped every waiter, so those
-        # users silently never got their restock alert.
-        if sent:
-            mark_restock_notified(product_id)
+            return
+
+    # Manual review path (abuse signals, warranty ban, or no stock left).
+    rid = create_replacement(order_id, uid, w_product_id, old_delivery, "", "pending")
+
+    await edit_or_send(
+        q,
+        "🕒 <b>Replacement Request Sent</b>\n\n"
+        f"🧾 Order: <code>#{order_id}</code>\n"
+        f"📦 {safe_name}\n\n"
+        "Your request needs admin review. You will be notified here once it is processed.",
+        main_menu(uid)
+    )
+
+    try:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Approve", callback_data="admin_warr_ok_" + str(rid)),
+             InlineKeyboardButton("❌ Deny", callback_data="admin_warr_no_" + str(rid))],
+            [InlineKeyboardButton("🚫 Warranty-Ban User", callback_data="admin_warr_ban_" + str(uid))],
+        ])
+        banned_note = " | 🚫 <b>warranty-banned</b>" if is_warranty_banned(uid) else ""
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                "🛡 <b>Replacement Needs Review</b>\n\n"
+                f"🧾 Replacement: <code>#{rid}</code> | Order: <code>#{order_id}</code>\n"
+                f"👤 User: <code>{uid}</code>\n"
+                f"📦 {safe_name}\n"
+                f"📊 Replacements (7d): <code>{count_recent_replacements(uid, 7)}</code>" + banned_note + "\n\n"
+                f"🔴 <b>Old Delivery:</b>\n<code>{html.escape(old_delivery[:600], quote=False)}</code>"
+            ),
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+    except Exception:
+        pass
+
+
+PROFILE_MSG_DEFAULT = (
+    "👤 <b>My Profile</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💼 <b>Wallet Balance:</b> <b>{balance} USDT</b>\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💰 <b>Total Spent:</b> <b>${spent}</b>\n\n💳 <b>Paid Deposits:</b> <b>{deposits}</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n\n🎁 <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n\n🎟 <b>Coupon:</b> {coupon}\n🔔 <b>Notifications:</b> {notifications}"
+)
+WALLET_MSG_DEFAULT = (
+    "💼 <b>My Wallet</b>\n\n🆔 <b>User ID:</b> <code>{user_id}</code>\n👤 <b>Name:</b> {name}\n🔗 <b>Username:</b> {username}\n\n💰 <b>Available Balance:</b> <b>{balance} USDT</b>\n📥 <b>Total Deposited:</b> <b>{deposited} USDT</b>\n🧾 <b>Paid Deposits:</b> <b>{deposits}</b>\n\n🛒 <b>Total Orders:</b> <b>{orders}</b>\n💸 <b>Total Spent:</b> <b>{spent} USDT</b>\n\n🎁 <b>Referral Earnings:</b> <b>{referral_earnings} USDT</b>\n⏳ <b>Pending Referral:</b> <b>{referral_pending} USDT</b>\n⭐ <b>Loyalty Points:</b> <b>{loyalty_points}</b>\n🏆 <b>VIP Rank:</b> <b>{vip_rank}</b>\n\nUse Deposit to add balance, then pay directly from wallet during checkout."
+)
+SUPPORT_PROMPT_DEFAULT = (
+    "🎫 <b>Create Support Ticket</b>\n\nSend your issue/message now.\n\nExample:\nPayment done but balance not added."
+)
+
+
+def is_rate_limited(user_id: int) -> bool:
+    if is_admin(user_id):
+        return False
+
+    now = time.time()
+    locked_until = user_locked_until.get(user_id, 0)
+
+    if locked_until and now < locked_until:
+        return True
+
+    last = user_last_action.get(user_id, 0)
+
+    if now - last < RATE_LIMIT_SECONDS:
+        user_warn_count[user_id] = user_warn_count.get(user_id, 0) + 1
+
+        if user_warn_count[user_id] >= SPAM_WARN_LIMIT:
+            user_locked_until[user_id] = now + SPAM_LOCK_SECONDS
+            user_warn_count[user_id] = 0
+
+        return True
+
+    user_last_action[user_id] = now
+    user_warn_count[user_id] = 0
+    return False
+
+
+def get_lock_seconds(user_id: int) -> int:
+    now = time.time()
+    locked_until = user_locked_until.get(user_id, 0)
+    if locked_until and now < locked_until:
+        return int(locked_until - now)
+    return 0
+
+
+async def send_rate_limit_message(obj, uid=None):
+    if uid is None:
         try:
-            await context_bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"🔔 <b>Restock notifications sent</b>\n\n📦 {_admin_name(product_name)}\n👥 Sent: <code>{sent}</code>",
-                parse_mode="HTML"
+            uid = obj.from_user.id
+        except Exception:
+            try:
+                uid = obj.message.from_user.id
+            except Exception:
+                uid = 0
+    text = f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(uid) or 2} seconds before using the bot again."
+    try:
+        await edit_or_send(obj, text)
+    except Exception:
+        await obj.message.reply_text(text, parse_mode="HTML")
+
+
+async def start(update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None or update.message.from_user is None:
+        return
+    user = update.message.from_user
+    ensure_user(user)
+
+    try:
+        welcome_coupon = get_setting("auto_welcome_coupon", "")
+        if welcome_coupon:
+            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (user.id,))
+            order_count = cur.fetchone()[0]
+            if order_count == 0:
+                set_user_coupon(user.id, welcome_coupon)
+    except Exception:
+        pass
+
+    try:
+        if context.args:
+            ref_arg = context.args[0]
+            if ref_arg.startswith("ref_"):
+                referrer_id = int(ref_arg.replace("ref_", ""))
+                if add_referral(referrer_id, user.id):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=referrer_id,
+                            text=(
+                                "🎁 <b>New Referral Joined</b>\n\n"
+                                f"👤 User: <code>{user.id}</code>\n"
+                                f"🧾 Name: {user.first_name or 'User'}"
+                            ),
+                            parse_mode="HTML"
+                        )
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    if is_blocked(user.id):
+        await update.message.reply_text(
+            "🚫 <b>Access Denied</b>\n\nYour account is blocked from using this bot.",
+            parse_mode="HTML"
+        )
+        return
+
+    if is_rate_limited(user.id):
+        await update.message.reply_text(
+            f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(user.id) or 2} seconds before using the bot again.",
+            parse_mode="HTML"
+        )
+        return
+
+    if not is_admin(user.id):
+        missing = await get_unjoined_channels(context.bot, user.id)
+        if missing:
+            await update.message.reply_text(
+                force_join_text(),
+                reply_markup=force_join_markup(missing),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
             )
-        except Exception:
-            pass
-
-    except Exception as exc:
-        log_error("Restock notify failed", exc, extra=f"product={product_id}")
-
-
-def _admin_name(value):
-    """Product name for HTML messages: premium-emoji tags -> fallback emoji,
-    other HTML tags removed, then HTML-escaped so stray < > & never break
-    parse_mode=HTML."""
-    return html.escape(strip_premium(value), quote=False)
-
-
-async def notify_low_stock(context_bot, product_id: int, product_name: str, remaining_stock: int):
-    """Smart low-stock alert: only alert at configured levels like 5,1."""
-    try:
-        raw_levels = get_setting_value("low_stock_alert_levels", "5,1")
-        levels = sorted([int(x.strip()) for x in raw_levels.split(",") if x.strip().isdigit()], reverse=True)
-        if not levels:
-            levels = [5, 1]
-
-        cur.execute("SELECT low_stock_notified FROM products WHERE id=?", (product_id,))
-        row = cur.fetchone()
-        last_notified = int(row[0] or 0) if row else 0
-
-        # Pick the TIGHTEST matching level (stock=1 -> alert level 1, not 5).
-        matching = [level for level in levels if remaining_stock <= level]
-        if not matching:
-            return
-        alert_level = min(matching)
-
-        # Already alerted at this level or a tighter one -> never send a duplicate.
-        if last_notified and last_notified <= alert_level:
             return
 
-        cur.execute("UPDATE products SET low_stock_notified=? WHERE id=?", (alert_level, product_id))
-        conn.commit()
-
-        await context_bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                "⚠️ <b>Low Stock Alert</b>\n\n"
-                f"📦 <b>Product:</b> {_admin_name(product_name)}\n"
-                f"🆔 <b>ID:</b> <code>{product_id}</code>\n"
-                f"📊 <b>Remaining:</b> <code>{remaining_stock}</code>\n"
-                f"🔔 <b>Alert Level:</b> <code>{alert_level}</code>\n\n"
-                "➕ Add more stock from Admin Panel."
-            ),
-            parse_mode="HTML"
-        )
-
-    except Exception as exc:
-        log_error("Low stock alert failed", exc, extra=f"product={product_id}")
+    await update.message.reply_text(
+        welcome_text(user.first_name),
+        reply_markup=main_menu(user.id),
+        disable_web_page_preview=True,
+        parse_mode="HTML",
+    )
 
 
-async def notify_admin_order(
-    context_bot,
-    user_id,
-    product_id,
-    product_name,
-    total_price,
-    quantity,
-    remaining_stock,
-):
+async def admin(update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None or update.message.from_user is None:
+        return
+    user = update.message.from_user
+    ensure_user(user)
+
     try:
-        await context_bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                "🛒 <b>New Order Received</b>\n\n"
-                f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
-                f"📦 <b>Product:</b> {_admin_name(product_name)}\n"
-                f"🆔 <b>Product ID:</b> <code>{product_id}</code>\n"
-                f"🔢 <b>Quantity:</b> <code>{quantity}</code>\n"
-                f"💰 <b>Total:</b> <code>{total_price:.2f} USDT</code>\n"
-                f"📊 <b>Remaining Stock:</b> <code>{remaining_stock}</code>"
-            ),
-            parse_mode="HTML"
-        )
-    except Exception as exc:
-        log_error("Admin order notify failed", exc, extra=f"user={user_id}")
-
-
-def clean(value, default="Not mentioned"):
-    if value is None:
-        return default
-
-    value = str(value).strip()
-    if not value:
-        return default
-    # Text captured with premium emojis is stored as ready-to-send HTML
-    # (<tg-emoji> tags, already escaped) — display it as-is.
-    if "<tg-emoji" in value:
-        return value
-    # Escape <, > and & so Telegram HTML parse_mode never fails on stored
-    # text like "delivery in <7 days" or "<3".
-    return html.escape(value, quote=False)
-
-
-
-def format_price(price) -> str:
-    """$18 for whole numbers, $1.50 otherwise — clean shop-list style."""
-    try:
-        price = float(price)
-    except Exception:
-        price = 0.0
-    if price == int(price):
-        return f"${int(price)}"
-    return f"${price:.2f}"
-
-
-def bulk_discount_lines(product_id: int, display_price, stock: int) -> str:
-    """Bulk Discounts block using this product's price offers (qty tiers)."""
-    try:
-        tiers = get_product_price_tiers(product_id)
-        if not tiers:
-            return ""
-
-        original_base = None
-        for _, tq, tp in tiers:
-            if int(tq) == 1:
-                original_base = float(tp)
-                break
-
-        # Flash sale: offers are shown as simple multiples of the flash
-        # price (e.g. flash $2.50 -> 5 for $12.50), matching the charge.
-        _is_flash = False
-        try:
-            cur.execute("SELECT price, flash_price, flash_ends_at FROM products WHERE id=?", (product_id,))
-            _row = cur.fetchone()
-            if _row:
-                _, _is_flash = get_effective_price(float(_row[0] or 0), _row[1], _row[2])
-        except Exception:
-            _is_flash = False
-
-        lines = []
-        for _, tq, tp in tiers:
-            tq = int(tq)
-            if stock >= tq:
-                final_tp = float(tp)
-                if _is_flash:
-                    final_tp = round(float(display_price) * tq, 2)
-                elif original_base and original_base > 0:
-                    final_tp = round(float(tp) * (float(display_price) / original_base), 2)
-                lines.append(f"{tq} for <b>{format_price(final_tp)}</b>")
-
-        if not lines:
-            return ""
-        return "<b>Bulk Discounts:</b>\n" + "\n".join(lines)
-    except Exception:
-        return ""
-
-
-def colorful_stock_badge(stock: int):
-    try:
-        stock = int(stock or 0)
-    except Exception:
-        stock = 0
-
-    if stock <= 0:
-        return "🔴 Stock: 0"
-    if stock <= 2:
-        return f"🟠 Stock: {stock}"
-    if stock <= 5:
-        return f"🟡 Stock: {stock}"
-    return f"🟢 Stock: {stock}"
-
-
-def name_header(name, icon="📦"):
-    """Product name headline. Skips the normal-emoji prefix when the name
-    already contains a premium emoji so the emoji is not shown twice."""
-    if "<tg-emoji" in str(name):
-        return f"<b>{name}</b>"
-    return f"{icon} <b>{name}</b>"
-
-
-def colorful_product_icon(name: str):
-    name = (name or "").lower()
-    if "youtube" in name:
-        return "▶️"
-    if "chatgpt" in name or "gpt" in name or "openai" in name:
-        return "🤖"
-    if "canva" in name:
-        return "🎨"
-    if "linkedin" in name:
-        return "💼"
-    if "netflix" in name:
-        return "🎬"
-    if "gemini" in name:
-        return "✨"
-    if "capcut" in name:
-        return "✂️"
-    if "vpn" in name or "nord" in name:
-        return "🛡"
-    if "mail" in name or "outlook" in name:
-        return "📧"
-    if "notion" in name:
-        return "📝"
-    if "adobe" in name:
-        return "🎭"
-    return "📦"
-
-
-def stock_label(stock: int) -> str:
-    if stock <= 0:
-        return "🔴 Out"
-    return f"🟢 {stock}"
-
-
-def format_delivery_items(items):
-    if isinstance(items, list):
-        items = [str(item) for item in items]
-        # Multi-line account blocks (uploaded .txt stock) get numbered
-        # separators so the customer can tell the accounts apart.
-        if len(items) > 1 and any("\n" in it for it in items):
-            sep = "\u2500" * 28
-            out = []
-            for i, it in enumerate(items, 1):
-                out.append(
-                    f"{sep}\n\U0001f464 ACCOUNT {i} of {len(items)}\n{sep}\n{it}"
-                )
-            return "\n\n".join(out)
-        return "\n\n".join(items)
-    return str(items)
-
-
-def calculate_total_price(product_id: int, base_price: float, quantity: int) -> float:
-    """Calculate total price using best available tier rate proportionally.
-
-    Example: if 10 for $5 exists, custom quantity 13 = 13 * 0.50 = $6.50.
-    Uses the cheapest per-item rate among tiers where tier quantity <= requested quantity.
-    Falls back to base price if no matching tier exists.
-    """
-    quantity = int(quantity)
-    base_price = float(base_price)
-
-    # Flash sale: every quantity is charged as a simple multiple of the
-    # flash price (e.g. flash $2.50 -> 1 for $2.50, 5 for $12.50, 13 for
-    # $32.50). Bulk offer discounts are suspended while the flash sale is
-    # active and come back automatically when it ends.
-    try:
-        cur.execute("SELECT price, flash_price, flash_ends_at FROM products WHERE id=?", (product_id,))
-        _row = cur.fetchone()
-        if _row:
-            _effective, _is_flash = get_effective_price(float(_row[0] or 0), _row[1], _row[2])
-            if _is_flash and float(_effective) > 0:
-                return round(float(_effective) * quantity, 2)
+        welcome_coupon = get_setting("auto_welcome_coupon", "")
+        if welcome_coupon:
+            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (user.id,))
+            order_count = cur.fetchone()[0]
+            if order_count == 0:
+                set_user_coupon(user.id, welcome_coupon)
     except Exception:
         pass
 
-    tiers = get_product_price_tiers(product_id)
-    best_unit_price = base_price
+    if user.id is None:
+        return
 
-    # Bulk offers scale with the current (flash/discounted) price using the
-    # same math as the offer buttons (_scaled_offer_button_price), so the
-    # customer is charged exactly what the button says: with offers
-    # 1 for $4 / 5 for $17 and a $2.50 flash sale, 5 costs $10.63 - not $17.
-    original_base = None
-    for _, _tq, _tp in tiers:
-        if int(_tq) == 1 and float(_tp) > 0:
-            original_base = float(_tp)
-            break
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ <b>Admin only.</b>", parse_mode="HTML")
+        return
 
-    for _, tier_qty, tier_price in tiers:
-        tier_qty = int(tier_qty)
-        tier_price = float(tier_price)
-        if original_base:
-            tier_price = round(tier_price * (base_price / original_base), 2)
-        if tier_qty <= quantity and tier_qty > 0:
-            unit_price = tier_price / tier_qty
-            if unit_price < best_unit_price:
-                best_unit_price = unit_price
-
-    return round(best_unit_price * quantity, 2)
+    from keyboards.menus import admin_menu
+    await update.message.reply_text(
+        "���� <b>Admin Panel</b>\n\n<i>Manage your shop from here.</i>",
+        reply_markup=admin_menu(),
+        parse_mode="HTML"
+    )
 
 
-
-def get_effective_price(price, flash_price=None, flash_ends_at=None):
-    """Apply flash sale price only while the flash sale is active."""
-    try:
-        if flash_price is not None and flash_ends_at:
-            # Compare as sortable text ("YYYY-MM-DD HH:MM:SS") — robust against
-            # timezone-aware/naive mismatches and 'T'-separated formats.
-            ends_text = str(flash_ends_at).replace("T", " ")[:19]
-            current_text = now().strftime("%Y-%m-%d %H:%M:%S")
-
-            if ends_text > current_text:
-                return float(flash_price), True
-    except Exception:
-        pass
-
-    return float(price), False
+def _order_quantity_from_name(product_name, items_count):
+    """Quantity shown on an order: parsed from the stored 'Name xN' label,
+    falling back to the number of delivered items."""
+    m = re.search(r"\s+x(\d+)$", str(product_name or ""))
+    if m:
+        return int(m.group(1))
+    return int(items_count or 0) or 1
 
 
-def get_product_basic(product_id: int):
+def _get_owned_order(order_id, uid):
+    """Fetch an order ONLY when it belongs to this user. The user_id filter
+    is the ownership check: one user can never read another user's delivery."""
     cur.execute(
-        """
-        SELECT name, price, stock, flash_price, flash_ends_at
-        FROM products
-        WHERE id=? AND active=1
-        """,
-        (product_id,)
+        "SELECT id, product_name, price, delivery, created FROM orders WHERE id=? AND user_id=?",
+        (order_id, uid),
     )
-    row = cur.fetchone()
+    return cur.fetchone()
+
+
+async def show_order_detail(q, uid, order_id):
+    from telegram import InlineKeyboardMarkup
+    from utils.button_styles import AutoStyledButton as InlineKeyboardButton
+
+    row = _get_owned_order(order_id, uid)
     if not row:
-        return None
-    name, price, stock, flash_price, flash_ends_at = row
-    effective_price, _ = get_effective_price(price, flash_price, flash_ends_at)
-    return name, effective_price, stock
-
-
-
-async def maybe_low_stock_alert(context, product_id: int):
-    """Silent admin-only low stock checker."""
-    try:
-        remaining_stock = get_available_stock_count(product_id)
-
-        cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
-        row = cur.fetchone()
-        if not row:
-            return
-
-        await notify_low_stock(context.bot, product_id, row[0], remaining_stock)
-    except Exception as exc:
-        log_error("Low stock auto alert failed", exc, extra=f"product={product_id}")
-
-
-async def show_quantity_menu(q, uid: int, product_id: int):
-    product = get_product_basic(product_id)
-    if not product:
-        await edit_or_send(q, "❌ <b>Product not found.</b>", back_home())
-        return
-
-    name, price, old_stock = product
-    name = str(name) if "<tg-emoji" in str(name) else html.escape(str(name), quote=False)
-    stock = get_available_stock_count(product_id) or old_stock
-    balance = get_balance(uid)
-
-    await edit_or_send(
-        q,
-        f"""{name_header(name)}
-
-🧾 <b>Choose Offer</b>
-
-💰 <b>Base Price:</b> <b>${float(price):.2f}</b>
-💼 <b>Your Balance:</b> <b>{balance:.2f} USDT</b>
-📊 <b>Available Stock:</b> <b>{stock}</b>
-
-Choose an offer below or use custom quantity:""",
-        quantity_select_menu(product_id, stock)
-    )
-
-
-async def show_order_preview(q, uid: int, product_id: int, quantity: int):
-    product = get_product_basic(product_id)
-    if not product:
-        await edit_or_send(q, "❌ <b>Product not found.</b>", back_home())
-        return
-
-    name, price, old_stock = product
-    name = str(name) if "<tg-emoji" in str(name) else html.escape(str(name), quote=False)
-    stock = get_available_stock_count(product_id) or old_stock
-    quantity = int(quantity)
-
-    if quantity <= 0:
-        quantity = 1
-
-    if quantity > stock:
         await edit_or_send(
             q,
-            f"""❌ <b>Not Enough Stock</b>
-
-📦 <b>Product:</b> {name}
-📊 <b>Available:</b> <code>{stock}</code>
-🔢 <b>Requested:</b> <code>{quantity}</code>""",
-            quantity_select_menu(product_id, stock)
+            "❌ <b>Order not found.</b>\n\nYou can only view your own orders.",
+            back_home(),
         )
         return
 
-    balance = get_balance(uid)
-    original_total = calculate_total_price(product_id, float(price), quantity)
-    total_price = original_total
+    _oid, name, price, delivery_enc, created = row
+    safe_name = html.escape(strip_premium(str(name)), quote=False)
+    delivery_text = decrypt_text(delivery_enc) or ""
+    items = split_delivery_items(delivery_text)
+    quantity = _order_quantity_from_name(name, len(items))
 
-    coupon_code = get_user_coupon(uid)
-    coupon_line = "🎟 <b>Coupon:</b> None"
-    if coupon_code:
-        coupon, coupon_error = validate_coupon(coupon_code, uid)
-        if coupon:
-            discount = calculate_coupon_discount(original_total, coupon)
-            total_price = round(original_total - discount, 2)
-            coupon_line = f"🎟 <b>Coupon:</b> <b>{coupon_code}</b> — saved <b>${discount:.2f}</b>"
-        else:
-            clear_user_coupon(uid)
-            coupon_code = None
-            coupon_line = "🎟 <b>Coupon:</b> Removed expired/invalid coupon"
-
-    unit_price = total_price / quantity if quantity else float(price)
-    need = max(0, total_price - balance)
-
-    text = f"""{name_header(name)}
-
-🛒 <b>Checkout Preview</b>
-
-Quantity: <b>{quantity}</b> code{'s' if quantity != 1 else ''}
-Rate Used: <b>${unit_price:.2f}</b> each
-💵 Original Total: <b>${original_total:.2f}</b>
-💼 Final Total: <b>${total_price:.2f}</b>
-👛 Wallet Balance: <b>{balance:.2f} USDT</b>
-📦 Available Stock: <b>{stock}</b>
-{coupon_line}
-"""
-
-    if need > 0:
-        text += f"\n⚠️ Need <b>{need:.2f} USDT</b> more in your wallet.\n"
-
-    text += "\nChoose how you want to pay:"
-
-    await edit_or_send(q, text, order_preview_menu(product_id, quantity, balance, total_price, coupon_code))
-
-
-async def show_shop(q):
-    """Shop entry point. With categories configured, shows ALL categories in
-    one continuous list -- no pagination. Without any categories it falls back
-    to the classic flat product list, so existing stores keep working
-    completely unchanged."""
-    categories = get_categories(active_only=True)
-    counts = get_category_counts()
-
-    if categories:
-        kb = []
-        bundles = get_active_bundles()
-        if bundles:
-            kb.append([InlineKeyboardButton(get_message_template("btn_bundle_deals", BTN_BUNDLE_DEALS_DEFAULT), callback_data="bundles")])
-
-        # Dynamic BLUE/RED stock status: one efficient query for ALL categories.
-        # BLUE ("primary") = at least one product in the category has stock > 0.
-        # RED  ("danger")  = every product in the category has stock <= 0.
-        stock_map = get_category_stock_map()
-
-        for cid, cname, _sort, _cactive, cicon in categories:
-            count = counts.get(cid, 0)
-            _ctext, _cpremium = button_premium(cname)
-            _cic = (cicon or "").strip()
-            # The category name is shown EXACTLY as the admin entered it --
-            # no default folder icon is injected when the icon field is empty.
-            cat_has_stock = stock_map.get(cid, False)
-            kb.append([
-                InlineKeyboardButton(
-                    f"{_cic + ' ' if _cic else ''}{_ctext} ({count})",
-                    callback_data=f"shopcat_{cid}",
-                    style="primary" if cat_has_stock else "danger",
-                    icon_custom_emoji_id=_cpremium
-                )
-            ])
-
-        other_count = counts.get(0, 0)
-        if other_count:
-            other_has_stock = stock_map.get(0, False)
-            kb.append([
-                InlineKeyboardButton(
-                    f"\U0001f4e6 Other ({other_count})",
-                    callback_data="shopcat_0",
-                    style="primary" if other_has_stock else "danger"
-                )
-            ])
-
-        kb.append([
-            InlineKeyboardButton("🔄 Refresh", callback_data="shop"),
-            InlineKeyboardButton("Back", callback_data="home")
-        ])
-
-        text = render_message_template("shop_intro", SHOP_INTRO_DEFAULT)
-        if not counts:
-            text += "\n\nNo products are available right now.\nPlease check again later."
-        await edit_or_send(q, text, InlineKeyboardMarkup(kb))
-        return
-
-    # No categories configured -> classic flat product list (unchanged).
-    cur.execute("SELECT id, name, price, stock, validity, featured, flash_price, flash_ends_at FROM products WHERE active=1 ORDER BY featured DESC, id DESC")
-    products = cur.fetchall()
-
-    if not products:
-        await edit_or_send(
-            q,
-            "🛍 <b>Products</b>\n\nNo products are available right now.\n\nPlease check again later.",
-            shop_nav()
-        )
-        return
-
-    kb = _product_button_rows(products)
-
-    bundles = get_active_bundles()
-    if bundles:
-        kb.insert(0, [InlineKeyboardButton(get_message_template("btn_bundle_deals", BTN_BUNDLE_DEALS_DEFAULT), callback_data="bundles")])
-
-    kb.append([
-        InlineKeyboardButton("🔄 Refresh", callback_data="shop"),
-        InlineKeyboardButton("Back", callback_data="home")
-    ])
-
-    await edit_or_send(
-        q,
-        render_message_template("shop_intro", SHOP_INTRO_DEFAULT),
-        InlineKeyboardMarkup(kb)
+    text = (
+        "🧾 <b>Order Details</b>\n\n"
+        f"✏️ <b>Order ID:</b> <code>#{_oid}</code>\n"
+        f"🛍 <b>Product:</b> {safe_name}\n"
+        f"🔢 <b>Quantity:</b> <code>{quantity}</code>\n"
+        f"💰 <b>Paid:</b> <code>{float(price or 0):.2f} USDT</code>\n"
+        f"🕒 <b>Date:</b> <code>{html.escape(display_time(created) or str(created or ''), quote=False)}</code>\n"
     )
 
-
-def _product_button_rows(products):
-    """One shop button row per product (flash price + live stock + premium
-    emoji) -- the exact rendering the classic flat list used, shared by the
-    category view so product display stays identical everywhere."""
-    # One query for all live stock counts (faster than one query per product).
-    cur.execute("SELECT product_id, COUNT(*) FROM product_stock WHERE sold=0 GROUP BY product_id")
-    live_counts = {row[0]: row[1] for row in cur.fetchall()}
-
-    rows = []
-    for pid, name, price, old_stock, validity, featured, flash_price, flash_ends_at in products:
-        live_stock = live_counts.get(pid, 0)
-        stock = live_stock if live_stock > 0 else old_stock
-
-        # Show the active flash-sale price directly in the list (not just on the
-        # product detail page). Falls back to the normal price when no flash.
-        display_price, flash_active = get_effective_price(price, flash_price, flash_ends_at)
-        if flash_active:
-            price_label = f"\U0001f525 {format_price(display_price)} (was {format_price(price)})"
-        else:
-            price_label = format_price(display_price)
-
-        rows.append([
-            InlineKeyboardButton(
-                f"{'' if featured else ''}{button_premium(name)[0]} — {price_label} (Stock: {stock})",
-                callback_data=f"product_{pid}",
-                style="danger" if int(stock or 0) <= 0 else "primary",
-                icon_custom_emoji_id=button_premium(name)[1]
-            )
-        ])
-    return rows
-
-
-async def show_category(q, category_id, page=1):
-    """Product list of one shop category, paginated. category_id 0 = 📦 Other
-    (uncategorized products -- the NULL-category fallback)."""
-    try:
-        category_id = int(category_id or 0)
-    except (TypeError, ValueError):
-        category_id = 0
-    try:
-        page = max(1, int(page or 1))
-    except (TypeError, ValueError):
-        page = 1
-
-    if category_id:
-        cat = get_category(category_id)
-        if not cat or not int(cat[3]):
-            await show_shop(q)
-            return
-        _caticon = (cat[4] or "").strip()
-        title = f"{_caticon + ' ' if _caticon else ''}<b>{cat[1] if '<tg-emoji' in str(cat[1]) else html.escape(strip_premium(cat[1]))}</b>"
-        products = get_category_products(category_id)
+    # Small orders show the complete delivery inline (never truncated). Bulk
+    # orders keep credentials out of the chat message -- the numbered TXT file
+    # is regenerated from the stored order whenever the user asks for it.
+    if items and len(items) <= 5 and len(delivery_text) <= 3000:
+        text += (
+            f"\n🔑 <b>Delivered Items ({len(items)}):</b>\n"
+            f"<code>{html.escape(delivery_text, quote=False)}</code>\n"
+        )
+    elif items:
+        text += (
+            f"\n🔑 <b>Delivered Items:</b> <code>{len(items)}</code>\n"
+            "📥 Bulk order — tap <b>Download Delivery</b> to get the complete numbered TXT file.\n"
+        )
     else:
-        title = "\U0001f4e6 <b>Other Products</b>"
-        products = get_category_products(None)
+        text += "\n🔑 <b>Delivery:</b> Not stored for this order.\n"
 
-    total_pages = max(1, math.ceil(len(products) / SHOP_PRODUCT_PAGE_SIZE))
-    page = min(page, total_pages)
-    page_products = products[(page - 1) * SHOP_PRODUCT_PAGE_SIZE: page * SHOP_PRODUCT_PAGE_SIZE]
-
-    kb = _product_button_rows(page_products)
-
-    if total_pages > 1:
-        nav = []
-        if page > 1:
-            nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"shopcat_{category_id}_{page - 1}"))
-        nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data=f"shopcat_{category_id}_{page}"))
-        if page < total_pages:
-            nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"shopcat_{category_id}_{page + 1}"))
-        kb.append(nav)
-
-    kb.append([
-        InlineKeyboardButton("◀️ Back", callback_data="shop"),
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"shopcat_{category_id}_{page}"),
-        InlineKeyboardButton("🏠 Main Menu", callback_data="home"),
-    ])
-
-    text = title
-    if not products:
-        text += "\n\nNo products in this category yet.\nPlease check again later."
-
+    kb = [
+        [InlineKeyboardButton("📥 Download Delivery", callback_data=f"orddl_{order_id}")],
+        [InlineKeyboardButton("⬅️ Back to Orders", callback_data="orders")],
+    ]
     await edit_or_send(q, text, InlineKeyboardMarkup(kb))
 
 
-async def show_product(q, pid: int):
-    cur.execute(
-        """
-        SELECT id, name, price, stock, description, validity, warranty, rules, redeem_link, max_per_order, image_file_id, featured, flash_price, flash_ends_at
-        FROM products
-        WHERE id=? AND active=1
-        """,
-        (pid,)
-    )
-    p = cur.fetchone()
-
-    if not p:
+async def send_order_delivery_file(q, uid, order_id):
+    row = _get_owned_order(order_id, uid)
+    if not row:
         await edit_or_send(
             q,
-            "❌ <b>Product not found.</b>\n\nThis product may have been removed.",
-            back_home()
+            "❌ <b>Order not found.</b>\n\nYou can only download your own orders.",
+            back_home(),
         )
         return
 
-    _, name, price, old_stock, description, validity, warranty, rules, redeem_link, max_per_order, image_file_id, featured, flash_price, flash_ends_at = p
-    name = str(name) if "<tg-emoji" in str(name) else html.escape(str(name), quote=False)
-
-    description = clean(description, "No description added.")
-    validity = clean(validity)
-    warranty = clean(warranty, "No warranty")
-    rules = clean(rules, "No special rules.")
-    redeem_link = clean(redeem_link, "Not required")
-    max_per_order = max_per_order or 1
-
-    live_stock = get_available_stock_count(pid)
-    stock = live_stock if live_stock > 0 else old_stock
-
-    stock_text = "🟢 Available" if stock > 0 else "🔴 Out of stock"
-    display_price, flash_active = get_effective_price(price, flash_price, flash_ends_at)
-    sale_text = ""
-    if flash_active:
-        try:
-            ends_dt = datetime.strptime(str(flash_ends_at), "%Y-%m-%d %H:%M:%S")
-            remaining = ends_dt - now()
-            hours_left = max(1, int(remaining.total_seconds() // 3600))
-            sale_text = f"\n🔥 <b>FLASH SALE:</b> <s>${float(price):.2f}</s> ➜ <b>${display_price:.2f}</b>\n⏳ Ends in <b>{hours_left}h</b>"
-        except Exception:
-            sale_text = f"\n🔥 <b>FLASH SALE:</b> <s>${float(price):.2f}</s> ➜ <b>${display_price:.2f}</b>"
-
-    # Clean product card styled like the reference design.
-    offers_block = bulk_discount_lines(pid, display_price, stock)
-    sold_count = get_sold_stock_count(pid)
-
-    detail_quote = description
-    if validity and validity != "Not mentioned":
-        detail_quote += f"\n✅ {validity}"
-    if warranty and warranty != "No warranty":
-        detail_quote += f"\n🛡 {warranty}"
-
-    text = f"""{name_header(name, colorful_product_icon(name))}
-
-Price: <b>{format_price(display_price)} / code</b>{sale_text}
-
-🔥 <b>{sold_count}</b> sold
-"""
-
-    if stock > 0:
-        text += f"📦 <b>{stock}</b> in stock\n"
-
-    if stock <= 0:
-        text += "\n🔴 <b>Out of stock</b>\n"
-
-    if offers_block:
-        text += f"\n{offers_block}\n"
-
-    text += f"\n<blockquote>{detail_quote}</blockquote>\n"
-
-    if rules and rules != "No special rules.":
-        text += f"\n<blockquote>📌 {rules}</blockquote>\n"
-
-    text += "\n<i>Delivery is automatic after payment confirmation.</i>"
-
-    if image_file_id:
-        try:
-            await q.message.reply_photo(
-                photo=image_file_id,
-                caption=text,
-                reply_markup=product_buy_menu(pid, display_price, stock, max_per_order),
-                parse_mode="HTML",
-            )
-            try:
-                await q.delete_message()
-            except Exception:
-                pass
-            return
-        except Exception:
-            pass
-
-    await edit_or_send(
-        q,
-        text,
-        product_buy_menu(pid, display_price, stock, max_per_order)
-    )
-
-
-
-async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1, method: str = "bep20"):
-    """Create a direct USDT (BEP20/TRC20) checkout invoice for a product purchase."""
-    method = str(method) if str(method) in ("trc20", "binance") else "bep20"
-    product = get_product_basic(pid)
-    if not product:
-        await edit_or_send(q, "❌ <b>Product not found.</b>", back_home())
+    _oid, name, price, delivery_enc, created = row
+    delivery_text = decrypt_text(delivery_enc) or ""
+    items = split_delivery_items(delivery_text)
+    if not items:
+        await edit_or_send(q, "❌ <b>No delivery stored for this order.</b>", back_home())
         return
 
-    name, price, old_stock = product
-    name = str(name) if "<tg-emoji" in str(name) else html.escape(str(name), quote=False)
-    stock = get_available_stock_count(pid) or old_stock
-    quantity = int(quantity)
-
-    if quantity <= 0:
-        quantity = 1
-
-    if quantity > stock:
+    quantity = _order_quantity_from_name(name, len(items))
+    try:
+        # Regenerated from the stored (encrypted) order delivery -- the file
+        # never needs to exist on disk.
+        await send_delivery_txt(
+            q.message.reply_document,
+            order_id=_oid,
+            product_name=name,
+            quantity=quantity,
+            items=items,
+            paid=float(price or 0),
+            balance=get_balance(uid),
+            caption=f"📥 Delivery for Order #{_oid} ({len(items)} items)",
+        )
+    except Exception as exc:
+        # Log only the failure, never the delivery contents.
+        log_error("Order delivery download failed", exc, extra=f"order={order_id}")
         await edit_or_send(
             q,
-            f"""❌ <b>Not Enough Stock</b>
-
-📦 <b>Product:</b> {name}
-📊 <b>Available:</b> <code>{stock}</code>
-🔢 <b>Requested:</b> <code>{quantity}</code>""",
-            quantity_select_menu(pid, stock)
+            "❌ <b>Could not generate the delivery file.</b>\n\nPlease try again in a moment.",
+            back_home(),
         )
-        return
-
-    total_price = calculate_total_price(pid, float(price), quantity)
-    unique_amount = round(total_price + random.randint(100, 999) / 100000, 5)
-
-    note_code = None
-    if method == "binance":
-        # Binance Pay is matched by a unique NOTE code (not a padded amount),
-        # so charge the exact total.
-        unique_amount = round(total_price, 2)
-        import string as _string
-        for _ in range(25):
-            _code = "".join(random.choice(_string.ascii_uppercase + _string.digits) for _ in range(8))
-            cur.execute("SELECT 1 FROM deposits WHERE note_code=?", (_code,))
-            if not cur.fetchone():
-                note_code = _code
-                break
-        if not note_code:
-            note_code = "".join(random.choice(_string.ascii_uppercase + _string.digits) for _ in range(8))
-
-    # Cancel older pending direct checkout invoices for this user.
-    cur.execute(
-        "UPDATE deposits SET status='cancelled' WHERE user_id=? AND status='pending'",
-        (uid,)
-    )
-
-    cur.execute(
-        """
-        INSERT INTO deposits(user_id, amount, unique_amount, status, created, checkout_product_id, checkout_quantity, checkout_done, method, note_code)
-        VALUES(?,?,?,?,?,?,?,0,?,?)
-        """,
-        (uid, total_price, unique_amount, "pending", now_text(), pid, quantity, method, note_code)
-    )
-    conn.commit()
-
-    cur.execute("SELECT last_insert_rowid()")
-    invoice_id = cur.fetchone()[0]
-
-    if method == "binance":
-        from config import BINANCE_PAY_ID
-        _bar = "\u2501" * 20
-        await edit_or_send(
-            q,
-            f"""\U0001f4b3 <b>Checkout</b>
-{_bar}
-
-{name_header(name)}
-\U0001f522 <b>Total Codes:</b> <code>{quantity}</code>
-\U0001f4b0 <b>Total:</b> <code>${total_price:.2f}</code>
-
-{_bar}
-\U0001f7e8 <b>USDT \u2014 Binance Pay</b>
-
-<b>How to pay:</b>
-1\ufe0f\u20e3 Open <b>Binance App</b> \u2192 <b>Pay</b> \u2192 <b>Send</b>.
-2\ufe0f\u20e3 Send <b>{total_price:.2f} USDT</b> to Binance ID: <code>{BINANCE_PAY_ID}</code>
-3\ufe0f\u20e3 In the <b>Note / Remark</b> field, enter EXACTLY this code:
-<code>{note_code}</code>
-
-\u26a0\ufe0f Pay in <b>USDT only</b> \u2014 any other coin will <b>NOT</b> be credited.
-\u26a0\ufe0f You must include the note code, or your payment cannot be matched.
-
-\U0001f9fe <b>Invoice ID:</b> <code>#{invoice_id}</code>
-\U0001f7e0 <b>Status:</b> Waiting for payment
-\u23f3 <b>Expires in:</b> <code>{DEPOSIT_EXPIRE_HOURS} hours</code>
-
-{_bar}
-\U0001f916 After payment is confirmed, the bot will deliver automatically.
-
-<b>{STORE_NAME}</b>""",
-            InlineKeyboardMarkup([
-                [make_copy_button("📋 Copy Binance ID", str(BINANCE_PAY_ID), f"copydep_{invoice_id}_payid"),
-                 make_copy_button("📋 Copy Caption", str(note_code), f"copydep_{invoice_id}_note")],
-                [InlineKeyboardButton("\U0001f504 Check Deposit History", callback_data="deposit_history")],
-                [InlineKeyboardButton("\u2b05\ufe0f Back To Product", callback_data=f"product_{pid}")]
-            ])
-        )
-        return
-
-    if method == "trc20":
-        _method_header = "⚡ <b>USDT TRC20 Auto Instant</b>"
-        _network_line = "🌐 <b>Network:</b> <b>Tron (TRC20)</b>"
-        _pay_address = USDT_TRC20_ADDRESS
-    else:
-        _method_header = "⚡ <b>USDT BEP20 Auto Instant</b>"
-        _network_line = "🌐 <b>Network:</b> <b>BNB Smart Chain (BEP20)</b>"
-        _pay_address = USDT_BEP20_ADDRESS
-
-    await edit_or_send(
-        q,
-        f"""💳 <b>Checkout</b>
-━━━━━━━━━━━━━━━━━━━━
-
-{name_header(name)}
-🔢 <b>Total Codes:</b> <code>{quantity}</code>
-💰 <b>Total:</b> <code>${total_price:.2f}</code>
-
-━━━━━━━━━━━━━━━━━━━━
-{_method_header}
-
-💎 <b>Send exactly:</b>
-<code>{unique_amount:.5f} USDT</code>
-
-{_network_line}
-
-🏧 <b>Wallet address:</b>
-<code>{_pay_address}</code>
-
-🧾 <b>Invoice ID:</b> <code>#{invoice_id}</code>
-🟠 <b>Status:</b> Waiting for payment
-⏳ <b>Expires in:</b> <code>{DEPOSIT_EXPIRE_HOURS} hours</code>
-
-━━━━━━━━━━━━━━━━━━━━
-⚠️ Send the exact amount only.
-🤖 After confirmation, the bot will deliver automatically.
-
-<b>{STORE_NAME}</b>""",
-        InlineKeyboardMarkup([
-            [make_copy_button("📋 Copy Address", _pay_address, f"copydep_{invoice_id}_addr"),
-             make_copy_button("📋 Copy Exact Amount", copy_amount_text(unique_amount), f"copydep_{invoice_id}_amt")],
-            [InlineKeyboardButton("🔄 Check Deposit History", callback_data="deposit_history")],
-            [InlineKeyboardButton("⬅️ Back To Product", callback_data=f"product_{pid}")]
-        ])
-    )
 
 
-async def buy_product(q, uid: int, pid: int, quantity: int = 1):
-    quantity = int(quantity)
-
-    if quantity <= 0:
-        quantity = 1
-
-    # Hard safety limit even if callback data is manipulated.
-    # Kept high so genuine bulk orders (e.g. 100+) are charged and
-    # delivered in full; stock and balance checks below do the real limiting.
-    if quantity > 1000:
-        quantity = 1000
-
-    lock_key = f"{uid}:{pid}"
-
-    now_ts = time.time()
-    _prune_purchase_locks(now_ts)
-    old_lock = PURCHASE_LOCKS.get(lock_key)
-
-    if old_lock and now_ts - old_lock < PURCHASE_LOCK_TIMEOUT_SECONDS:
-        await edit_or_send(
-            q,
-            "⏳ <b>Order already processing</b>\n\nPlease wait a few seconds. Do not click Buy Now multiple times.",
-            back_home()
-        )
-        return
-
-    PURCHASE_LOCKS[lock_key] = now_ts
+async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
 
     try:
+        await q.answer()
+    except Exception:
+        pass
+
+    user = q.from_user
+    uid = user.id
+    ensure_user(user)
+    data = q.data or ""
+
+    _prune_memory_caches()
+
+    # Basic callback safety: ignore malformed/oversized callback data.
+    if len(data) > 80:
+        await edit_or_send(q, "❌ <b>Invalid request.</b>", back_home())
+        return
+
+    # An "admin_" prefix alone must never grant an exemption -- any user can
+    # craft callback data. Require the caller to actually BE an admin.
+    _admin_cb = data.startswith("admin_") and is_admin(uid)
+
+    if is_blocked(uid) and not _admin_cb:
+        await edit_or_send(
+            q,
+            "🚫 <b>Access Denied</b>\n\nYour account is blocked from using this bot.",
+            back_home()
+        )
+        return
+
+    if is_rate_limited(uid) and not _admin_cb:
+        await edit_or_send(
+            q,
+            f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(uid) or 2} seconds before clicking again.",
+            back_home()
+        )
+        return
+
+    try:
+        _gate_bot = q.message.get_bot()
+    except Exception:
+        _gate_bot = None
+
+    if data == "check_join":
+        _join_cache.pop(uid, None)
+        missing = await get_unjoined_channels(_gate_bot, uid)
+        if missing:
+            try:
+                await q.answer("❌ You haven't joined all channels yet. Join them, then tap again.", show_alert=True)
+            except Exception:
+                pass
+            await edit_or_send(q, force_join_text(), force_join_markup(missing))
+            return
         try:
-            await q.edit_message_text(
-                "⏳ <b>Processing your order...</b>\n\nPlease wait. Do not click again.",
-                parse_mode="HTML"
-            )
+            await q.answer("✅ Thank you for joining!")
         except Exception:
             pass
+        await edit_or_send(q, welcome_text(user.first_name), main_menu(uid))
+        return
 
-        cur.execute(
-            """
-            SELECT name, price, stock, delivery, validity, warranty, redeem_link, max_per_order, flash_price, flash_ends_at
-            FROM products
-            WHERE id=? AND active=1
-            """,
-            (pid,)
+    if not is_admin(uid):
+        missing = await get_unjoined_channels(_gate_bot, uid)
+        if missing:
+            await edit_or_send(q, force_join_text(), force_join_markup(missing))
+            return
+
+    if data == "home":
+        await edit_or_send(q, welcome_text(user.first_name), main_menu(uid))
+        return
+
+    if data == "shop":
+        await show_shop(q)
+        return
+
+    # Legacy page buttons on old shop messages: just open the shop.
+    if data.startswith("shopcats_"):
+        await show_shop(q)
+        return
+
+    if data.startswith("shopcat_"):
+        parts = data.split("_")
+        try:
+            _cid = int(parts[1])
+            _cpage = int(parts[2]) if len(parts) > 2 else 1
+        except (ValueError, IndexError):
+            _cid, _cpage = 0, 1
+        try:
+            await show_category(q, _cid, _cpage)
+        except Exception:
+            await show_shop(q)
+        return
+
+    if data.startswith("product_"):
+        await show_product(q, int(data.split("_")[1]))
+        return
+
+    if data.startswith("qtymenu_"):
+        pid = int(data.split("_")[1])
+        await show_quantity_menu(q, uid, pid)
+        return
+
+    if data.startswith("previewbuy_"):
+        parts = data.split("_")
+        pid = int(parts[1])
+        qty = int(parts[2])
+        await show_order_preview(q, uid, pid, qty)
+        return
+
+    if data.startswith("customqty_"):
+        pid = int(data.split("_")[1])
+        user_state[uid] = f"custom_buy_qty:{pid}"
+        await edit_or_send(
+            q,
+            """✨ <b>Custom Quantity</b>
+
+Send the quantity you want to buy.
+
+Example:
+<code>13</code>""",
+            back_home()
         )
-        p = cur.fetchone()
+        return
 
-        if not p:
+    if data.startswith("directpaybnb_"):
+        parts = data.split("_")
+        pid = int(parts[1])
+        qty = int(parts[2]) if len(parts) > 2 else 1
+        await start_direct_checkout(q, uid, pid, qty, method="binance")
+        return
+
+    if data.startswith("directpaytrc_"):
+        parts = data.split("_")
+        pid = int(parts[1])
+        qty = int(parts[2]) if len(parts) > 2 else 1
+        await start_direct_checkout(q, uid, pid, qty, method="trc20")
+        return
+
+    if data.startswith("directpay_"):
+        parts = data.split("_")
+        pid = int(parts[1])
+        qty = int(parts[2]) if len(parts) > 2 else 1
+        await start_direct_checkout(q, uid, pid, qty)
+        return
+
+    if data.startswith("buy_"):
+        parts = data.split("_")
+        pid = int(parts[1])
+        qty = int(parts[2]) if len(parts) > 2 else 1
+        await buy_product(q, uid, pid, qty)
+        return
+
+    if data == "deposit":
+        await start_deposit(q, uid)
+        return
+
+    if data.startswith("depneed_"):
+        try:
+            need_amount = float(data.split("_", 1)[1])
+        except Exception:
+            need_amount = 0.0
+        await deposit_shortfall(q, uid, need_amount)
+        return
+
+    if data.startswith("depmethod_"):
+        try:
+            _, method, amt = data.split("_", 2)
+            amount = float(amt)
+        except Exception:
+            method, amount = "bep20", 0.0
+        await create_deposit_invoice(q, uid, method, amount)
+        return
+
+    if data.startswith("canceldep_"):
+        try:
+            invoice_id = int(data.split("_", 1)[1])
+        except Exception:
+            invoice_id = 0
+        cur.execute(
+            "UPDATE deposits SET status='cancelled' WHERE id=? AND user_id=? AND status='pending'",
+            (invoice_id, uid)
+        )
+        conn.commit()
+        await edit_or_send(
+            q,
+            f"🚫 <b>Payment Cancelled</b>\n\nInvoice <b>#{invoice_id}</b> has been cancelled.\nNo payment will be matched for it anymore.\n\nYou can create a new deposit anytime from 💰 Deposit.",
+            main_menu(uid)
+        )
+        return
+
+    if data.startswith("copydep_"):
+        await handle_copy_invoice(q, uid, data)
+        return
+
+    if data == "copymsg_dismiss":
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
+        return
+
+    if data == "bundles":
+        await show_bundles(q)
+        return
+
+    if data.startswith("buybundle_"):
+        await buy_bundle(q, uid, int(data.split("_")[1]))
+        return
+
+    if data.startswith("bundle_"):
+        await show_bundle_details(q, uid, int(data.split("_")[1]))
+        return
+
+    if data == "deposit_history":
+        from payments.deposit_handlers import show_deposit_history
+        await show_deposit_history(q, uid)
+        return
+
+    if data == "wallet":
+        cur.execute(
+            "SELECT first_name, username, balance, referral_earnings, referral_pending, loyalty_points, vip_rank FROM users WHERE user_id=?",
+            (uid,)
+        )
+        row = cur.fetchone()
+        if row:
+            first_name, username, balance, ref_earn, ref_pending, loyalty_points, vip_rank = row
+        else:
+            first_name, username, balance, ref_earn, ref_pending, loyalty_points, vip_rank = (user.first_name or "User", None, 0, 0, 0, 0, "Bronze")
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM deposits WHERE user_id=? AND status='paid'", (uid,))
+        dep_count, dep_total = cur.fetchone()
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (uid,))
+        order_count, total_spent = cur.fetchone()
+
+        uname = f"@{username}" if username else "No username"
+
+        await edit_or_send(
+            q,
+            render_message_template(
+                "wallet_message",
+                WALLET_MSG_DEFAULT,
+                user_id=uid,
+                name=(first_name or "User"),
+                username=uname,
+                balance=f"{float(balance or 0):.2f}",
+                deposited=f"{float(dep_total or 0):.2f}",
+                deposits=dep_count,
+                orders=order_count,
+                spent=f"{float(total_spent or 0):.2f}",
+                referral_earnings=f"{float(ref_earn or 0):.6f}",
+                referral_pending=f"{float(ref_pending or 0):.6f}",
+                loyalty_points=int(loyalty_points or 0),
+                vip_rank=(vip_rank or "Bronze"),
+            ),
+            profile_menu()
+        )
+        return
+
+    if data.startswith("checkout_coupon_remove_"):
+        parts = data.split("_")
+        pid = int(parts[3])
+        qty = int(parts[4])
+        clear_user_coupon(uid)
+        await show_order_preview(q, uid, pid, qty)
+        return
+
+    if data.startswith("checkout_coupon_"):
+        parts = data.split("_")
+        pid = int(parts[2])
+        qty = int(parts[3])
+        user_state[uid] = f"checkout_coupon_code:{pid}:{qty}"
+        await edit_or_send(
+            q,
+            """🎟 <b>Enter Coupon Code</b>
+
+Send your coupon code now.
+
+Example:
+<code>WELCOME10</code>""",
+            back_home()
+        )
+        return
+
+    if data == "apply_coupon":
+        user_state[uid] = "apply_coupon_code"
+        await edit_or_send(
+            q,
+            """🎟 <b>Apply Coupon</b>
+
+Send your coupon code.
+
+Example:
+<code>WELCOME10</code>""",
+            back_home()
+        )
+        return
+
+    if data == "remove_coupon":
+        clear_user_coupon(uid)
+        await edit_or_send(q, "🗑 <b>Coupon removed.</b>", main_menu(uid))
+        return
+
+    if data.startswith("notify_stock_"):
+        product_id = int(data.split("_")[-1])
+        add_restock_notification(uid, product_id)
+        await edit_or_send(
+            q,
+            "🔔 <b>Restock Alert Added</b>\n\nYou will be notified when this product is back in stock.",
+            back_home()
+        )
+        return
+
+    if data == "gift_codes":
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        gmin = float(get_setting("gift_min_amount", "1") or 1)
+        gmax = float(get_setting("gift_max_amount", "500") or 500)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛒 Buy Gift Code", callback_data="gift_buy")],
+            [InlineKeyboardButton("🔑 Redeem Gift Code", callback_data="gift_redeem")],
+            [InlineKeyboardButton("📂 My Gift Codes", callback_data="gift_mine")],
+            [InlineKeyboardButton("◀️ Back", callback_data="home")],
+        ])
+        await edit_or_send(
+            q,
+            "🎁 <b>Gift Codes</b>\n\n"
+            "Buy a gift code with your wallet balance and share it with a friend — they redeem it and the balance is added to their wallet instantly.\n\n"
+            f"💰 Amount range: <code>{gmin:.2f}</code> – <code>{gmax:.2f}</code> USDT",
+            kb
+        )
+        return
+
+    if data == "gift_buy":
+        user_state[uid] = "gift_buy_amount"
+        await edit_or_send(
+            q,
+            "🎁 <b>Buy Gift Code</b>\n\n"
+            f"💼 Your balance: <code>{get_balance(uid):.2f} USDT</code>\n\n"
+            "Send the amount for the gift code.\n\nExample:\n<code>5</code>",
+            back_home()
+        )
+        return
+
+    if data == "gift_redeem":
+        user_state[uid] = "gift_redeem_code"
+        await edit_or_send(
+            q,
+            "🔑 <b>Redeem Gift Code</b>\n\nSend your gift code now.\n\nExample:\n<code>GIFT-AB12CD34EF</code>",
+            back_home()
+        )
+        return
+
+    if data == "gift_mine":
+        rows = get_user_gift_codes(uid, 10)
+        text = "📂 <b>My Gift Codes</b>\n\n"
+        if not rows:
+            text += "You haven't created any gift codes yet."
+        else:
+            for code, amount, redeemed_by, created in rows:
+                status = "✅ Redeemed" if redeemed_by else "🟢 Active"
+                text += f"🎁 <code>{code}</code>\n💰 <code>{float(amount):.2f} USDT</code> | {status}\n\n"
+        await edit_or_send(q, text, back_home())
+        return
+
+    if data == "warranty_menu":
+        if str(get_setting("warranty_enabled", "1")).strip() != "1":
+            await edit_or_send(q, "🛡 <b>Warranty is currently disabled.</b>", back_home())
+            return
+
+        w_hours = int(float(get_setting("warranty_hours", "24") or 24))
+        w_rows = get_warranty_orders(uid)
+
+        if not w_rows:
             await edit_or_send(
                 q,
-                "❌ <b>Product not found.</b>\n\nThis product may have been removed.",
+                "🛡 <b>Warranty Replacement</b>\n\n"
+                f"No eligible orders found.\n\nOrders qualify for <b>one</b> free replacement within <b>{w_hours} hours</b> of purchase.\n\nFor anything else, please create a support ticket.",
                 back_home()
             )
             return
 
-        name, price, old_stock, fallback_delivery, validity, warranty, redeem_link, max_per_order, flash_price, flash_ends_at = p
-        raw_name = str(name)
-        # Premium-emoji safe: never show raw/escaped <tg-emoji> code to users.
-        name = premium_safe(raw_name)
-        # Flash sale: charge and display the discounted price while active.
-        price, _flash_active = get_effective_price(price, flash_price, flash_ends_at)
-        validity = clean(validity)
-        warranty = clean(warranty, "No warranty")
-        redeem_link = clean(redeem_link, "Not required")
-        max_per_order = max_per_order or 1
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        kb_rows = []
+        for w_order_id, w_pname, _wpid, _wcreated in w_rows:
+            label = "🧾 #" + str(w_order_id) + " — " + strip_premium(str(w_pname))[:30]
+            kb_rows.append([InlineKeyboardButton(label, callback_data="warranty_req_" + str(w_order_id))])
+        kb_rows.append([InlineKeyboardButton("◀️ Back", callback_data="home")])
 
-
-        balance = get_balance(uid)
-        live_stock = get_available_stock_count(pid)
-        available_stock = live_stock if live_stock > 0 else old_stock
-
-        if available_stock < quantity:
-            await edit_or_send(
-                q,
-                f"""❌ <b>Not Enough Stock</b>
-
-📦 <b>Product:</b> {name}
-📊 <b>Available:</b> {available_stock}
-🔢 <b>Requested:</b> {quantity}
-
-Please select a lower quantity or check again later.""",
-                InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Refresh Product", callback_data=f"product_{pid}")],
-                    [InlineKeyboardButton(get_message_template("btn_back_to_products", BTN_BACK_TO_PRODUCTS_DEFAULT), callback_data="shop")]
-                ])
-            )
-            return
-
-        total_price = calculate_total_price(pid, float(price), quantity)
-
-        coupon_code = get_user_coupon(uid)
-        coupon = None
-        discount = 0.0
-
-        first_discount_percent = get_first_purchase_discount(uid)
-        first_purchase_discount = 0.0
-        if first_discount_percent > 0:
-            first_purchase_discount = round(total_price * first_discount_percent / 100, 2)
-            total_price = round(total_price - first_purchase_discount, 2)
-
-        if coupon_code:
-            coupon, coupon_error = validate_coupon(coupon_code, uid)
-            if coupon:
-                discount = calculate_coupon_discount(total_price, coupon)
-                total_price = round(total_price - discount, 2)
-            else:
-                clear_user_coupon(uid)
-
-        if balance < total_price:
-            need = total_price - balance
-
-            msg = render_message_template(
-                "insufficient_balance",
-                "❌ <b>Insufficient Balance</b>\n\n📦 <b>Product:</b> {product}\n🔢 <b>Quantity:</b> {quantity}\n💰 <b>Total:</b> {total} USDT\n👛 <b>Your Balance:</b> {balance} USDT\n➕ <b>Need More:</b> {need} USDT\n\nDeposit exactly what's missing with one tap below.",
-                product_name=name,
-                quantity=quantity,
-                total=f"{total_price:.2f}",
-                balance=f"{balance:.2f}",
-                need=f"{math.ceil(need * 100) / 100:.2f}",
-            )
-            await edit_or_send(
-                q,
-                msg,
-                InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"💰 Deposit ${math.ceil(need * 100) / 100:.2f} Now", callback_data=f"depneed_{math.ceil(need * 100) / 100:.2f}")],
-                    [InlineKeyboardButton("💰 Deposit Custom Amount", callback_data="deposit")],
-                    [InlineKeyboardButton(get_message_template("btn_back_to_products", BTN_BACK_TO_PRODUCTS_DEFAULT), callback_data="shop")],
-                ]),
-            )
-            return
-
-        # ---------- Microsoft 365 Family auto-invite product ----------
-        # No stock codes are delivered. After payment the bot asks the
-        # customer's email and sends the M365 Family invite automatically.
-        if is_m365_product(pid):
-            if quantity != 1:
-                await edit_or_send(
-                    q,
-                    "❌ <b>This plan can only be purchased 1 at a time.</b>\n\nPlease buy quantity 1.",
-                    product_buy_menu(pid, price, available_stock, max_per_order)
-                )
-                return
-
-            cur.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND balance>=?", (total_price, uid, total_price))
-
-            if cur.rowcount == 0:
-                conn.rollback()
-                await edit_or_send(
-                    q,
-                    "❌ <b>Purchase Failed</b>\n\nYour balance changed while processing this order.\n\nPlease refresh and try again.",
-                    main_menu(uid)
-                )
-                return
-
-            cur.execute("UPDATE products SET stock=stock-1 WHERE id=? AND stock > 0", (pid,))
-
-            cur.execute(
-                "INSERT INTO orders(user_id, product_name, price, delivery, product_id, payment_method) VALUES(?,?,?,?,?,?)",
-                (uid, f"{raw_name} x1", total_price, encrypt_text("Microsoft 365 Family invite — waiting for customer email"), pid, "Wallet")
-            )
-            # product_id is required for warranty/replacement lookups, and
-            # lastrowid must be read before commit.
-            order_id = cur.lastrowid
-            conn.commit()
-
-            if discount > 0 and coupon_code:
-                mark_coupon_used(coupon_code, uid)
-                clear_user_coupon(uid)
-
-            add_loyalty_points(uid, total_price)
-
-            referral_earning, referrer_id = add_referral_earning(uid, total_price)
-            if referral_earning and referrer_id:
-                try:
-                    await q.message.get_bot().send_message(
-                        chat_id=referrer_id,
-                        text=(
-                            "🎁 <b>Referral Earning Added</b>\n\n"
-                            f"👤 Referred user bought: <b>{_admin_name(name)}</b>\n"
-                            f"💰 Earning: <b>{referral_earning:.6f} USDT</b>\n\n"
-                            "Use Profile → Referrals to view earnings."
-                        ),
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-
-            new_balance = get_balance(uid)
-
-            cur.execute("SELECT stock FROM products WHERE id=?", (pid,))
-            stock_row = cur.fetchone()
-            remaining_slots = stock_row[0] if stock_row else 0
-
-            await notify_admin_order(
-                q.message.get_bot(),
-                uid,
-                pid,
-                name,
-                total_price,
-                1,
-                remaining_slots,
-            )
-
-            try:
-                _m365_w = get_m365_product_warranty(pid) or ""
-            except Exception:
-                _m365_w = ""
-            user_state[uid] = f"m365_email:{order_id}:{_m365_w}"
-
-            invite_prompt = (
-                "✅ <b>Payment Successful!</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🧾 <b>Order ID:</b> <b>#{order_id}</b>\n"
-                f"📦 <b>{_admin_name(name)}</b>\n\n"
-                f"💰 <b>Paid:</b> <b>${total_price:.2f}</b>\n"
-                f"💼 <b>Remaining Balance:</b> <b>${new_balance:.2f}</b>\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n\n"
-                "📧 <b>Now send the email address</b> where you want your Microsoft 365 invite.\n\n"
-                "Example: <code>yourname@gmail.com</code>\n\n"
-                "📨 The invite will be sent to that inbox automatically — open it and tap <b>Accept</b>."
-            )
-
-            try:
-                await q.edit_message_text(invite_prompt, parse_mode="HTML", disable_web_page_preview=True)
-            except Exception:
-                await q.message.reply_text(invite_prompt, parse_mode="HTML", disable_web_page_preview=True)
-            return
-
-        # ---------- Canva team auto-invite product ----------
-        # No stock codes are delivered. After payment the bot asks the
-        # customer's email and sends the Canva team invite automatically.
-        if is_canva_product(pid):
-            if quantity != 1:
-                await edit_or_send(
-                    q,
-                    "❌ <b>This plan can only be purchased 1 at a time.</b>\n\nPlease buy quantity 1.",
-                    product_buy_menu(pid, price, available_stock, max_per_order)
-                )
-                return
-
-            cur.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND balance>=?", (total_price, uid, total_price))
-
-            if cur.rowcount == 0:
-                conn.rollback()
-                await edit_or_send(
-                    q,
-                    "❌ <b>Purchase Failed</b>\n\nYour balance changed while processing this order.\n\nPlease refresh and try again.",
-                    main_menu(uid)
-                )
-                return
-
-            cur.execute("UPDATE products SET stock=stock-1 WHERE id=? AND stock > 0", (pid,))
-
-            cur.execute(
-                "INSERT INTO orders(user_id, product_name, price, delivery, product_id, payment_method) VALUES(?,?,?,?,?,?)",
-                (uid, f"{raw_name} x1", total_price, encrypt_text("Canva invite — waiting for customer email"), pid, "Wallet")
-            )
-            # product_id is required for warranty/replacement lookups, and
-            # lastrowid must be read before commit.
-            order_id = cur.lastrowid
-            conn.commit()
-
-            if discount > 0 and coupon_code:
-                mark_coupon_used(coupon_code, uid)
-                clear_user_coupon(uid)
-
-            add_loyalty_points(uid, total_price)
-
-            referral_earning, referrer_id = add_referral_earning(uid, total_price)
-            if referral_earning and referrer_id:
-                try:
-                    await q.message.get_bot().send_message(
-                        chat_id=referrer_id,
-                        text=(
-                            "🎁 <b>Referral Earning Added</b>\n\n"
-                            f"👤 Referred user bought: <b>{_admin_name(name)}</b>\n"
-                            f"💰 Earning: <b>{referral_earning:.6f} USDT</b>\n\n"
-                            "Use Profile → Referrals to view earnings."
-                        ),
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-
-            new_balance = get_balance(uid)
-
-            cur.execute("SELECT stock FROM products WHERE id=?", (pid,))
-            stock_row = cur.fetchone()
-            remaining_slots = stock_row[0] if stock_row else 0
-
-            await notify_admin_order(
-                q.message.get_bot(),
-                uid,
-                pid,
-                name,
-                total_price,
-                1,
-                remaining_slots,
-            )
-
-            user_state[uid] = f"canva_email:{order_id}"
-
-            invite_prompt = (
-                "✅ <b>Payment Successful!</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🧾 <b>Order ID:</b> <b>#{order_id}</b>\n"
-                f"📦 <b>{_admin_name(name)}</b>\n\n"
-                f"💰 <b>Paid:</b> <b>${total_price:.2f}</b>\n"
-                f"💼 <b>Remaining Balance:</b> <b>${new_balance:.2f}</b>\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n\n"
-                "📧 <b>Now send the email address</b> where you want your Canva invite.\n\n"
-                "Example: <code>yourname@gmail.com</code>\n\n"
-                "📨 The invite will be sent to that inbox automatically — open it and tap the button inside."
-            )
-
-            try:
-                await q.edit_message_text(invite_prompt, parse_mode="HTML", disable_web_page_preview=True)
-            except Exception:
-                await q.message.reply_text(invite_prompt, parse_mode="HTML", disable_web_page_preview=True)
-            return
-
-        # ── PURCHASE-TIME STOCK VALIDATION (Requirement 3) ──────────────────
-        # Perform a FRESH stock check right before charging. This catches the
-        # race condition where another user bought the last item between the
-        # time this user opened the product page and now.
-        # We do NOT rely on `available_stock` computed earlier -- that value
-        # is potentially stale by this point.
-        fresh_live_stock = get_available_stock_count(pid)
-        cur.execute("SELECT stock FROM products WHERE id=? AND active=1", (pid,))
-        _fresh_row = cur.fetchone()
-        fresh_manual_stock = int(_fresh_row[0] or 0) if _fresh_row else 0
-        fresh_stock = fresh_live_stock if fresh_live_stock > 0 else fresh_manual_stock
-
-        if fresh_stock < quantity:
-            await edit_or_send(
-                q,
-                f"❌ <b>Sorry, this product just went out of stock.</b>\n\n"
-                f"📦 <b>Product:</b> {name}\n"
-                f"📊 <b>Available now:</b> {fresh_stock}\n"
-                f"🔢 <b>Requested:</b> {quantity}\n\n"
-                f"Another user may have purchased the last item just before you.\n"
-                f"Please refresh and try again.",
-                InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Refresh", callback_data=f"product_{pid}")],
-                    [InlineKeyboardButton(get_message_template("btn_back_to_products", BTN_BACK_TO_PRODUCTS_DEFAULT), callback_data="shop")],
-                ])
-            )
-            return
-        # ── END PURCHASE-TIME STOCK VALIDATION ───────────────────────────────
-
-        # Charge FIRST, then reserve stock. conn.rollback() is a no-op on
-        # Postgres (pgcompat uses autocommit), so reserving before charging
-        # permanently burned codes whenever the balance check failed.
-        cur.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND balance>=?", (total_price, uid, total_price))
-        charged_rows = cur.rowcount
-        conn.commit()
-
-        if charged_rows == 0:
-            await edit_or_send(
-                q,
-                "❌ <b>Purchase Failed</b>\n\nYour balance changed while processing this order.\n\nPlease refresh and try again.",
-                main_menu(uid)
-            )
-            return
-
-        def _refund_charge():
-            try:
-                cur.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (total_price, uid))
-                conn.commit()
-            except Exception:
-                pass
-
-        deliveries = reserve_stock_items(pid, uid, quantity)
-
-        # Fallback for old products without product_stock rows.
-        if deliveries is None:
-            if quantity != 1:
-                _refund_charge()
-                await edit_or_send(
-                    q,
-                    "❌ <b>Multi-buy not available for this old product stock.</b>\n\nPlease buy 1 item or restock this product from admin panel.",
-                    product_buy_menu(pid, price, available_stock, max_per_order)
-                )
-                return
-
-            delivery_text = fallback_delivery
-            cur.execute("UPDATE products SET stock=stock-1 WHERE id=? AND stock > 0", (pid,))
-            if cur.rowcount == 0:
-                _refund_charge()
-                await edit_or_send(
-                    q,
-                    "❌ <b>Out of Stock</b>\n\nThis product just sold out. You have not been charged.",
-                    main_menu(uid)
-                )
-                return
-            deliveries = [delivery_text]
-        else:
-            new_stock = get_available_stock_count(pid)
-            cur.execute("UPDATE products SET stock=? WHERE id=?", (new_stock, pid))
-        conn.commit()
-
-        delivery_text = format_delivery_items(deliveries)
-
-        cur.execute(
-            "INSERT INTO orders(user_id, product_name, price, delivery, product_id, payment_method) VALUES(?,?,?,?,?,?)",
-            (uid, f"{raw_name} x{quantity}", total_price, encrypt_text(delivery_text), pid, "Wallet")
+        await edit_or_send(
+            q,
+            "🛡 <b>Warranty Replacement</b>\n\n"
+            f"Got a dead code? Orders below are inside the <b>{w_hours}h</b> warranty window.\n\nSelect the order to replace (one replacement per order):",
+            InlineKeyboardMarkup(kb_rows)
         )
-        order_id = cur.lastrowid
+        return
+
+    if data.startswith("warranty_req_"):
+        try:
+            w_order_id = int(data.split("_")[2])
+        except Exception:
+            await edit_or_send(q, "❌ <b>Invalid request.</b>", back_home())
+            return
+        await process_warranty_request(q, uid, w_order_id, context)
+        return
+
+    if data == "search":
+        user_state[uid] = "user_search_product"
+        await edit_or_send(
+            q,
+            "🔍 <b>Search Products</b>\n\nSend a product name or keyword to search.",
+            back_home()
+        )
+        return
+
+    if data == "support_ticket":
+        user_state[uid] = "support_ticket_message"
+        await edit_or_send(
+            q,
+            render_message_template(
+                "support_prompt",
+                SUPPORT_PROMPT_DEFAULT,
+                name=(q.from_user.first_name or ""),
+            ),
+            back_home()
+        )
+        return
+
+    if data == "profile":
+        cur.execute(
+            "SELECT first_name, username, balance, notifications, joined, referral_earnings, referral_pending, loyalty_points, vip_rank FROM users WHERE user_id=?",
+            (uid,)
+        )
+        row = cur.fetchone()
+        if row:
+            first_name, username, bal, notifications, joined, ref_earn, ref_pending, loyalty_points, vip_rank = row
+        else:
+            first_name, username, bal, notifications, joined, ref_earn, ref_pending, loyalty_points, vip_rank = ("User", "No username", 0, 1, "Unknown", 0, 0, 0, "Bronze")
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?", (uid,))
+        order_count, total_spent = cur.fetchone()
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM deposits WHERE user_id=? AND status='paid'", (uid,))
+        dep_count, dep_total = cur.fetchone()
+
+        uname = f"@{username}" if username and username != "No username" else "No username"
+
+        await edit_or_send(
+            q,
+            render_message_template(
+                "profile_message",
+                PROFILE_MSG_DEFAULT,
+                user_id=uid,
+                name=(first_name or "User"),
+                username=uname,
+                balance=f"{float(bal or 0):.2f}",
+                orders=order_count,
+                spent=f"{float(total_spent or 0):.2f}",
+                deposits=dep_count,
+                deposited=f"{float(dep_total or 0):.2f}",
+                referral_earnings=f"{float(ref_earn or 0):.6f}",
+                referral_pending=f"{float(ref_pending or 0):.6f}",
+                coupon=(get_user_coupon(uid) or "None"),
+                notifications=("ON ✅" if notifications else "OFF ❌"),
+            ),
+            profile_menu()
+        )
+        return
+
+    if data == "my_stats":
+        cur.execute(
+            "SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE user_id=?",
+            (uid,)
+        )
+        total_orders, total_spent = cur.fetchone()
+
+        await edit_or_send(
+            q,
+            f"""📊 <b>My Stats</b>
+
+📦 <b>Total Orders:</b> {total_orders}
+��� <b>Total Spent:</b> <code>{total_spent:.2f} USDT</code>
+💰 <b>Current Balance:</b> <code>{get_balance(uid):.2f} USDT</code>
+
+Thank you for using our store.""",
+            profile_menu()
+        )
+        return
+
+    if data == "toggle_notifications":
+        cur.execute(
+            "UPDATE users SET notifications = CASE notifications WHEN 1 THEN 0 ELSE 1 END WHERE user_id=?",
+            (uid,)
+        )
         conn.commit()
 
-        # Coupons must be consumed even when the computed discount rounds to 0,
-        # otherwise max_uses is never reached and the coupon is reusable forever.
-        if coupon_code:
-            mark_coupon_used(coupon_code, uid)
-            clear_user_coupon(uid)
+        await edit_or_send(
+            q,
+            "🔔 <b>Notification setting updated.</b>\n\nYour preference has been saved.",
+            profile_menu()
+        )
+        return
 
-        loyalty_points = add_loyalty_points(uid, total_price)
+    if data == "orders":
+        # Order list: one button per order opens the full order view, where
+        # the complete delivery can be read (small orders) or re-downloaded
+        # as a numbered TXT file (bulk orders). Deliveries are never dumped
+        # into this list, so bulk orders can no longer be truncated away.
+        cur.execute(
+            "SELECT id, product_name, price, created FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 10",
+            (uid,)
+        )
+        rows = cur.fetchall()
 
-        referral_earning, referrer_id = add_referral_earning(uid, total_price)
-        if referral_earning and referrer_id:
+        from telegram import InlineKeyboardMarkup
+        from utils.button_styles import AutoStyledButton as InlineKeyboardButton
+
+        text = "📦 <b>My Orders</b>\n\n"
+        kb_rows = []
+
+        if not rows:
+            text += "No orders found yet."
+        else:
+            text += "Tap an order to view its full details and delivery:\n"
+            for order_id, name, price, created in rows:
+                short_name = strip_premium(str(name))[:35]
+                kb_rows.append([
+                    InlineKeyboardButton(
+                        f"🧾 #{order_id} — {short_name} — ${float(price or 0):.2f}",
+                        callback_data=f"ordview_{order_id}",
+                        style="",
+                    )
+                ])
+
+        kb_rows.append([InlineKeyboardButton("◀️ Back", callback_data="profile")])
+        await edit_or_send(q, text, InlineKeyboardMarkup(kb_rows))
+        return
+
+    if data.startswith("ordview_"):
+        try:
+            order_id = int(data.split("_")[1])
+        except Exception:
+            await edit_or_send(q, "❌ <b>Invalid request.</b>", back_home())
+            return
+        await show_order_detail(q, uid, order_id)
+        return
+
+    if data.startswith("orddl_"):
+        try:
+            order_id = int(data.split("_")[1])
+        except Exception:
+            await edit_or_send(q, "❌ <b>Invalid request.</b>", back_home())
+            return
+        await send_order_delivery_file(q, uid, order_id)
+        return
+
+    if data == "referrals":
+        ref_count, total_earned, pending = get_referral_stats(uid)
+        bot_username = (await context.bot.get_me()).username
+        ref_link = f"https://t.me/{bot_username}?start=ref_{uid}"
+        percent = float(get_setting("referral_percent", "5") or 5)
+
+        await edit_or_send(
+            q,
+            f"""🎁 <b>Referral Program</b>
+
+🔗 <b>Your Referral Link:</b>
+<code>{ref_link}</code>
+
+👥 <b>Total Referrals:</b> <code>{ref_count}</code>
+💰 <b>Total Earned:</b> <code>{total_earned:.6f} USDT</code>
+💸 <b>Available To Withdraw:</b> <code>{pending:.6f} USDT</code>
+📊 <b>Commission:</b> <code>{percent:.2f}%</code> of referred purchases
+
+Share your link and earn automatically when your referrals buy products.""",
+            profile_menu()
+        )
+        return
+
+    if data == "withdraw_referral":
+        ref_count, total_earned, pending = get_referral_stats(uid)
+        minimum = float(get_setting("min_withdrawal", "1") or 1)
+
+        if pending < minimum:
+            await edit_or_send(
+                q,
+                f"""💸 <b>Withdraw Referral Earnings</b>
+
+❌ Minimum withdrawal not reached.
+
+💰 <b>Available:</b> <code>{pending:.6f} USDT</code>
+📌 <b>Minimum:</b> <code>{minimum:.6f} USDT</code>""",
+                profile_menu()
+            )
+            return
+
+        user_state[uid] = "withdraw_referral"
+        await edit_or_send(
+            q,
+            f"""💸 <b>Withdraw Referral Earnings</b>
+
+💰 <b>Available:</b> <code>{pending:.6f} USDT</code>
+
+Send in this format:
+<code>AMOUNT | WALLET_ADDRESS</code>
+
+Example:
+<code>1.5 | 0xYourBEP20Wallet</code>""",
+            profile_menu()
+        )
+        return
+
+    if data == "withdraw_history":
+        rows = get_user_withdrawals(uid, 10)
+        text = "📂 <b>Withdrawal History</b>\n\n"
+        if not rows:
+            text += "No withdrawal requests yet."
+        else:
+            for wid, amount, wallet, status, note, created, updated in rows:
+                icon = "🟡" if status == "pending" else "🟢" if status == "approved" else "🔴"
+                text += (
+                    f"{icon} <b>Request #{wid}</b>\n"
+                    f"💰 Amount: <code>{amount:.6f} USDT</code>\n"
+                    f"📍 Status: <b>{status}</b>\n"
+                    f"👛 Wallet: <code>{wallet}</code>\n"
+                )
+                if note:
+                    text += f"📝 Note: {note}\n"
+                text += f"🕒 <code>{created}</code>\n\n"
+
+        if len(text) > 3900:
+            text = text[:3900] + "\n..."
+
+        await edit_or_send(q, text, profile_menu())
+        return
+
+    if data == "support":
+        await edit_or_send(
+            q,
+            f"""🎫 <b>Support Ticket</b>
+
+Need help with payment, order, or product?
+
+Create a ticket and admin will reply inside the bot.
+
+For faster help, include:
+• Order ID
+• Payment TXID if payment issue
+• Screenshot/video proof if needed
+
+👑 Admin: {ADMIN_USERNAME}""",
+            support_menu()
+        )
+        return
+
+    if data == "create_ticket":
+        user_state[uid] = "create_ticket"
+        await edit_or_send(
+            q,
+            """🎫 <b>Create Support Ticket</b>
+
+Send your issue in this format:
+
+<code>Subject | Your message</code>
+
+Example:
+<code>Payment issue | I paid but balance not added. TXID: ...</code>""",
+            support_menu()
+        )
+        return
+
+    if data == "my_tickets":
+        rows = get_user_tickets(uid, 10)
+        text = "📂 <b>My Tickets</b>\n\n"
+
+        if not rows:
+            text += "No tickets found."
+        else:
+            for ticket_id, subject, message, status, admin_reply, created, updated in rows:
+                subject = html.escape(str(subject), quote=False)
+                message = html.escape(str(message), quote=False)
+                if admin_reply:
+                    admin_reply = html.escape(str(admin_reply), quote=False)
+                status_icon = "🟢 Open" if status == "open" else "✅ Answered" if status == "answered" else "🔒 Closed"
+                short_msg = message[:120] + "..." if len(message) > 120 else message
+                text += (
+                    f"🎫 <b>Ticket #{ticket_id}</b>\n"
+                    f"📌 <b>Subject:</b> {subject}\n"
+                    f"📍 <b>Status:</b> {status_icon}\n"
+                    f"📝 <b>Message:</b> {short_msg}\n"
+                )
+
+                if admin_reply:
+                    text += f"👑 <b>Admin Reply:</b> {admin_reply}\n"
+
+                text += "\n"
+
+
+        if len(text) > 3900:
+            text = text[:3900] + "\n..."
+
+        await edit_or_send(q, text, support_menu())
+        return
+
+    if data == "clear_chat":
+        await edit_or_send(
+            q,
+            "🧹 <b>Done.</b>\n\nUse <code>/start</code> to open the menu again.",
+            back_home()
+        )
+        return
+
+    if data == "admin_panel":
+        await show_admin_panel(q, uid)
+        return
+
+    if data.startswith("admin_"):
+        handled = await handle_admin_callback(q, uid, data, context)
+        if handled:
+            return
+
+
+async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None or update.message.from_user is None:
+        return
+    user = update.message.from_user
+    uid = user.id
+    text = update.message.text.strip()
+
+    ensure_user(user)
+
+    try:
+        welcome_coupon = get_setting("auto_welcome_coupon", "")
+        if welcome_coupon:
+            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (uid,))
+            order_count = cur.fetchone()[0]
+            if order_count == 0:
+                set_user_coupon(uid, welcome_coupon)
+    except Exception:
+        pass
+
+    if is_blocked(uid):
+        await update.message.reply_text(
+            "🚫 <b>Access Denied</b>\n\nYour account is blocked from using this bot.",
+            parse_mode="HTML"
+        )
+        return
+
+    if is_rate_limited(uid):
+        await update.message.reply_text(
+            f"⏳ <b>Slow Down</b>\n\nPlease wait {get_lock_seconds(uid) or 2} seconds before sending another message.",
+            parse_mode="HTML"
+        )
+        return
+
+    state = user_state.get(uid)
+
+    if state and state.startswith("m365_email:"):
+        _m365_parts = state.split(":")
+        try:
+            m365_order_id = int(_m365_parts[1])
+        except Exception:
+            m365_order_id = 0
+        m365_warranty = _m365_parts[2] if len(_m365_parts) > 2 else ""
+
+        email = text.strip()
+
+        if not re.fullmatch(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", email):
+            await update.message.reply_text(
+                "❌ <b>That doesn't look like a valid email.</b>\n\nPlease send only your email address.\n\nExample: <code>yourname@gmail.com</code>",
+                parse_mode="HTML"
+            )
+            return
+
+        user_state.pop(uid, None)
+
+        from database.db import create_m365_invite
+        from utils.crypto import encrypt_text
+
+        invite_id = create_m365_invite(uid, m365_order_id, email, m365_warranty)
+
+        try:
+            cur.execute(
+                "UPDATE orders SET delivery=? WHERE id=?",
+                (encrypt_text(f"Microsoft 365 Family invite → {email}"), m365_order_id)
+            )
+            conn.commit()
+        except Exception:
+            pass
+
+        await update.message.reply_text(
+            "📨 <b>Sending your Microsoft 365 invite...</b>\n\n"
+            f"📧 <b>Email:</b> <code>{html.escape(email, quote=False)}</code>\n\n"
+            "⏳ This usually takes under a minute. You will get a confirmation message here.",
+            parse_mode="HTML"
+        )
+
+        import asyncio
+        from services.m365_family import process_invite
+        asyncio.create_task(process_invite(context.bot, invite_id))
+        return
+
+    if state and state.startswith("canva_email:"):
+        try:
+            canva_order_id = int(state.split(":")[1])
+        except Exception:
+            canva_order_id = 0
+
+        email = text.strip()
+
+        if not re.fullmatch(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", email):
+            await update.message.reply_text(
+                "❌ <b>That doesn't look like a valid email.</b>\n\nPlease send only your email address.\n\nExample: <code>yourname@gmail.com</code>",
+                parse_mode="HTML"
+            )
+            return
+
+        user_state.pop(uid, None)
+
+        from database.db import create_canva_invite
+        from utils.crypto import encrypt_text
+
+        invite_id = create_canva_invite(uid, canva_order_id, email)
+
+        try:
+            cur.execute(
+                "UPDATE orders SET delivery=? WHERE id=?",
+                (encrypt_text(f"Canva invite → {email}"), canva_order_id)
+            )
+            conn.commit()
+        except Exception:
+            pass
+
+        await update.message.reply_text(
+            "📨 <b>Sending your Canva invite...</b>\n\n"
+            f"📧 <b>Email:</b> <code>{html.escape(email, quote=False)}</code>\n\n"
+            "⏳ This usually takes under a minute. You will get a confirmation message here.",
+            parse_mode="HTML"
+        )
+
+        import asyncio
+        from services.canva_invite import process_invite
+        asyncio.create_task(process_invite(context.bot, invite_id))
+        return
+
+    if state and state.startswith("checkout_coupon_code:"):
+        try:
+            state_parts = state.split(":")
+            pid = int(state_parts[1])
+            qty = int(state_parts[2])
+            code = text.strip().upper()
+
+            coupon, error = validate_coupon(code, uid)
+            if not coupon:
+                await update.message.reply_text(
+                    f"❌ <b>Invalid Coupon</b>\n\n{error}",
+                    parse_mode="HTML"
+                )
+                return
+
+            set_user_coupon(uid, code)
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                f"""✅ <b>Coupon Applied</b>
+
+🎟 Code: <code>{code}</code>
+💝 Discount: <code>{coupon['value']}{'%' if coupon['discount_type'] == 'percent' else ' USDT'}</code>
+
+Now open checkout again to see the updated final price.""",
+                parse_mode="HTML"
+            )
+
+            class MessageQuery:
+                def __init__(self, message, from_user):
+                    self.message = message
+                    self.from_user = from_user
+                    self.data = ""
+
+                async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
+                    await self.message.reply_text(
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=disable_web_page_preview,
+                    )
+
+            fake_q = MessageQuery(update.message, user)
+            await show_order_preview(fake_q, uid, pid, qty)
+            return
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Could not apply coupon.</b>\n\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+            return
+
+            set_user_coupon(uid, code)
+            user_state.pop(uid, None)
+
+            class MessageQuery:
+                def __init__(self, message, from_user):
+                    self.message = message
+                    self.from_user = from_user
+                    self.data = ""
+
+                async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
+                    await self.message.reply_text(
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=disable_web_page_preview,
+                    )
+
+            fake_q = MessageQuery(update.message, user)
+            await show_order_preview(fake_q, uid, pid, qty)
+            return
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Could not apply coupon.</b>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "apply_coupon_code":
+        try:
+            code = text.strip().upper()
+            coupon, error = validate_coupon(code, uid)
+
+            if not coupon:
+                await update.message.reply_text(
+                    f"❌ <b>Invalid Coupon</b>\n\n{error}",
+                    parse_mode="HTML"
+                )
+                return
+
+            set_user_coupon(uid, code)
+            user_state.pop(uid, None)
+
+            dtype = "%" if coupon["discount_type"] == "percent" else "USDT"
+            await update.message.reply_text(
+                f"""✅ <b>Coupon Applied</b>
+
+���� Code: <code>{code}</code>
+💰 Discount: <code>{coupon['value']}{dtype}</code>
+
+It will be used on your next checkout.""",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+            return
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Could not apply coupon.</b>\n\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+            return
+
+        set_user_coupon(uid, code)
+        user_state.pop(uid, None)
+
+        dtype = "%" if coupon["discount_type"] == "percent" else "USDT"
+        await update.message.reply_text(
+            f"""✅ <b>Coupon Applied</b>
+
+🎟 Code: <code>{code}</code>
+💰 Discount: <code>{coupon['value']}{dtype}</code>
+
+It will be used on your next wallet purchase.""",
+            reply_markup=main_menu(uid),
+            parse_mode="HTML"
+        )
+        return
+
+    if state and state.startswith("custom_buy_qty:"):
+        try:
+            pid = int(state.split(":")[1])
+            qty = int(text.strip())
+
+            if qty <= 0:
+                await update.message.reply_text("❌ Quantity must be more than 0.", parse_mode="HTML")
+                return
+
+            user_state.pop(uid, None)
+
+            class MessageQuery:
+                def __init__(self, message, from_user):
+                    self.message = message
+                    self.from_user = from_user
+                    self.data = ""
+
+                async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
+                    await self.message.reply_text(
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=disable_web_page_preview,
+                    )
+
+            fake_q = MessageQuery(update.message, user)
+            await show_order_preview(fake_q, uid, pid, qty)
+            return
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Invalid quantity.</b>\n\nSend only a number, example: <code>13</code>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "user_search_product":
+        try:
+            keyword = text.strip()
+            if not keyword:
+                await update.message.reply_text("❌ Please send a search keyword.", parse_mode="HTML")
+                return
+
+            cur.execute(
+                """
+                SELECT id, name, price, stock
+                FROM products
+                WHERE active=1 AND (name LIKE ? OR description LIKE ?)
+                ORDER BY featured DESC, id DESC
+                LIMIT 10
+                """,
+                (f"%{keyword}%", f"%{keyword}%")
+            )
+            rows = cur.fetchall()
+            user_state.pop(uid, None)
+
+            if not rows:
+                await update.message.reply_text(
+                    f"🔍 <b>No products found for:</b> <code>{html.escape(str(keyword), quote=False)}</code>",
+                    reply_markup=main_menu(uid),
+                    parse_mode="HTML"
+                )
+                return
+
+            from telegram import InlineKeyboardMarkup
+            from utils.button_styles import AutoStyledButton as InlineKeyboardButton
+            from utils.premium_emoji import strip_premium, first_premium_id, button_premium
+            buttons = []
+            msg = f"🔍 <b>Search Results for:</b> <code>{html.escape(str(keyword), quote=False)}</code>\n\n"
+            for pid, name, price, stock in rows:
+                name_html = html.escape(strip_premium(str(name)), quote=False)
+                msg += f"• <b>{name_html}</b> — <code>${float(price):.2f}</code> | Stock: <code>{stock}</code>\n"
+                buttons.append([InlineKeyboardButton(f"🛍 {button_premium(name)[0][:35]}", callback_data=f"product_{pid}", icon_custom_emoji_id=button_premium(name)[1])])
+            buttons.append([InlineKeyboardButton("◀️ Back", callback_data="home")])
+
+            await update.message.reply_text(
+                msg,
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode="HTML"
+            )
+            return
+
+        except Exception as exc:
+            user_state.pop(uid, None)
+            await update.message.reply_text(
+                f"❌ <b>Search failed.</b>\n\n<code>{exc}</code>",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "gift_buy_amount":
+        try:
+            g_amount = round(float(text.strip()), 2)
+        except Exception:
+            await update.message.reply_text("❌ <b>Invalid amount.</b>\n\nSend only a number, example: <code>5</code>", parse_mode="HTML")
+            return
+
+        gmin = float(get_setting("gift_min_amount", "1") or 1)
+        gmax = float(get_setting("gift_max_amount", "500") or 500)
+
+        if g_amount < gmin or g_amount > gmax:
+            await update.message.reply_text(
+                f"❌ <b>Amount must be between {gmin:.2f} and {gmax:.2f} USDT.</b>",
+                parse_mode="HTML"
+            )
+            return
+
+        gift_code = create_gift_code(uid, g_amount)
+        user_state.pop(uid, None)
+
+        if not gift_code:
+            await update.message.reply_text(
+                f"❌ <b>Insufficient balance.</b>\n\n💼 Your balance: <code>{get_balance(uid):.2f} USDT</code>",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+            return
+
+        await update.message.reply_text(
+            "✅ <b>Gift Code Created</b>\n\n"
+            f"🎁 <code>{gift_code}</code>\n"
+            f"💰 Value: <code>{g_amount:.2f} USDT</code>\n\n"
+            "Share this code with anyone — they redeem it in 👤 Profile → 🎁 Gift Codes.\n\n"
+            f"💼 New balance: <code>{get_balance(uid):.2f} USDT</code>",
+            reply_markup=main_menu(uid),
+            parse_mode="HTML"
+        )
+        return
+
+    if state == "gift_redeem_code":
+        g_ok, g_result = redeem_gift_code(uid, text)
+        user_state.pop(uid, None)
+
+        if not g_ok:
+            await update.message.reply_text(f"❌ <b>{g_result}</b>", reply_markup=main_menu(uid), parse_mode="HTML")
+            return
+
+        await update.message.reply_text(
+            "🎉 <b>Gift Code Redeemed</b>\n\n"
+            f"💰 <code>{float(g_result):.2f} USDT</code> added to your wallet.\n\n"
+            f"💼 New balance: <code>{get_balance(uid):.2f} USDT</code>",
+            reply_markup=main_menu(uid),
+            parse_mode="HTML"
+        )
+        return
+
+    if state == "deposit_amount":
+        await handle_deposit_amount(update, uid, text)
+        return
+
+    if state == "withdraw_referral":
+        try:
+            amount_text, wallet = [x.strip() for x in text.split("|", 1)]
+            amount = float(amount_text)
+            minimum = float(get_setting("min_withdrawal", "1") or 1)
+
+            if amount < minimum:
+                await update.message.reply_text(
+                    f"❌ <b>Minimum withdrawal is {minimum:.6f} USDT.</b>",
+                    parse_mode="HTML"
+                )
+                return
+
+            request_id = create_withdrawal_request(uid, amount, wallet)
+            user_state.pop(uid, None)
+
+            if not request_id:
+                await update.message.reply_text(
+                    "❌ <b>Withdrawal failed.</b>\n\nCheck your available referral balance.",
+                    reply_markup=profile_menu(),
+                    parse_mode="HTML"
+                )
+                return
+
+            await update.message.reply_text(
+                f"""✅ <b>Withdrawal Request Created</b>
+
+🧾 <b>Request ID:</b> <code>#{request_id}</code>
+💰 <b>Amount:</b> <code>{amount:.6f} USDT</code>
+👛 <b>Wallet:</b> <code>{wallet}</code>
+
+Admin will review your request.""",
+                reply_markup=profile_menu(),
+                parse_mode="HTML"
+            )
+
             try:
-                await q.message.get_bot().send_message(
-                    chat_id=referrer_id,
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
                     text=(
-                        "🎁 <b>Referral Earning Added</b>\n\n"
-                        f"👤 Referred user bought: <b>{_admin_name(name)}</b>\n"
-                        f"💰 Earning: <b>{referral_earning:.6f} USDT</b>\n\n"
-                        "Use Profile → Referrals to view earnings."
+                        "💸 <b>New Withdrawal Request</b>\n\n"
+                        f"🧾 Request: <code>#{request_id}</code>\n"
+                        f"👤 User: <code>{uid}</code>\n"
+                        f"💰 Amount: <code>{amount:.6f} USDT</code>\n"
+                        f"👛 Wallet: <code>{wallet}</code>\n\n"
+                        "Admin Panel → Withdrawals"
                     ),
                     parse_mode="HTML"
                 )
             except Exception:
                 pass
 
-        new_balance = get_balance(uid)
-        remaining_stock = get_available_stock_count(pid)
+            return
 
-        await notify_low_stock(q.message.get_bot(), pid, name, remaining_stock)
-
-        await notify_admin_order(
-            q.message.get_bot(),
-            uid,
-            pid,
-            name,
-            total_price,
-            quantity,
-            remaining_stock,
-        )
-
-        coupon_line = ""
-        if discount > 0 and coupon_code:
-            coupon_line = f"\n🎟 <b>Coupon:</b> <b>{coupon_code}</b> saved <b>${discount:.2f}</b>"
-
-        first_discount_line = ""
-        if first_purchase_discount > 0:
-            first_discount_line = f"\n🎉 <b>First Purchase:</b> saved <b>${first_purchase_discount:.2f}</b>"
-
-        # Bulk orders (>5 items) must NOT be dumped into a Telegram message:
-        # they go out as a numbered .txt file. The length guard also catches
-        # small orders whose content would overflow Telegram's message limit.
-        codes_as_file = is_bulk_delivery(quantity, delivery_text)
-
-        delivery_message = render_message_template(
-            "delivery_success",
-            "✅ <b>Payment Successful!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order ID:</b> <b>#{order_id}</b>\n\n📦 <b>{product_name}</b>\n\n🔑 <b>Code(s):</b>\n<code>{delivery}</code>\n\n━━━━━━���━━━━━━━━━━━━━\n\n💰 <b>Paid:</b> <b>${paid}</b>\n💼 <b>Remaining Balance:</b> <b>${balance}</b>\n\n━━━━━━━━━━━━━━━━━━━━\nThank you for your purchase! 🎉\n\nUse /orders to view your order history.",
-            order_id=order_id,
-            product_name=premium_safe(name),
-            delivery=(f"📎 Your {quantity} item(s) are attached as a numbered TXT file below." if codes_as_file else html.escape(delivery_text, quote=False)),
-            paid=f"{total_price:.2f}",
-            balance=f"{new_balance:.2f}",
-            user=(q.from_user.first_name or ""),
-        )
-
-        try:
-            await q.edit_message_text(
-                delivery_message,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
         except Exception:
-            await q.message.reply_text(
-                delivery_message,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
+            await update.message.reply_text(
+                "❌ <b>Wrong Format</b>\n\nUse: <code>AMOUNT | WALLET_ADDRESS</code>",
+                parse_mode="HTML"
             )
+            return
 
-        # Bulk orders: deliver the codes as a numbered .txt file instead of a
-        # huge message. The complete delivery is already stored (encrypted) on
-        # the order row, so this file can be regenerated anytime from My Orders.
-        if codes_as_file:
-            try:
-                await send_delivery_txt(
-                    q.message.reply_document,
-                    order_id=order_id,
-                    product_name=raw_name,
-                    quantity=quantity,
-                    items=deliveries,
-                    paid=total_price,
-                    balance=new_balance,
-                )
-            except Exception as file_exc:
-                log_error("Delivery file send failed", file_exc, extra=f"order={order_id}")
-                chunk_size = 3500
-                for chunk_start in range(0, len(delivery_text), chunk_size):
-                    await q.message.reply_text(
-                        f"<code>{html.escape(delivery_text[chunk_start:chunk_start + chunk_size], quote=False)}</code>",
-                        parse_mode="HTML",
-                    )
-
-        await q.message.reply_text(
-            "🏠 <b>Main Menu</b>",
-            reply_markup=main_menu(uid),
-            parse_mode="HTML",
-        )
-
-
-    except Exception as exc:
-        conn.rollback()
-        log_error("Purchase error", exc, extra=f"user={uid} product={pid} qty={quantity}")
-        await edit_or_send(
-            q,
-            f"""❌ <b>Purchase Error</b>
-
-Something went wrong while processing your order.
-
-<code>{exc}</code>
-
-If balance was deducted, contact admin immediately.""",
-            main_menu(uid)
-        )
-
-    finally:
-        PURCHASE_LOCKS.pop(lock_key, None)
+    if state == "support_ticket_message":
         try:
-            class _Ctx:
-                pass
-            _ctx = _Ctx()
-            _ctx.bot = q.message.get_bot()
-            await maybe_low_stock_alert(_ctx, pid)
-        except Exception:
-            pass
+            subject = "Support Ticket"
+            message = text.strip()
 
+            if not message:
+                raise ValueError("empty")
 
-# ============================ BUNDLE DEALS ============================
+            ticket_id = create_ticket(uid, subject, message)
+            user_state.pop(uid, None)
 
-async def show_bundles(q):
-    bundles = get_active_bundles()
+            await update.message.reply_text(
+                f"""✅ <b>Ticket Created</b>
 
-    if not bundles:
-        await edit_or_send(
-            q,
-            render_message_template("bundles_empty", BUNDLES_EMPTY_DEFAULT),
-            InlineKeyboardMarkup([[InlineKeyboardButton(get_message_template("btn_back_to_products", BTN_BACK_TO_PRODUCTS_DEFAULT), callback_data="shop")]])
-        )
-        return
+🎫 <b>Ticket ID:</b> <code>#{ticket_id}</code>
 
-    kb = []
-    for bid, bname, bprice in bundles:
-        kb.append([InlineKeyboardButton(f"🎁 {bname} • ${float(bprice):.2f}", callback_data=f"bundle_{bid}")])
-    kb.append([InlineKeyboardButton(get_message_template("btn_back_to_products", BTN_BACK_TO_PRODUCTS_DEFAULT), callback_data="shop")])
-
-    await edit_or_send(
-        q,
-        render_message_template("bundles_intro", BUNDLES_INTRO_DEFAULT),
-        InlineKeyboardMarkup(kb)
-    )
-
-
-async def show_bundle_details(q, uid: int, bundle_id: int):
-    bundle = get_bundle(bundle_id)
-
-    if not bundle or not bundle[3]:
-        await edit_or_send(q, "❌ <b>Bundle not found.</b>", back_home())
-        return
-
-    _bid, bname_raw, bprice, _active = bundle
-    bname = _admin_name(bname_raw)
-    bprice = float(bprice)
-    items = get_bundle_items(bundle_id)
-
-    if not items:
-        await edit_or_send(q, "❌ <b>This bundle has no products yet.</b>", back_home())
-        return
-
-    balance = get_balance(uid)
-    total_value = 0.0
-    available = True
-    item_lines = ""
-
-    for product_id, item_qty, pname, pprice in items:
-        pname_safe = html.escape(str(pname), quote=False)
-        worth = float(pprice) * int(item_qty)
-        total_value += worth
-        enough = get_available_stock_count(product_id) >= int(item_qty)
-        if not enough:
-            available = False
-        mark = "✅" if enough else "🔴"
-        item_lines += f"{mark} <b>{item_qty}×</b> {pname_safe} <i>(worth ${worth:.2f})</i>\n"
-
-    savings = max(0.0, total_value - bprice)
-
-    text = render_message_template(
-        "bundle_details",
-        BUNDLE_DETAILS_DEFAULT,
-        bundle_name=bname,
-        items=item_lines,
-        total_value=f"{total_value:.2f}",
-        bundle_price=f"{bprice:.2f}",
-        savings=f"{savings:.2f}",
-        balance=f"{balance:.2f}",
-    )
-
-    kb = []
-    if available:
-        kb.append([InlineKeyboardButton(render_message_template("btn_buy_bundle", BTN_BUY_BUNDLE_DEFAULT, price=f"{bprice:.2f}"), callback_data=f"buybundle_{bundle_id}")])
-        if balance < bprice:
-            need = math.ceil((bprice - balance) * 100) / 100.0
-            kb.append([InlineKeyboardButton(f"💰 Deposit ${need:.2f} More", callback_data=f"depneed_{need:.2f}")])
-    else:
-        text += "\n\n🔴 <b>Some items are out of stock right now.</b>"
-    kb.append([InlineKeyboardButton(get_message_template("btn_back_to_bundles", BTN_BACK_TO_BUNDLES_DEFAULT), callback_data="bundles")])
-
-    await edit_or_send(q, text, InlineKeyboardMarkup(kb))
-
-
-async def buy_bundle(q, uid: int, bundle_id: int):
-    lock_key = f"{uid}:bundle:{bundle_id}"
-    now_ts = time.time()
-    _prune_purchase_locks(now_ts)
-    old_lock = PURCHASE_LOCKS.get(lock_key)
-
-    if old_lock and now_ts - old_lock < PURCHASE_LOCK_TIMEOUT_SECONDS:
-        await edit_or_send(
-            q,
-            "⏳ <b>Order already processing</b>\n\nPlease wait a few seconds. Do not click Buy multiple times.",
-            back_home()
-        )
-        return
-
-    PURCHASE_LOCKS[lock_key] = now_ts
-
-    try:
-        bundle = get_bundle(bundle_id)
-        if not bundle or not bundle[3]:
-            await edit_or_send(q, "❌ <b>Bundle not found.</b>", back_home())
-            return
-
-        _bid, bname_raw, bprice, _active = bundle
-        bname = _admin_name(bname_raw)
-        bprice = float(bprice)
-        items = get_bundle_items(bundle_id)
-
-        if not items:
-            await edit_or_send(q, "❌ <b>This bundle has no products yet.</b>", back_home())
-            return
-
-        # Verify stock for every component before reserving anything.
-        for product_id, item_qty, pname, _pprice in items:
-            if get_available_stock_count(product_id) < int(item_qty):
-                await edit_or_send(
-                    q,
-                    f"❌ <b>Not Enough Stock</b>\n\n<b>{html.escape(str(pname), quote=False)}</b> is out of stock for this bundle.",
-                    InlineKeyboardMarkup([[InlineKeyboardButton(get_message_template("btn_back_to_bundles", BTN_BACK_TO_BUNDLES_DEFAULT), callback_data="bundles")]])
-                )
-                return
-
-        balance = get_balance(uid)
-
-        if balance < bprice:
-            need = math.ceil((bprice - balance) * 100) / 100.0
-            await edit_or_send(
-                q,
-                f"""❌ <b>Insufficient Balance</b>
-
-🎁 <b>Bundle:</b> {bname}
-💰 <b>Total:</b> {bprice:.2f} USDT
-👛 <b>Your Balance:</b> {balance:.2f} USDT
-➕ <b>Need More:</b> {need:.2f} USDT""",
-                InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"💰 Deposit ${need:.2f} Now", callback_data=f"depneed_{need:.2f}")],
-                    [InlineKeyboardButton(get_message_template("btn_back_to_bundles", BTN_BACK_TO_BUNDLES_DEFAULT), callback_data="bundles")],
-                ]),
+Admin will reply soon.""",
+                reply_markup=support_menu(),
+                parse_mode="HTML"
             )
-            return
 
-        # Charge FIRST, then reserve. conn.rollback() is a no-op under
-        # Postgres autocommit, so reserving before charging meant that a
-        # failed balance deduction permanently burned the reserved codes.
-        cur.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND balance>=?", (bprice, uid, bprice))
-
-        if cur.rowcount == 0:
-            await edit_or_send(
-                q,
-                "❌ <b>Purchase Failed</b>\n\nYour balance changed while processing this order.\n\nPlease refresh and try again.",
-                main_menu(uid)
-            )
-            return
-        conn.commit()
-
-        def _refund_bundle_charge():
             try:
-                cur.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (bprice, uid))
-                conn.commit()
+                from config import ADMIN_ID
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "🎫 <b>New Support Ticket</b>\n\n"
+                        f"🧾 <b>Ticket:</b> <code>#{ticket_id}</code>\n"
+                        f"👤 <b>User:</b> <code>{uid}</code>\n"
+                        f"📌 <b>Subject:</b> {html.escape(str(subject), quote=False)}\n"
+                        f"📝 <b>Message:</b> {html.escape(str(message), quote=False)}\n\n"
+                        f"Reply: <code>/replyticket {ticket_id} your reply</code>"
+                    ),
+                    parse_mode="HTML"
+                )
             except Exception:
                 pass
 
-        # Reserve stock from every component product.
-        sections = []
-        total_codes = 0
-        for product_id, item_qty, pname, _pprice in items:
-            deliveries = reserve_stock_items(product_id, uid, int(item_qty))
-            if deliveries is None:
-                _refund_bundle_charge()
-                await edit_or_send(
-                    q,
-                    "❌ <b>Purchase Failed</b>\n\nStock changed while processing. You have not been charged.",
-                    InlineKeyboardMarkup([[InlineKeyboardButton(get_message_template("btn_back_to_bundles", BTN_BACK_TO_BUNDLES_DEFAULT), callback_data="bundles")]])
+            return
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Please send your issue/message.</b>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "create_ticket":
+        try:
+            subject, message = [x.strip() for x in text.split("|", 1)]
+
+            if not subject or not message:
+                raise ValueError("empty")
+
+            ticket_id = create_ticket(uid, subject, message)
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                f"""✅ <b>Ticket Created</b>
+
+🎫 <b>Ticket ID:</b> <code>#{ticket_id}</code>
+📌 <b>Subject:</b> {html.escape(str(subject), quote=False)}
+
+Admin will reply soon.""",
+                reply_markup=support_menu(),
+                parse_mode="HTML"
+            )
+
+            try:
+                from config import ADMIN_ID
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "🎫 <b>New Support Ticket</b>\n\n"
+                        f"🧾 <b>Ticket:</b> <code>#{ticket_id}</code>\n"
+                        f"👤 <b>User:</b> <code>{uid}</code>\n"
+                        f"📌 <b>Subject:</b> {html.escape(str(subject), quote=False)}\n"
+                        f"📝 <b>Message:</b> {html.escape(str(message), quote=False)}\n\n"
+                        f"Reply: <code>/replyticket {ticket_id} your reply</code>"
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+            return
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Wrong Format</b>\n\nUse: <code>Subject | Your message</code>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state and state.startswith("admin_"):
+        handled = await handle_admin_message(update, context, uid, text, state)
+        if handled:
+            return
+
+    await update.message.reply_text(
+        "ℹ️ Use <code>/start</code> to open the menu.",
+        parse_mode="HTML"
+    )
+
+
+async def photo_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None or update.message.from_user is None:
+        return
+    user = update.message.from_user
+    uid = user.id
+    ensure_user(user)
+
+    # A photo message has no .text. Several text-input states below
+    # (checkout_coupon_code / apply_coupon_code / custom_buy_qty) referenced an
+    # undefined `text` and raised NameError. Fall back to the photo caption so
+    # those states degrade gracefully instead of crashing.
+    text = (update.message.caption or "").strip()
+
+    try:
+        welcome_coupon = get_setting("auto_welcome_coupon", "")
+        if welcome_coupon:
+            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (uid,))
+            order_count = cur.fetchone()[0]
+            if order_count == 0:
+                set_user_coupon(uid, welcome_coupon)
+    except Exception:
+        pass
+
+    if not is_admin(uid):
+        return
+
+    state = user_state.get(uid)
+
+    if state and state.startswith("checkout_coupon_code:"):
+        try:
+            _, pid_text, qty_text = state.split(":")
+            pid = int(pid_text)
+            qty = int(qty_text)
+            code = text.strip().upper()
+
+            coupon, error = validate_coupon(code, uid)
+            if not coupon:
+                await update.message.reply_text(
+                    f"❌ <b>Invalid Coupon</b>\n\n{error}",
+                    parse_mode="HTML"
                 )
                 return
-            new_stock = get_available_stock_count(product_id)
-            cur.execute("UPDATE products SET stock=? WHERE id=?", (new_stock, product_id))
-            total_codes += len(deliveries)
-            sections.append((str(pname), format_delivery_items(deliveries)))
-        conn.commit()
 
-        delivery_text = ""
-        for pname, section_text in sections:
-            delivery_text += f"📦 {pname}:\n{section_text}\n\n"
-        delivery_text = delivery_text.strip()
+            set_user_coupon(uid, code)
+            user_state.pop(uid, None)
 
-        cur.execute(
-            "INSERT INTO orders(user_id, product_name, price, delivery, payment_method) VALUES(?,?,?,?,?)",
-            (uid, f"🎁 {bname_raw} (bundle)", bprice, encrypt_text(delivery_text), "Wallet (Bundle)")
-        )
-        # lastrowid must be read BEFORE commit -- after commit the cursor is
-        # reset and this returned None/stale ids.
-        order_id = cur.lastrowid
-        conn.commit()
+            class MessageQuery:
+                def __init__(self, message, from_user):
+                    self.message = message
+                    self.from_user = from_user
+                    self.data = ""
 
-        add_loyalty_points(uid, bprice)
-        new_balance = get_balance(uid)
-
-        codes_as_file = total_codes >= 15
-        if codes_as_file:
-            codes_block = "📎 Your codes are attached as a file below (15+ items)."
-        else:
-            codes_block = f"<code>{html.escape(delivery_text, quote=False)}</code>"
-
-        message = f"""✅ <b>Payment Successful!</b>
-━━━━━━━━━━━━━━━━━━━━
-
-🧾 <b>Order ID:</b> <b>#{order_id}</b>
-
-🎁 <b>{bname}</b>
-
-🔑 <b>Code(s):</b>
-{codes_block}
-
-━━━━━━━━━━━━━━━━━━━━
-
-💰 <b>Paid:</b> <b>${bprice:.2f}</b>
-💼 <b>Remaining Balance:</b> <b>${new_balance:.2f}</b>
-
-Thank you for your purchase! 🎉"""
-
-        try:
-            await q.edit_message_text(message, parse_mode="HTML", disable_web_page_preview=True)
-        except Exception:
-            await q.message.reply_text(message, parse_mode="HTML", disable_web_page_preview=True)
-
-        if codes_as_file:
-            try:
-                codes_file = io.BytesIO(delivery_text.encode("utf-8"))
-                codes_file.name = f"order_{order_id}_codes.txt"
-                await q.message.reply_document(
-                    document=codes_file,
-                    filename=f"order_{order_id}_codes.txt",
-                    caption=f"🔑 Codes for Order #{order_id}"
-                )
-            except Exception as file_exc:
-                log_error("Bundle file send failed", file_exc, extra=f"order={order_id}")
-                chunk_size = 3500
-                for chunk_start in range(0, len(delivery_text), chunk_size):
-                    await q.message.reply_text(
-                        f"<code>{html.escape(delivery_text[chunk_start:chunk_start + chunk_size], quote=False)}</code>",
-                        parse_mode="HTML",
+                async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
+                    await self.message.reply_text(
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=disable_web_page_preview,
                     )
 
-        try:
-            await notify_admin_order(
-                q.message.get_bot(),
-                uid,
-                0,
-                f"🎁 {bname_raw} (bundle)",
-                bprice,
-                1,
-                0,
-            )
+            fake_q = MessageQuery(update.message, user)
+            await show_order_preview(fake_q, uid, pid, qty)
+            return
+
         except Exception:
-            pass
+            await update.message.reply_text(
+                "❌ <b>Could not apply coupon.</b>",
+                parse_mode="HTML"
+            )
+            return
 
-        await q.message.reply_text(
-            "🏠 <b>Main Menu</b>",
+    if state == "apply_coupon_code":
+        code = text.strip().upper()
+        coupon, error = validate_coupon(code, uid)
+
+        if not coupon:
+            await update.message.reply_text(
+                f"❌ <b>Invalid Coupon</b>\n\n{error}",
+                parse_mode="HTML"
+            )
+            return
+
+        set_user_coupon(uid, code)
+        user_state.pop(uid, None)
+
+        dtype = "%" if coupon["discount_type"] == "percent" else "USDT"
+        await update.message.reply_text(
+            f"""✅ <b>Coupon Applied</b>
+
+🎟 Code: <code>{code}</code>
+💰 Discount: <code>{coupon['value']}{dtype}</code>
+
+It will be used on your next wallet purchase.""",
             reply_markup=main_menu(uid),
-            parse_mode="HTML",
+            parse_mode="HTML"
         )
+        return
 
-    except Exception as exc:
-        conn.rollback()
-        log_error("Bundle purchase error", exc, extra=f"user={uid} bundle={bundle_id}")
-        await edit_or_send(
-            q,
-            f"""❌ <b>Purchase Error</b>
+    if state and state.startswith("custom_buy_qty:"):
+        try:
+            pid = int(state.split(":")[1])
+            qty = int(text.strip())
 
-Something went wrong while processing your bundle order.
+            if qty <= 0:
+                await update.message.reply_text("❌ Quantity must be more than 0.", parse_mode="HTML")
+                return
 
-<code>{exc}</code>
+            user_state.pop(uid, None)
 
-If balance was deducted, contact admin immediately.""",
-            main_menu(uid)
-        )
+            class MessageQuery:
+                def __init__(self, message, from_user):
+                    self.message = message
+                    self.from_user = from_user
+                    self.data = ""
 
-    finally:
-        PURCHASE_LOCKS.pop(lock_key, None)
+                async def edit_message_text(self, text, parse_mode=None, reply_markup=None, disable_web_page_preview=None):
+                    await self.message.reply_text(
+                        text,
+                        parse_mode=parse_mode,
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=disable_web_page_preview,
+                    )
+
+            fake_q = MessageQuery(update.message, user)
+            await show_order_preview(fake_q, uid, pid, qty)
+            return
+
+        except Exception:
+            await update.message.reply_text(
+                "❌ <b>Invalid quantity.</b>\n\nSend only a number, example: <code>13</code>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "admin_add_product_photo":
+        try:
+            admin_temp_data = None
+            from admin.admin_handlers import admin_temp_data, add_product_preview_text, add_product_preview_keyboard
+            file_id = update.message.photo[-1].file_id
+            admin_temp_data.setdefault(uid, {})["image_file_id"] = file_id
+            user_state[uid] = "admin_add_product_stock"
+            await update.message.reply_text(
+                "✅ <b>Photo saved.</b>\n\n🔑 Now send stock codes/accounts, one per line.",
+                parse_mode="HTML"
+            )
+        except Exception as exc:
+            await update.message.reply_text(f"❌ <b>Photo save failed.</b>\n\n<code>{exc}</code>", parse_mode="HTML")
+        return
+
+    if state and state.startswith("admin_easy_edit:") and state.endswith(":photo"):
+        try:
+            from database.db import get_setting, set_user_coupon,  render_message_template,  set_product_image
+            product_id = int(state.split(":")[1])
+            file_id = update.message.photo[-1].file_id
+            set_product_image(product_id, file_id)
+            user_state.pop(uid, None)
+            await update.message.reply_text(
+                f"✅ <b>Product photo updated.</b>\n\n🆔 Product ID: <code>{product_id}</code>",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+        except Exception as exc:
+            await update.message.reply_text(f"❌ <b>Image save failed.</b>\n\n<code>{exc}</code>", parse_mode="HTML")
+        return
+
+    if state == "admin_wait_product_image":
+        try:
+            from database.db import get_setting, set_user_coupon,  render_message_template,  set_product_image
+            product_id = context.user_data.get("image_product_id")
+            if not product_id:
+                await update.message.reply_text("❌ Product ID missing. Start again from Admin Panel.", parse_mode="HTML")
+                user_state.pop(uid, None)
+                return
+
+            file_id = update.message.photo[-1].file_id
+            set_product_image(int(product_id), file_id)
+            user_state.pop(uid, None)
+            context.user_data.pop("image_product_id", None)
+
+            await update.message.reply_text(
+                f"✅ <b>Product image saved.</b>\n\n🆔 Product ID: <code>{product_id}</code>",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Image save failed.</b>\n\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+
+
+
+async def document_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None or update.message.from_user is None:
+        return
+    user = update.message.from_user
+    uid = user.id
+    state = user_state.get(uid)
+
+    if state and str(state).startswith("admin_upload_m365_session") and is_admin(uid):
+        _sess_warranty = "6m" if str(state).endswith(":6m") else ("1y" if str(state).endswith(":1y") else "")
+        try:
+            doc = update.message.document
+            if not doc.file_name.lower().endswith(".json"):
+                await update.message.reply_text("❌ Please send the <code>m365_session.json</code> file.", parse_mode="HTML")
+                return
+
+            file = await context.bot.get_file(doc.file_id)
+            data = bytes(await file.download_as_bytearray())
+
+            import json as _json
+            state_json = data.decode("utf-8")
+            _json.loads(state_json)  # validate before storing
+
+            # Persistence check: warn if this looks like a short-lived
+            # (session-only) login that Microsoft will drop within ~24h.
+            try:
+                from services.m365_family import analyze_session_persistence
+                _persist = analyze_session_persistence(state_json)
+            except Exception:
+                _persist = None
+
+            from database.db import add_m365_session, rename_m365_session, list_m365_sessions
+            caption = (update.message.caption or "").strip()
+            new_sess_id = add_m365_session("", state_json, _sess_warranty)
+            _w_prefix = {"6m": "6M ", "1y": "1Y "}.get(_sess_warranty, "")
+            sess_label = caption[:60] if caption else _w_prefix + "ID #" + str(new_sess_id)
+            rename_m365_session(new_sess_id, sess_label)
+            total_sessions = len(list_m365_sessions())
+
+            user_state[uid] = "admin_m365_sess_label:" + str(new_sess_id)
+
+            await update.message.reply_text(
+                "✅ <b>Microsoft session saved (encrypted).</b>\n\n"
+                f"🆔 Stored as: <b>{html.escape(sess_label, quote=False)}</b>\n"
+                + ({"6m": "🏷 Warranty group: <b>6-Month</b> — used only for 6-Month invite products.\n", "1y": "🏷 Warranty group: <b>1-Year</b> — used only for 1-Year invite products.\n"}.get(_sess_warranty, ""))
+                + f"📂 Total IDs stored: <b>{total_sessions}</b>\n\n"
+                "✏️ Now send the <b>Microsoft account email/name</b> for this ID so rotation alerts are easy to read — or send <code>-</code> to keep the automatic name.\n\n"
+                "🧪 Then use Admin Panel → 📩 M365 Auto-Invite → Test Invite to verify it works.\n\n"
+                + ((_persist["warning_html"] + "\n\n") if (_persist and _persist.get("warning_html")) else "")
+                + "💡 For safety, delete <code>m365_session.json</code> from your PC after this.",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+            return
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Session save failed.</b>\n\n<code>{exc}</code>\n\nMake sure you sent the unmodified <code>m365_session.json</code> file.",
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "admin_upload_canva_session" and is_admin(uid):
+        try:
+            doc = update.message.document
+            if not doc.file_name.lower().endswith(".json"):
+                await update.message.reply_text("❌ Please send the <code>canva_session.json</code> file.", parse_mode="HTML")
+                return
+
+            file = await context.bot.get_file(doc.file_id)
+            data = bytes(await file.download_as_bytearray())
+
+            from services.canva_invite import save_session
+            save_session(data.decode("utf-8"))
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                "✅ <b>Canva session saved (encrypted).</b>\n\n"
+                "🧪 Now use Admin Panel → 🎨 Canva Auto-Invite → Test Invite to verify it works.\n\n"
+                "💡 For safety, delete <code>canva_session.json</code> from your PC after this.",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+            return
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Session save failed.</b>\n\n<code>{exc}</code>\n\nMake sure you sent the unmodified <code>canva_session.json</code> file.",
+                parse_mode="HTML"
+            )
+            return
+
+    if state == "admin_restore_backup" and is_admin(uid):
+        try:
+            doc = update.message.document
+            if not doc.file_name.lower().endswith(".zip"):
+                await update.message.reply_text("❌ Please send a .zip backup file.", parse_mode="HTML")
+                return
+
+            file = await context.bot.get_file(doc.file_id)
+            restore_dir = Path("restore_uploads")
+            restore_dir.mkdir(exist_ok=True)
+            # Use only the basename: a crafted doc.file_name such as
+            # "../../config.py" would otherwise write outside restore_uploads.
+            file_path = restore_dir / os.path.basename(doc.file_name or "backup.zip")
+            await file.download_to_drive(str(file_path))
+
+            ok, msg = restore_backup_zip(str(file_path))
+            user_state.pop(uid, None)
+
+            await update.message.reply_text(
+                ("✅ " if ok else "❌ ") + f"<b>{msg}</b>",
+                reply_markup=main_menu(uid),
+                parse_mode="HTML"
+            )
+            return
+
+        except Exception as exc:
+            await update.message.reply_text(
+                f"❌ <b>Restore failed.</b>\n\n<code>{exc}</code>",
+                parse_mode="HTML"
+            )
+            return
+
+    if state and str(state).startswith("admin_easy_add_stock:") and is_admin(uid):
+        try:
+            doc = update.message.document
+            fname = str(doc.file_name or "account.txt")
+            if not fname.lower().endswith(".txt"):
+                await update.message.reply_text(
+                    "\u26a0\ufe0f Please upload a <code>.txt</code> file (one account per file), "
+                    "or send the codes as a normal text message.",
+                    parse_mode="HTML",
+                )
+                return
+            if int(doc.file_size or 0) > 262144:
+                await update.message.reply_text(
+                    "\u26a0\ufe0f File too large (max 256 KB). One account per file, please.",
+                    parse_mode="HTML",
+                )
+                return
+            file = await context.bot.get_file(doc.file_id)
+            data = bytes(await file.download_as_bytearray())
+            content = data.decode("utf-8", errors="replace").replace("\r\n", "\n").strip()
+            if not content:
+                await update.message.reply_text("\u26a0\ufe0f That file is empty.", parse_mode="HTML")
+                return
+            product_id = int(str(state).split(":")[1])
+            from database.db import add_stock_file_item, log_admin_action, cur as _cur
+            _cur.execute("SELECT name FROM products WHERE id=?", (product_id,))
+            _prod = _cur.fetchone()
+            if not _prod:
+                await update.message.reply_text("\u26a0\ufe0f <b>Product not found.</b>", parse_mode="HTML")
+                user_state.pop(uid, None)
+                return
+            available = add_stock_file_item(product_id, content)
+            log_admin_action(uid, "FILE_ADD_STOCK", f"Product ID {product_id} | file {fname} | available {available}")
+            # State is kept on purpose: the admin can upload many .txt files
+            # in a row (Telegram sends a multi-file selection one by one).
+            await update.message.reply_text(
+                "\u2705 <b>Account Added From File</b>\n\n"
+                f"\U0001f4c4 File: <code>{html.escape(fname, quote=False)}</code>\n"
+                f"\U0001f4e6 Product: <b>{html.escape(str(_prod[0]), quote=False)}</b>\n"
+                f"\U0001f4ca Available Now: <code>{available}</code>\n\n"
+                "\u2795 Upload more <code>.txt</code> files to add more accounts, or "
+                "send codes as a text message. No customer broadcast is sent for "
+                "file uploads, so you can upload as many as you like quietly.",
+                parse_mode="HTML",
+            )
+            return
+        except Exception as exc:
+            await update.message.reply_text(
+                f"\u26a0\ufe0f <b>Stock file add failed.</b>\n\n<code>{html.escape(str(exc), quote=False)}</code>",
+                parse_mode="HTML",
+            )
+            return
+
+    await update.message.reply_text("ℹ️ Document received, but no document action is active.", parse_mode="HTML")
