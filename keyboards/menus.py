@@ -19,6 +19,19 @@ MAIN_MENU_BUTTONS = [
     ("btn_admin_panel", "🛡 Admin Panel", "admin_panel"),
 ]
 
+# Buttons reused across dozens of different screens with different callback
+# targets each time (a "Back" on the shop screen goes somewhere different
+# than a "Back" on the profile screen). They share ONE admin-customizable
+# label + emoji each -- edited from the same "🎨 Customize Bot" screen as
+# MAIN_MENU_BUTTONS above -- but since the callback differs per call site,
+# use back_button(cb) / refresh_button(cb) / deposit_history_button(cb)
+# instead of building them from this list directly.
+EXTRA_CUSTOM_BUTTONS = [
+    ("btn_back_global", "◀️ Back"),
+    ("btn_refresh_global", "🔄 Refresh"),
+    ("btn_deposit_history", "🧾 Deposit History"),
+]
+
 
 def custom_button(key, default, cb):
     """Main-menu button with an admin-customizable label. The first premium
@@ -29,6 +42,24 @@ def custom_button(key, default, cb):
         label = default
     text, icon = button_premium(label)
     return InlineKeyboardButton(text or default, callback_data=cb, icon_custom_emoji_id=icon)
+
+
+def back_button(callback_data="home"):
+    """"◀️ Back" button, reused on every screen that has one. Label/emoji is
+    admin-customizable (Customize Bot) and applies everywhere at once."""
+    return custom_button("btn_back_global", "◀️ Back", callback_data)
+
+
+def refresh_button(callback_data):
+    """"🔄 Refresh" button, reused on every screen that has one. Label/emoji is
+    admin-customizable (Customize Bot) and applies everywhere at once."""
+    return custom_button("btn_refresh_global", "🔄 Refresh", callback_data)
+
+
+def deposit_history_button(callback_data="deposit_history"):
+    """"🧾 Deposit History" button. Label/emoji is admin-customizable
+    (Customize Bot) and applies everywhere it appears at once."""
+    return custom_button("btn_deposit_history", "🧾 Deposit History", callback_data)
 
 
 def main_menu(uid=None):
@@ -52,19 +83,19 @@ def main_menu(uid=None):
 
 
 def back_home():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="home")]])
+    return InlineKeyboardMarkup([[back_button("home")]])
 
 
 def shop_nav():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Refresh", callback_data="shop"), InlineKeyboardButton("◀️ Back", callback_data="home")]
+        [refresh_button("shop"), back_button("home")]
     ])
 
 
 def deposit_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧾 Deposit History", callback_data="deposit_history")],
-        [InlineKeyboardButton("◀️ Back", callback_data="home")]
+        [deposit_history_button("deposit_history")],
+        [back_button("home")]
     ])
 
 
@@ -94,14 +125,14 @@ def deposit_invoice_menu(invoice_id=None, method=None, amount=None, note_code=No
 def profile_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 My Stats", callback_data="my_stats")],
-        [InlineKeyboardButton("💰 Deposit", callback_data="deposit"), InlineKeyboardButton("🧾 Deposit History", callback_data="deposit_history")],
+        [InlineKeyboardButton("💰 Deposit", callback_data="deposit"), deposit_history_button("deposit_history")],
         [InlineKeyboardButton("🔔 Notifications ON/OFF", callback_data="toggle_notifications")],
         [InlineKeyboardButton("📦 My Orders", callback_data="orders")],
         [InlineKeyboardButton("🎁 Gift Codes", callback_data="gift_codes"), InlineKeyboardButton("🛡 Warranty", callback_data="warranty_menu")],
         [InlineKeyboardButton("🎁 Referrals", callback_data="referrals"), InlineKeyboardButton("💸 Withdraw Earnings", callback_data="withdraw_referral")],
         [InlineKeyboardButton("📂 Withdrawal History", callback_data="withdraw_history")],
         [InlineKeyboardButton("🧹 Clear Chat", callback_data="clear_chat")],
-        [InlineKeyboardButton("◀️ Back", callback_data="home")],
+        [back_button("home")],
     ])
 
 
@@ -121,7 +152,7 @@ def admin_menu():
         [InlineKeyboardButton("🎨 Customize Bot", callback_data="admin_customize")],
         [InlineKeyboardButton("📩 M365 Auto-Invite", callback_data="admin_m365")],
         [InlineKeyboardButton("🎨 Canva Auto-Invite", callback_data="admin_canva")],
-        [InlineKeyboardButton("◀️ Back", callback_data="home")],
+        [back_button("home")],
     ])
 
 
@@ -197,7 +228,7 @@ def support_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎫 Create Ticket", callback_data="create_ticket")],
         [InlineKeyboardButton("📂 My Tickets", callback_data="my_tickets")],
-        [InlineKeyboardButton("◀️ Back", callback_data="home")],
+        [back_button("home")],
     ])
 
 
