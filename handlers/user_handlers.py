@@ -576,11 +576,9 @@ async def buttons(update, context: ContextTypes.DEFAULT_TYPE):
         await show_shop(q)
         return
 
+    # Legacy page buttons on old shop messages: just open the shop.
     if data.startswith("shopcats_"):
-        try:
-            await show_shop(q, int(data.split("_", 1)[1]))
-        except Exception:
-            await show_shop(q)
+        await show_shop(q)
         return
 
     if data.startswith("shopcat_"):
