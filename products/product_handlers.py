@@ -8,7 +8,7 @@ from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton, make_copy_button, copy_amount_text
 from utils.premium_emoji import strip_premium, first_premium_id, button_premium, premium_safe
 from database.db import render_message_template, get_message_template, BUNDLE_DETAILS_DEFAULT, SHOP_INTRO_DEFAULT, BUNDLES_INTRO_DEFAULT, BUNDLES_EMPTY_DEFAULT, BTN_BUNDLE_DEALS_DEFAULT, BTN_BACK_TO_PRODUCTS_DEFAULT, BTN_BACK_TO_BUNDLES_DEFAULT, BTN_BUY_BUNDLE_DEFAULT,  cur, conn, get_balance, get_available_stock_count, get_sold_stock_count, reserve_stock_item, reserve_stock_items, add_referral_earning, get_product_price_tiers, get_user_coupon, validate_coupon, calculate_coupon_discount, clear_user_coupon, mark_coupon_used, get_setting_value, add_restock_notification, get_restock_wait_count, get_restock_waiters, mark_restock_notified, add_loyalty_points, get_first_purchase_discount, get_buy_x_get_y, get_active_bundles, get_bundle, get_bundle_items, is_m365_product, is_canva_product, get_m365_product_warranty, get_categories, get_category, get_category_counts, get_category_products, get_category_stock_map
-from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu
+from keyboards.menus import main_menu, back_home, shop_nav, product_buy_menu, quantity_select_menu, order_preview_menu, back_button, refresh_button
 from utils.crypto import encrypt_text
 from utils.ui import edit_or_send
 from utils.delivery_file import is_bulk_delivery, send_delivery_txt
@@ -551,7 +551,7 @@ async def show_shop(q):
             ])
 
         kb.append([
-            InlineKeyboardButton("🔄 Refresh", callback_data="shop"),
+            refresh_button("shop"),
             InlineKeyboardButton("Back", callback_data="home")
         ])
 
@@ -580,7 +580,7 @@ async def show_shop(q):
         kb.insert(0, [InlineKeyboardButton(get_message_template("btn_bundle_deals", BTN_BUNDLE_DEALS_DEFAULT), callback_data="bundles")])
 
     kb.append([
-        InlineKeyboardButton("🔄 Refresh", callback_data="shop"),
+        refresh_button("shop"),
         InlineKeyboardButton("Back", callback_data="home")
     ])
 
@@ -663,8 +663,8 @@ async def show_category(q, category_id, page=1):
         kb.append(nav)
 
     kb.append([
-        InlineKeyboardButton("◀️ Back", callback_data="shop"),
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"shopcat_{category_id}_{page}"),
+        back_button("shop"),
+        refresh_button(f"shopcat_{category_id}_{page}"),
         InlineKeyboardButton("🏠 Main Menu", callback_data="home"),
     ])
 
@@ -1271,7 +1271,7 @@ Please select a lower quantity or check again later.""",
                 f"Another user may have purchased the last item just before you.\n"
                 f"Please refresh and try again.",
                 InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Refresh", callback_data=f"product_{pid}")],
+                    [refresh_button(f"product_{pid}")],
                     [InlineKeyboardButton(get_message_template("btn_back_to_products", BTN_BACK_TO_PRODUCTS_DEFAULT), callback_data="shop")],
                 ])
             )
