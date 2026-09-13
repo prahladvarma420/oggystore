@@ -454,19 +454,107 @@ async function manageStock(id) {
       ${availCount ? `<button class="btn btn-sm btn-red" id="stDelAll"><span>\ud83d\uddd1\ufe0f Delete All Stock</span></button>` : ""}
     </div>
     <div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>ID</th><th>Code</th><th>Status</th><th>Sold to</th><th></th></tr></thead><tbody>${items || '<tr><td colspan=5 class="muted">No codes</td></tr>'}</tbody></table></div>`);
+  // ── Submission-lock helper ──────────────────────────────────────────────
+  // Generates a random UUID for each NEW submit attempt (not for retries).
+  // The same op_id is resent on retry so the backend can detect replays.
+  function genOpId() {
+    // crypto.randomUUID() is available in all modern browsers.
+    return (crypto.randomUUID ? crypto.randomUUID()
+      : ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+          (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)));
+  }
+
+  function setBtn(btn, state, count) {
+    // state: "idle" | "loading" | "success" | "error"
+    if (state === "loading") {
+      btn.disabled = true;
+      btn.innerHTML = count
+        ? `<span>⏳ Adding ${count.toLocaleString()} codes…</span>`
+        : `<span>⏳ Adding stock…</span>`;
+    } else if (state === "success") {
+      btn.disabled = true;
+      btn.innerHTML = `<span>✅ Stock Added</span>`;
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = `<span>➕ Add Stock</span>`; }, 2000);
+    } else if (state === "error") {
+      btn.disabled = false;
+      btn.innerHTML = `<span>❌ Failed — Retry</span>`;
+    } else {
+      btn.disabled = false;
+      btn.innerHTML = `<span>➕ Add Stock</span>`;
+    }
+  }
+
+  // Each button gets its own op_id slot; refreshed only when a new attempt
+  // starts (not on retry), so the backend sees the same id on retry.
+  let stOpId = null;
+  let stSubmitting = false;
+
   $("#stAdd").onclick = async () => {
+    if (stSubmitting) return;                   // block double-click
     const codes = val("st_codes");
     if (!codes) return toast("Enter codes", "err");
-    const r = await post(`/api/products/${id}/stock/add`, { codes });
-    if (r.ok) { toast("Added " + r.added + " codes"); manageStock(id); render(); } else toast("Failed", "err");
+    const lineCount = codes.split("\n").filter(l => l.trim()).length;
+
+    stSubmitting = true;
+    if (!stOpId) stOpId = genOpId();           // generate once per attempt batch
+    const btn = $("#stAdd");
+    setBtn(btn, "loading", lineCount);
+
+    try {
+      const r = await post(`/api/products/${id}/stock/add`, { codes, op_id: stOpId });
+      if (r.ok) {
+        stOpId = null;                          // clear — next click is a NEW operation
+        stSubmitting = false;
+        setBtn(btn, "success");
+        toast("✅ Added " + r.added + " codes (available: " + r.available + ")");
+        manageStock(id); render();
+      } else {
+        stSubmitting = false;
+        setBtn(btn, "error");
+        // Keep stOpId so retry reuses it → backend dedup still works
+        toast(r.error || "Failed to add stock", "err");
+      }
+    } catch (e) {
+      stSubmitting = false;
+      setBtn(btn, "error");
+      toast("Network error — retry is safe", "err");
+    }
   };
+
+  let stAccOpId = null;
+  let stAccSubmitting = false;
+
   $("#stAddAcc").onclick = async () => {
+    if (stAccSubmitting) return;
     const accounts = val("st_accounts");
     const sel = $("#st_acc_delim");
     const delimiter = sel ? sel.value : ":";
     if (!accounts) return toast("Enter accounts", "err");
-    const r = await post(`/api/products/${id}/stock/add_accounts`, { accounts, delimiter });
-    if (r.ok) { toast("Added " + r.added + " accounts"); manageStock(id); render(); } else toast(r.error || "Failed", "err");
+    const lineCount = accounts.split("\n").filter(l => l.trim()).length;
+
+    stAccSubmitting = true;
+    if (!stAccOpId) stAccOpId = genOpId();
+    const btn = $("#stAddAcc");
+    setBtn(btn, "loading", lineCount);
+
+    try {
+      const r = await post(`/api/products/${id}/stock/add_accounts`, { accounts, delimiter, op_id: stAccOpId });
+      if (r.ok) {
+        stAccOpId = null;
+        stAccSubmitting = false;
+        setBtn(btn, "success");
+        toast("✅ Added " + r.added + " accounts (available: " + r.available + ")");
+        manageStock(id); render();
+      } else {
+        stAccSubmitting = false;
+        setBtn(btn, "error");
+        toast(r.error || "Failed to add accounts", "err");
+      }
+    } catch (e) {
+      stAccSubmitting = false;
+      setBtn(btn, "error");
+      toast("Network error — retry is safe", "err");
+    }
   };
   const delAllBtn = $("#stDelAll");
   if (delAllBtn) delAllBtn.onclick = async () => {
