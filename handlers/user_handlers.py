@@ -10,7 +10,7 @@ from utils.premium_emoji import strip_premium
 from utils.delivery_file import split_delivery_items, send_delivery_txt
 from utils.timezone import display_time
 from utils.error_logger import log_error
-from keyboards.menus import main_menu, profile_menu, back_home, support_menu
+from keyboards.menus import main_menu, profile_menu, back_home, support_menu, back_button
 from utils.texts import welcome_text
 from utils.ui import edit_or_send
 from utils.states import user_state
@@ -822,7 +822,7 @@ Example:
             [InlineKeyboardButton("🛒 Buy Gift Code", callback_data="gift_buy")],
             [InlineKeyboardButton("🔑 Redeem Gift Code", callback_data="gift_redeem")],
             [InlineKeyboardButton("📂 My Gift Codes", callback_data="gift_mine")],
-            [InlineKeyboardButton("◀️ Back", callback_data="home")],
+            [back_button("home")],
         ])
         await edit_or_send(
             q,
@@ -887,7 +887,7 @@ Example:
         for w_order_id, w_pname, _wpid, _wcreated in w_rows:
             label = "🧾 #" + str(w_order_id) + " — " + strip_premium(str(w_pname))[:30]
             kb_rows.append([InlineKeyboardButton(label, callback_data="warranty_req_" + str(w_order_id))])
-        kb_rows.append([InlineKeyboardButton("◀️ Back", callback_data="home")])
+        kb_rows.append([back_button("home")])
 
         await edit_or_send(
             q,
@@ -1034,7 +1034,7 @@ Thank you for using our store.""",
                     )
                 ])
 
-        kb_rows.append([InlineKeyboardButton("◀️ Back", callback_data="profile")])
+        kb_rows.append([back_button("profile")])
         await edit_or_send(q, text, InlineKeyboardMarkup(kb_rows))
         return
 
@@ -1605,7 +1605,7 @@ It will be used on your next wallet purchase.""",
                 name_html = html.escape(strip_premium(str(name)), quote=False)
                 msg += f"• <b>{name_html}</b> — <code>${float(price):.2f}</code> | Stock: <code>{stock}</code>\n"
                 buttons.append([InlineKeyboardButton(f"🛍 {button_premium(name)[0][:35]}", callback_data=f"product_{pid}", icon_custom_emoji_id=button_premium(name)[1])])
-            buttons.append([InlineKeyboardButton("◀️ Back", callback_data="home")])
+            buttons.append([back_button("home")])
 
             await update.message.reply_text(
                 msg,
