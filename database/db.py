@@ -726,17 +726,20 @@ def init_db():
     """)
     # Auto-cleanup: keep only the last 7 days of op records (they are only
     # needed to deduplicate in-flight retries, not for permanent audit).
+    # created is stored as TEXT (ISO-8601) so we cast it for the comparison.
     try:
         from database.pgcompat import use_postgres as _use_pg
     except Exception:
         def _use_pg(): return False
     if _use_pg():
         cur.execute(
-            "DELETE FROM stock_op_log WHERE created < NOW() - INTERVAL '7 days'"
+            "DELETE FROM stock_op_log"
+            " WHERE created::timestamptz < NOW() - INTERVAL '7 days'"
         )
     else:
         cur.execute(
-            "DELETE FROM stock_op_log WHERE created < datetime('now', '-7 days')"
+            "DELETE FROM stock_op_log"
+            " WHERE created < datetime('now', '-7 days')"
         )
 
     conn.commit()
