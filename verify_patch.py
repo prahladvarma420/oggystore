@@ -65,7 +65,7 @@ TEXT_CHECKS = {
         "1,2,3,4,5",                                   # multi-ID input hint
     ],
     "products/product_handlers.py": [
-        "SHOP_CATEGORY_PAGE_SIZE", "SHOP_PRODUCT_PAGE_SIZE",
+        "SHOP_PRODUCT_PAGE_SIZE",
         "button_premium(cname)", "shopcat_", "copydep_",
     ],
     "handlers/user_handlers.py": ["shopcat_", "shopcats_", "copydep_", "copymsg_dismiss", "ordview_", "orddl_"],
