@@ -1223,7 +1223,7 @@ Example:
 
 
 async def _product_search_fallback(update, uid, text):
-    """Plain-text product/category search.
+    """Plain-text product search.
 
     This only runs from the very bottom of message_handler, after every
     active conversation state has already had first crack at the message
@@ -1241,18 +1241,19 @@ async def _product_search_fallback(update, uid, text):
     """
     from telegram import InlineKeyboardMarkup
     from utils.button_styles import AutoStyledButton as InlineKeyboardButton
-    from utils.premium_emoji import button_premium
-    from database.db import search_products_and_categories, get_category_counts, get_category_stock_map
+    from database.db import search_products_and_categories
     from products.product_handlers import _product_button_rows
 
     keyword = text.strip()
     if not keyword:
         return False
 
-    products, categories = search_products_and_categories(keyword)
+    # Products only -- category matches are not shown here per store owner
+    # request, so skip that query entirely (include_categories=False).
+    products, _categories = search_products_and_categories(keyword, include_categories=False)
     safe_keyword = html.escape(keyword, quote=False)
 
-    if not products and not categories:
+    if not products:
         await update.message.reply_text(
             f'🔎 <b>No products found for</b> "<code>{safe_keyword}</code>"',
             reply_markup=InlineKeyboardMarkup(
@@ -1262,41 +1263,14 @@ async def _product_search_fallback(update, uid, text):
         )
         return True
 
-    kb = []
-    lines = [f'🔎 <b>Search results for</b> "<code>{safe_keyword}</code>"']
-
-    if categories:
-        counts = get_category_counts()
-        stock_map = get_category_stock_map()
-        lines.append("")
-        lines.append("📂 <b>Matching categories</b>")
-        for cid, cname, _sort, _cactive, cicon in categories:
-            _ctext, _cpremium = button_premium(cname)
-            _cic = (cicon or "").strip()
-            count = counts.get(cid, 0)
-            cat_has_stock = stock_map.get(cid, False)
-            kb.append([
-                InlineKeyboardButton(
-                    f"{_cic + ' ' if _cic else ''}{_ctext} ({count})",
-                    callback_data=f"shopcat_{cid}",
-                    style="primary" if cat_has_stock else "danger",
-                    icon_custom_emoji_id=_cpremium
-                )
-            ])
-
-    if products:
-        # Reuses the exact same row renderer the shop/category views use
-        # (live stock, flash price, premium emoji) so results look identical
-        # to browsing there normally.
-        kb.extend(_product_button_rows(products))
-    elif categories:
-        lines.append("")
-        lines.append("No individual products matched -- try opening a category above.")
-
+    # Reuses the exact same row renderer the shop/category views use (live
+    # stock, flash price, premium emoji) so results look identical to
+    # browsing there normally.
+    kb = _product_button_rows(products)
     kb.append([InlineKeyboardButton("🛍 Browse All Products", callback_data="shop")])
 
     await update.message.reply_text(
-        "\n".join(lines),
+        f'🔎 <b>Search results for</b> "<code>{safe_keyword}</code>"',
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="HTML"
     )
