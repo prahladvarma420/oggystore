@@ -12,7 +12,7 @@ from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, re
 from utils.crypto import decrypt_text
 from database.db import get_display_stock, tiers_recently_edited
 from database.db import get_pending_replacements, get_replacement, set_replacement_status, set_warranty_ban, is_warranty_banned, count_recent_replacements, reserve_stock_item, create_gift_code, list_gift_codes, rename_m365_session, list_m365_sessions, get_current_m365_session, reset_m365_session, delete_m365_session
-from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu
+from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu, back_button, refresh_button, EXTRA_CUSTOM_BUTTONS
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
 from utils.premium_emoji import premium_html, strip_premium, first_premium_id, sanitize_premium_name, button_premium, premium_safe
@@ -38,7 +38,7 @@ def smart_dashboard_keyboard():
         [InlineKeyboardButton("📦 Products", callback_data="admin_section_products"), InlineKeyboardButton("🛒 Orders", callback_data="admin_orders")],
         [InlineKeyboardButton("🎫 Tickets", callback_data="admin_ticket_manager"), InlineKeyboardButton("⚠️ Low Stock", callback_data="admin_low_stock")],
         [InlineKeyboardButton("📈 Sales Analytics", callback_data="admin_sales_analytics"), InlineKeyboardButton("🤖 Auto Marketing", callback_data="admin_auto_marketing")],
-        [InlineKeyboardButton("🔄 Refresh", callback_data="admin_smart_dashboard")],
+        [refresh_button("admin_smart_dashboard")],
     ])
 
 
@@ -51,7 +51,7 @@ def ticket_manager_keyboard(ticket_id=None, user_id=None):
             [InlineKeyboardButton("⬅️ Tickets", callback_data="admin_ticket_manager")],
         ])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Refresh", callback_data="admin_ticket_manager")],
+        [refresh_button("admin_ticket_manager")],
         [InlineKeyboardButton("⬅️ Support Menu", callback_data="admin_section_support")],
     ])
 
@@ -610,7 +610,7 @@ def admin_stats_text():
 
 def admin_stats_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Refresh", callback_data="admin_stats_dashboard")],
+        [refresh_button("admin_stats_dashboard")],
         [InlineKeyboardButton("⚠️ Low Stock", callback_data="admin_low_stock")],
         [InlineKeyboardButton("♻️ Reset Revenue", callback_data="admin_revenue_reset")],
         [InlineKeyboardButton("⬅️ System Menu", callback_data="admin_section_system")],
@@ -920,7 +920,7 @@ def price_offers_keyboard(product_id: int):
         [InlineKeyboardButton("➕ Add / Update Offer", callback_data=f"admin_offer_add_{product_id}")],
         [InlineKeyboardButton("🗑 Delete Offer", callback_data=f"admin_offer_delete_{product_id}")],
         [InlineKeyboardButton("🧹 Clear All Offers", callback_data=f"admin_offer_clear_{product_id}")],
-        [InlineKeyboardButton("🔄 Refresh", callback_data=f"admin_offer_select_{product_id}")],
+        [refresh_button(f"admin_offer_select_{product_id}")],
         [InlineKeyboardButton("⬅️ Choose Product", callback_data="admin_price_offers")],
         [InlineKeyboardButton("🏠 Products Menu", callback_data="admin_section_products")],
     ])
@@ -1022,7 +1022,7 @@ def product_codes_keyboard(product_id: int):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Add Codes", callback_data=f"admin_codes_add_{product_id}")],
         [InlineKeyboardButton("🗑 Delete Codes", callback_data=f"admin_codes_delete_{product_id}")],
-        [InlineKeyboardButton("🔄 Refresh", callback_data=f"admin_codes_select_{product_id}")],
+        [refresh_button(f"admin_codes_select_{product_id}")],
         [InlineKeyboardButton("⬅️ Choose Product", callback_data="admin_manage_codes")],
         [InlineKeyboardButton("🏠 Products Menu", callback_data="admin_section_products")],
     ])
@@ -1392,7 +1392,7 @@ def admin_categories_menu():
         [InlineKeyboardButton("📦 Add Existing Product", callback_data="admin_cat_pick:addex")],
         [InlineKeyboardButton("➕ Add New Product", callback_data="admin_cat_pick:addnew")],
         [InlineKeyboardButton("🗑️ Delete Category", callback_data="admin_cat_pick:del")],
-        [InlineKeyboardButton("◀️ Back", callback_data="admin_panel")],
+        [back_button("admin_panel")],
     ])
 
 
@@ -1401,7 +1401,7 @@ def _cat_cancel_kb():
 
 
 def _cat_back_kb(cb="admin_categories"):
-    return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data=cb)]])
+    return InlineKeyboardMarkup([[back_button(cb)]])
 
 
 def _cat_done_kb():
@@ -1423,7 +1423,7 @@ def _category_picker_kb(action):
             callback_data=f"admin_cat_pickdo:{action}:{cid}",
             icon_custom_emoji_id=_picon
         )])
-    rows.append([InlineKeyboardButton("◀️ Back", callback_data="admin_categories")])
+    rows.append([back_button("admin_categories")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1502,7 +1502,7 @@ What would you like to edit?""",
             [InlineKeyboardButton("✏️ Rename Category", callback_data=f"admin_cat_rename:{cid}")],
             [InlineKeyboardButton("📦 Manage Products", callback_data=f"admin_cat_prods:{cid}")],
             [InlineKeyboardButton("🗑️ Delete Category", callback_data=f"admin_cat_del:{cid}")],
-            [InlineKeyboardButton("◀️ Back", callback_data="admin_cat_edit")],
+            [back_button("admin_cat_edit")],
         ]),
     )
 
@@ -1533,7 +1533,7 @@ Products in this category:
             [InlineKeyboardButton("➕ Add Existing Product", callback_data=f"admin_cat_addex:{cid}")],
             [InlineKeyboardButton("➕ Add New Product", callback_data=f"admin_cat_addnew:{cid}")],
             [InlineKeyboardButton("➖ Remove Product", callback_data=f"admin_cat_rm:{cid}")],
-            [InlineKeyboardButton("◀️ Back", callback_data=f"admin_cat_sel:{cid}")],
+            [back_button(f"admin_cat_sel:{cid}")],
         ]),
     )
 
@@ -1686,7 +1686,7 @@ async def _admin_cat_handle_product_id(update, uid, text, cat, in_create_flow):
                 "\n\n".join(parts),
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("📦 Manage this category", callback_data=f"admin_cat_prods:{cid}")],
-                    [InlineKeyboardButton("◀️ Back", callback_data="admin_categories")],
+                    [back_button("admin_categories")],
                 ]),
                 parse_mode="HTML",
             )
@@ -1867,12 +1867,19 @@ async def handle_admin_callback(q, uid, data, context):
         for key, default, _cb in MAIN_MENU_BUTTONS:
             current = (get_setting(key, "") or "").strip() or default
             kb.append([InlineKeyboardButton(f"🔘 {strip_premium(current)[:30]}", callback_data=f"admin_btn_edit:{key}")])
+        # Shared buttons reused across many screens (Back / Refresh / Deposit
+        # History) -- one label edit here applies everywhere that button appears.
+        for key, default in EXTRA_CUSTOM_BUTTONS:
+            current = (get_setting(key, "") or "").strip() or default
+            kb.append([InlineKeyboardButton(f"🔘 {strip_premium(current)[:30]}", callback_data=f"admin_btn_edit:{key}")])
         kb.append([InlineKeyboardButton("♻️ Reset All Buttons", callback_data="admin_btn_reset")])
         kb.append([InlineKeyboardButton("⬅️ Admin Home", callback_data="admin_panel")])
         await edit_or_send(
             q,
             "🎨 <b>Customize Bot</b>\n\n"
-            "Edit the welcome message, or tap a main-menu button below to rename it.\n\n"
+            "Edit the welcome message, or tap a button below to rename it.\n\n"
+            "The last three (Back / Refresh / Deposit History) are shared across many "
+            "screens -- one edit changes every place that button appears.\n\n"
             "💎 Premium emoji supported — the first premium emoji in a button label becomes the button icon.",
             InlineKeyboardMarkup(kb)
         )
@@ -1896,6 +1903,7 @@ async def handle_admin_callback(q, uid, data, context):
     if data.startswith("admin_btn_edit:"):
         key = data.split(":", 1)[1]
         defaults = {k: d for k, d, _ in MAIN_MENU_BUTTONS}
+        defaults.update(dict(EXTRA_CUSTOM_BUTTONS))
         if key in defaults:
             user_state[uid] = f"admin_set_btn:{key}"
             current = (get_setting(key, "") or "").strip() or defaults[key]
@@ -1917,9 +1925,14 @@ async def handle_admin_callback(q, uid, data, context):
                 cur.execute("DELETE FROM settings WHERE key=?", (key,))
             except Exception:
                 pass
+        for key, _default in EXTRA_CUSTOM_BUTTONS:
+            try:
+                cur.execute("DELETE FROM settings WHERE key=?", (key,))
+            except Exception:
+                pass
         conn.commit()
         log_admin_action(uid, "RESET_BUTTONS", "Main menu buttons reset")
-        await edit_or_send(q, "♻️ <b>All main menu buttons reset to defaults.</b>", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_customize")]]))
+        await edit_or_send(q, "♻️ <b>All buttons reset to defaults.</b>", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_customize")]]))
         return True
 
     if data == "admin_bundles":
@@ -3072,7 +3085,7 @@ Hours means coupon validity time before auto-expiry.""",
         return True
 
     if data == "admin_top_sellers":
-        await edit_or_send(q, top_sellers_text(), InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="admin_top_sellers")], [InlineKeyboardButton("⬅️ System", callback_data="admin_section_system")]]))
+        await edit_or_send(q, top_sellers_text(), InlineKeyboardMarkup([[refresh_button("admin_top_sellers")], [InlineKeyboardButton("⬅️ System", callback_data="admin_section_system")]]))
         return True
 
     if data == "admin_cleanup":
@@ -3202,7 +3215,7 @@ Example:
         return True
 
     if data == "admin_sales_analytics":
-        await edit_or_send(q, sales_analytics_text(), InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="admin_sales_analytics")], [InlineKeyboardButton("⬅️ System", callback_data="admin_section_system")]]))
+        await edit_or_send(q, sales_analytics_text(), InlineKeyboardMarkup([[refresh_button("admin_sales_analytics")], [InlineKeyboardButton("⬅️ System", callback_data="admin_section_system")]]))
         return True
 
     if data == "admin_smart_dashboard":
@@ -3237,7 +3250,7 @@ Example:
             for tid, user_id, first_name, username, subject, msg, status, created, updated in rows:
                 title = subject or str(msg)[:30]
                 kb_rows.append([InlineKeyboardButton(f"#{tid} • {status} • {str(title)[:30]}", callback_data=f"admin_ticket_view_{tid}")])
-        kb_rows.append([InlineKeyboardButton("🔄 Refresh", callback_data="admin_ticket_manager")])
+        kb_rows.append([refresh_button("admin_ticket_manager")])
         kb_rows.append([InlineKeyboardButton("⬅️ Support", callback_data="admin_section_support")])
         await edit_or_send(q, text, InlineKeyboardMarkup(kb_rows))
         return True
@@ -4237,7 +4250,7 @@ Send the new category name:""",
             )
             return True
         rows = [[InlineKeyboardButton(f"🆔 {r[0]} — {strip_premium(r[1])[:35]}", callback_data=f"admin_cat_rmok:{cid}:{r[0]}")] for r in prows]
-        rows.append([InlineKeyboardButton("◀️ Back", callback_data=f"admin_cat_prods:{cid}")])
+        rows.append([back_button(f"admin_cat_prods:{cid}")])
         await edit_or_send(
             q,
             f"""➖ <b>Remove Product</b>
@@ -4304,7 +4317,7 @@ Tap a product to remove it from 📂 <b>{_cat_name_html(cat[1])}</b>.
 📦 <b>Products:</b> <code>{len(added)}</code>""",
             InlineKeyboardMarkup([
                 [InlineKeyboardButton("📦 Manage this category", callback_data=f"admin_cat_prods:{cat[0]}")],
-                [InlineKeyboardButton("◀️ Back", callback_data="admin_categories")],
+                [back_button("admin_categories")],
             ]),
         )
         return True
@@ -4350,7 +4363,7 @@ Tap a product to remove it from 📂 <b>{_cat_name_html(cat[1])}</b>.
             text,
             InlineKeyboardMarkup([
                 [InlineKeyboardButton("📦 Manage this category", callback_data=f"admin_cat_prods:{target[0]}")],
-                [InlineKeyboardButton("◀️ Back", callback_data="admin_categories")],
+                [back_button("admin_categories")],
             ]),
         )
         return True
@@ -5765,7 +5778,7 @@ New:
 {_cat_name_html(new_name)}""",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📂 Open Category", callback_data=f"admin_cat_sel:{cid}")],
-                [InlineKeyboardButton("◀️ Back", callback_data="admin_categories")],
+                [back_button("admin_categories")],
             ]),
             parse_mode="HTML",
         )
