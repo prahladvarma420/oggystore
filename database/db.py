@@ -451,6 +451,21 @@ def init_db():
     _safe_add_column("products", "category_id", "INTEGER")
     # Optional per-category emoji/icon shown in the bot shop picker.
     _safe_add_column("categories", "icon", "TEXT DEFAULT ''")
+    # Indexes for the plain-text product/category search fallback (typing
+    # "youtube" with no active conversation state) and the shop menus, which
+    # both filter on active=1 / category_id first before any LIKE matching.
+    # A leading-wildcard LIKE '%term%' can't use a plain B-tree index for the
+    # match itself on either SQLite or Postgres (that would need FTS/trigram
+    # indexes, which is out of scope here) -- these speed up the active/
+    # category filtering these queries always do first, and cost nothing on
+    # small catalogs. IF NOT EXISTS makes this a no-op on every later boot.
+    try:
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_products_active_name ON products(active, name)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_categories_active_name ON categories(active, name)")
+        conn.commit()
+    except Exception:
+        pass
     # Payment method shown in admin order search/detail ("Wallet",
     # "USDT BEP20", "USDT TRC20", "Binance Pay"). NULL on legacy rows --
     # those are derived from the funding checkout deposit at display time.
@@ -3197,6 +3212,74 @@ def get_category_products(category_id):
             "ORDER BY featured DESC, id DESC"
         )
     return cur.fetchall()
+
+
+def _escape_like(term: str) -> str:
+    """Escape LIKE wildcard characters in user-controlled search text so a
+    stray % or _ in what someone types can't change the match shape. The
+    value is still passed through a bound parameter (never string-formatted
+    into the SQL) -- this only neutralises wildcard *meaning* inside it.
+
+    Uses "!" as the escape character (paired with ESCAPE '!' in the SQL)
+    instead of a backslash: Postgres treats a backslash inside a plain
+    '...' string literal differently depending on standard_conforming_strings,
+    while "!" needs no special quoting in either SQLite or Postgres and is
+    not a character LIKE gives meaning to on its own."""
+    return term.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+
+
+def search_products_and_categories(keyword: str, product_limit: int = 8, category_limit: int = 6):
+    """Free-text, database-backed lookup used for the plain-text product
+    search fallback (e.g. a user just types "youtube"). Case-insensitive,
+    whitespace-trimmed, partial-match on both products and categories, and
+    shares the exact same tables/columns the shop menus already read from --
+    no separate in-memory catalog copy.
+
+    Returns (products, categories):
+      products   -> rows shaped exactly like get_category_products()/show_shop()
+                    use: (id, name, price, stock, validity, featured,
+                    flash_price, flash_ends_at) -- so callers can hand them
+                    straight to the existing product-button renderer.
+      categories -> rows shaped like get_categories(): (id, name, sort_order,
+                    active, icon).
+    Both lists are capped (LIMIT) so a broad keyword can never pull the whole
+    catalog into memory.
+    """
+    term = (keyword or "").strip()
+    if not term:
+        return [], []
+
+    like_term = f"%{_escape_like(term.lower())}%"
+
+    cur.execute(
+        """
+        SELECT id, name, price, stock, validity, featured, flash_price, flash_ends_at
+        FROM products
+        WHERE active=1
+          AND (
+                LOWER(name) LIKE ? ESCAPE '!'
+                OR LOWER(COALESCE(description, '')) LIKE ? ESCAPE '!'
+              )
+        ORDER BY featured DESC, id DESC
+        LIMIT ?
+        """,
+        (like_term, like_term, int(product_limit)),
+    )
+    products = cur.fetchall()
+
+    cur.execute(
+        """
+        SELECT id, name, sort_order, active, COALESCE(icon, '')
+        FROM categories
+        WHERE active=1 AND LOWER(name) LIKE ? ESCAPE '!'
+        ORDER BY sort_order ASC, id ASC
+        LIMIT ?
+        """,
+        (like_term, int(category_limit)),
+    )
+    categories = cur.fetchall()
+
+    return products, categories
 
 
 def assign_product_category(product_id, category_id):
