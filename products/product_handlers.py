@@ -530,9 +530,12 @@ async def show_shop(q, page=1):
         for cid, cname, _sort, _cactive, cicon in page_cats:
             count = counts.get(cid, 0)
             _ctext, _cpremium = button_premium(cname)
+            _cic = (cicon or "").strip()
+            # The category name is shown EXACTLY as the admin entered it --
+            # no default folder icon is injected when the icon field is empty.
             kb.append([
                 InlineKeyboardButton(
-                    f"{cicon or chr(0x1F4C2)} {_ctext} ({count})",
+                    f"{_cic + ' ' if _cic else ''}{_ctext} ({count})",
                     callback_data=f"shopcat_{cid}",
                     style="primary",
                     icon_custom_emoji_id=_cpremium
@@ -649,7 +652,8 @@ async def show_category(q, category_id, page=1):
         if not cat or not int(cat[3]):
             await show_shop(q)
             return
-        title = f"{cat[4] or chr(0x1F4C2)} <b>{cat[1] if '<tg-emoji' in str(cat[1]) else html.escape(strip_premium(cat[1]))}</b>"
+        _caticon = (cat[4] or "").strip()
+        title = f"{_caticon + ' ' if _caticon else ''}<b>{cat[1] if '<tg-emoji' in str(cat[1]) else html.escape(strip_premium(cat[1]))}</b>"
         products = get_category_products(category_id)
     else:
         title = "\U0001f4e6 <b>Other Products</b>"
