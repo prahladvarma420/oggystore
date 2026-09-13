@@ -711,6 +711,25 @@ def init_db():
             )
         _TEMPLATES_SEEDED = True
 
+    # Idempotency table for Web Admin stock additions.
+    # Each Add Stock click generates a UUID (op_id) on the frontend.
+    # The backend records completed op_ids here and ignores replays.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS stock_op_log(
+        op_id TEXT PRIMARY KEY,
+        product_id INTEGER NOT NULL,
+        added INTEGER NOT NULL,
+        available INTEGER NOT NULL,
+        admin_id INTEGER,
+        created TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    # Auto-cleanup: keep only the last 7 days of op records (they are only
+    # needed to deduplicate in-flight retries, not for permanent audit).
+    cur.execute(
+        "DELETE FROM stock_op_log WHERE created < datetime('now', '-7 days')"
+    )
+
     conn.commit()
 
     # Base tables now exist -- (re)apply the gift/warranty migrations that
@@ -902,11 +921,17 @@ def add_stock_items(product_id: int, delivery_text: str):
     if not items and delivery_text.strip():
         items = [delivery_text.strip()]
 
-    for item in items:
-        cur.execute(
-            "INSERT INTO product_stock(product_id, delivery, sold) VALUES(?,?,0)",
-            (product_id, encrypt_text(item))
-        )
+    if not items:
+        return 0
+
+    # Bulk insert: encrypt all codes first, then insert in one executemany
+    # inside a single transaction. For 1000+ codes this is dramatically faster
+    # than the previous one-INSERT-per-code loop.
+    encrypted_rows = [(product_id, encrypt_text(item), 0) for item in items]
+    cur.executemany(
+        "INSERT INTO product_stock(product_id, delivery, sold) VALUES(?,?,?)",
+        encrypted_rows
+    )
 
     # Set stock to the REAL unsold count. This used to be `stock=len(items)`,
     # which discarded any existing unsold stock on every restock.
@@ -1094,12 +1119,19 @@ def add_account_stock_items(product_id: int, accounts_text: str, delimiter: str 
     as ONE stock unit whose delivery text keeps the three fields on separate
     lines, so the customer receives them exactly that way."""
     accounts = _parse_account_blocks(accounts_text, delimiter)
-    for email, password, twofa in accounts:
-        block = format_account_delivery(email, password, twofa)
-        cur.execute(
-            "INSERT INTO product_stock(product_id, delivery, sold) VALUES(?,?,0)",
-            (product_id, encrypt_text(block))
-        )
+    if not accounts:
+        return 0
+
+    # Bulk insert: encrypt all account blocks first, then insert in one
+    # executemany call. Same speed-up as add_stock_items().
+    encrypted_rows = [
+        (product_id, encrypt_text(format_account_delivery(email, password, twofa)), 0)
+        for email, password, twofa in accounts
+    ]
+    cur.executemany(
+        "INSERT INTO product_stock(product_id, delivery, sold) VALUES(?,?,?)",
+        encrypted_rows
+    )
     available = get_available_stock_count(product_id)
     cur.execute("UPDATE products SET stock=? WHERE id=?", (available, product_id))
     # Re-arm low-stock alerts after restock so the next drop alerts again.
