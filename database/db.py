@@ -3228,12 +3228,12 @@ def _escape_like(term: str) -> str:
     return term.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
-def search_products_and_categories(keyword: str, product_limit: int = 8, category_limit: int = 6):
+def search_products_and_categories(keyword: str, product_limit: int = 8, category_limit: int = 6, include_categories: bool = True):
     """Free-text, database-backed lookup used for the plain-text product
     search fallback (e.g. a user just types "youtube"). Case-insensitive,
-    whitespace-trimmed, partial-match on both products and categories, and
-    shares the exact same tables/columns the shop menus already read from --
-    no separate in-memory catalog copy.
+    whitespace-trimmed, partial-match on products (and optionally
+    categories), and shares the exact same tables/columns the shop menus
+    already read from -- no separate in-memory catalog copy.
 
     Returns (products, categories):
       products   -> rows shaped exactly like get_category_products()/show_shop()
@@ -3241,7 +3241,8 @@ def search_products_and_categories(keyword: str, product_limit: int = 8, categor
                     flash_price, flash_ends_at) -- so callers can hand them
                     straight to the existing product-button renderer.
       categories -> rows shaped like get_categories(): (id, name, sort_order,
-                    active, icon).
+                    active, icon). Empty list, no query run, when
+                    include_categories=False.
     Both lists are capped (LIMIT) so a broad keyword can never pull the whole
     catalog into memory.
     """
@@ -3266,6 +3267,9 @@ def search_products_and_categories(keyword: str, product_limit: int = 8, categor
         (like_term, like_term, int(product_limit)),
     )
     products = cur.fetchall()
+
+    if not include_categories:
+        return products, []
 
     cur.execute(
         """
