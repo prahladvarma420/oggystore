@@ -463,6 +463,14 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_products_active_name ON products(active, name)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_categories_active_name ON categories(active, name)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_product_sold ON product_stock(product_id, sold)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_product ON orders(product_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_deposits_status_created ON deposits(status, created)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawal_requests(status)")
         conn.commit()
     except Exception:
         pass
