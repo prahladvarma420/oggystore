@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, render_message_template, cur, conn, is_admin, is_owner, add_admin, remove_admin, get_admins, add_balance, add_stock_items, get_available_stock_count, get_sold_stock_count, get_total_stock_count, restock_product, block_user, unblock_user, log_admin_action, get_admin_logs, update_product_details, get_open_tickets, get_ticket, reply_ticket, close_ticket, get_pending_withdrawals, update_withdrawal_status, set_setting, get_setting, set_product_featured, remove_product_image, get_product_price_tiers, set_product_price_tier, delete_product_price_tier, clear_product_price_tiers, validate_coupon, list_message_templates, get_message_template, set_message_template, smart_dashboard_stats, clear_admin_logs, create_backup_zip, restore_backup_zip, create_bundle, get_all_bundles, get_bundle_items, delete_bundle, get_m365_product_ids, toggle_m365_product, list_m365_invites, get_m365_invite, set_m365_invite_status, get_canva_product_ids, toggle_canva_product, list_canva_invites, get_canva_invite, set_canva_invite_status, get_m365_product_warranty, set_m365_product_warranty, set_m365_session_warranty
 from utils.crypto import decrypt_text
-from database.db import get_display_stock, tiers_recently_edited
+from database.db import get_display_stock, tiers_recently_edited, SUPPORT_RESOLUTION_MESSAGE
 from database.db import get_pending_replacements, get_replacement, set_replacement_status, set_warranty_ban, is_warranty_banned, count_recent_replacements, reserve_stock_item, create_gift_code, list_gift_codes, rename_m365_session, list_m365_sessions, get_current_m365_session, reset_m365_session, delete_m365_session
 from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu, back_button, refresh_button, EXTRA_CUSTOM_BUTTONS
 from config import DB_PATH, ADMIN_ID
@@ -3289,7 +3289,13 @@ Subject: <b>{subject or 'Support Ticket'}</b>
 
     if data.startswith("admin_ticket_close_"):
         ticket_id = int(data.split("_")[-1])
-        close_ticket(ticket_id)
+        ticket = get_ticket(ticket_id)
+        changed = close_ticket(ticket_id)
+        if changed and ticket:
+            try:
+                await context.bot.send_message(chat_id=ticket[1], text=SUPPORT_RESOLUTION_MESSAGE)
+            except Exception:
+                pass
         await edit_or_send(q, f"✅ Ticket <code>#{ticket_id}</code> closed.", ticket_manager_keyboard())
         return True
 
@@ -4382,6 +4388,27 @@ Tap a product to remove it from 📂 <b>{_cat_name_html(cat[1])}</b>.
 
 
 async def handle_admin_message(update, context, uid, text, state):
+    if state and state.startswith("admin_ticket_reply:") and is_admin(uid):
+        ticket_id = int(state.split(":", 1)[1])
+        ticket = get_ticket(ticket_id)
+        if not ticket or ticket[6] == "closed":
+            user_state.pop(uid, None)
+            await update.message.reply_text("🔒 Ticket not found or already closed.", parse_mode="HTML")
+            return True
+        reply = text.strip()
+        if not reply:
+            await update.message.reply_text("❌ Send a non-empty reply.", parse_mode="HTML")
+            return True
+        reply_ticket(ticket_id, reply)
+        user_state.pop(uid, None)
+        await update.message.reply_text(f"✅ Reply added to Ticket <code>#{ticket_id}</code>.", parse_mode="HTML")
+        try:
+            await context.bot.send_message(chat_id=ticket[1], text=(
+                f"👑 <b>Support reply (Ticket #{ticket_id})</b>\n\n{html.escape(reply, quote=False)}"), parse_mode="HTML")
+        except Exception:
+            pass
+        return True
+
     if state and state.startswith("admin_m365_sess_label:") and is_admin(uid):
         try:
             sess_id = int(state.split(":")[1])
@@ -7256,6 +7283,10 @@ async def reply_ticket_command(update, context):
 
         _, user_id, first_name, username, subject, message, status, old_reply, created, updated = ticket
 
+        if status == "closed":
+            await update.message.reply_text("🔒 <b>This ticket is closed.</b>", parse_mode="HTML")
+            return
+
         reply_ticket(ticket_id, reply)
         log_admin_action(uid, "REPLY_TICKET", f"Ticket #{ticket_id}")
 
@@ -7302,7 +7333,7 @@ async def close_ticket_command(update, context):
 
         _, user_id, first_name, username, subject, message, status, admin_reply, created, updated = ticket
 
-        close_ticket(ticket_id)
+        changed = close_ticket(ticket_id)
         log_admin_action(uid, "CLOSE_TICKET", f"Ticket #{ticket_id}")
 
         await update.message.reply_text(
@@ -7311,14 +7342,11 @@ async def close_ticket_command(update, context):
         )
 
         try:
+            if not changed:
+                return
             await context.bot.send_message(
                 chat_id=user_id,
-                text=(
-                    "🔒 <b>Your support ticket was closed</b>\n\n"
-                    f"🎫 <b>Ticket:</b> <code>#{ticket_id}</code>\n"
-                    f"📌 <b>Subject:</b> {subject}"
-                ),
-                parse_mode="HTML"
+                text=SUPPORT_RESOLUTION_MESSAGE,
             )
         except Exception:
             pass
