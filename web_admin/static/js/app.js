@@ -15,6 +15,7 @@ const fmtDate = (d) => d ? String(d).replace("T", " ").slice(0, 16) : "";
 let currentView = "dashboard";
 let searchTimer = null;
 let cache = {};
+const ADMIN_ROLE = (document.querySelector('meta[name="admin-role"]') || {}).content || "admin";
 
 /* ---------------------------------------------------------------- API call */
 const CSRF = (document.querySelector('meta[name="csrf-token"]') || {}).content || "";
@@ -22,11 +23,14 @@ async function api(path, opts = {}) {
   const method = (opts.method || "GET").toUpperCase();
   const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
   if (method !== "GET") headers["X-CSRF-Token"] = CSRF;
-  const res = await fetch(path, { ...opts, headers });
+  let res;
+  try { res = await fetch(path, { ...opts, headers }); }
+  catch (e) { throw new Error("Network error. Check your connection and try again."); }
   if (res.status === 401) { location.href = "/login"; return {}; }
   if (res.headers.get("content-type", "").includes("text/csv")) return res;
   let data;
   try { data = await res.json(); } catch (e) { data = { ok: false, error: "Bad response" }; }
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }
 const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body || {}) });
@@ -46,8 +50,10 @@ function openModal(title, html) {
   $("#modalTitle").textContent = title;
   $("#modalBody").innerHTML = html;
   $("#modalBackdrop").classList.add("show");
+  $("#modalBackdrop").setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => { const target = $("#modalBody input, #modalBody select, #modalBody textarea, #modalBody button"); if (target) target.focus(); });
 }
-function closeModal() { $("#modalBackdrop").classList.remove("show"); }
+function closeModal() { $("#modalBackdrop").classList.remove("show"); $("#modalBackdrop").setAttribute("aria-hidden", "true"); }
 $("#modalClose").onclick = closeModal;
 $("#modalBackdrop").onclick = (e) => { if (e.target === $("#modalBackdrop")) closeModal(); };
 
@@ -67,6 +73,8 @@ const VIEW_TITLES = {
 const SEARCH_VIEWS = { products: "Search products...", orders: "Search orders / user id..." };  // users: has its own in-panel search box
 
 function setView(view) {
+  if (!VIEW_TITLES[view]) view = "dashboard";
+  if (ADMIN_ROLE !== "owner" && ["admins", "logs", "backups"].includes(view)) view = "dashboard";
   currentView = view;
   $$(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.view === view));
   $("#viewTitle").textContent = VIEW_TITLES[view] || view;
@@ -74,6 +82,7 @@ function setView(view) {
   if (SEARCH_VIEWS[view]) { sw.style.display = ""; $("#searchInput").placeholder = SEARCH_VIEWS[view]; $("#searchInput").value = ""; }
   else sw.style.display = "none";
   render();
+  if (location.hash !== "#" + view) history.pushState({ view }, "", "#" + view);
 }
 
 $$(".nav-item").forEach(b => b.onclick = () => setView(b.dataset.view));
@@ -269,7 +278,7 @@ async function viewProducts() {
       <div class="toolbar"><div class="grow"></div>
         <select class="inp" style="max-width:220px" onchange="productCatFilter=this.value;viewProducts()">${catOpts}</select>
         <button class="btn btn-ghost" onclick="manageCategories()">🗂 Categories</button>
-        <button class="btn btn-ghost" onclick="exportCsv('products')">\u2b07 Export CSV</button>
+        ${ADMIN_ROLE === "owner" ? `<button class="btn btn-ghost" onclick="exportCsv('products')">\u2b07 Export CSV</button>` : ""}
         <button class="btn btn-glow" onclick="addProduct()"><span>\u2795 Add Product</span></button>
       </div>
       ${filtered.length ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Name</th><th>Price</th><th>Stock</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No products yet \u2014 add one!", "\ud83d\udce6")}
@@ -660,7 +669,7 @@ async function viewOrders() {
       <button class="btn btn-sm btn-glow" onclick="applyOrderFilters()"><span>Apply</span></button>
       <button class="btn btn-sm btn-ghost" onclick="clearOrderFilters()">Clear</button>
       <div class="grow"></div>
-      <button class="btn btn-ghost" onclick="exportCsv('orders')">\u2b07 Export CSV</button>
+      ${ADMIN_ROLE === "owner" ? `<button class="btn btn-ghost" onclick="exportCsv('orders')">\u2b07 Export CSV</button>` : ""}
     </div>
     ${(d.orders || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Product</th><th>Qty</th><th>User</th><th>Amount</th><th>Method</th><th>Status</th><th>When</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="toolbar" style="margin-top:12px;margin-bottom:0">
@@ -704,7 +713,7 @@ async function viewUsers() {
         oninput="clearTimeout(usersSearchTimer);usersSearchTerm=this.value;usersPage=1;usersSearchTimer=setTimeout(viewUsers,300)"
         onfocus="usersBoxFocused=true" onblur="usersBoxFocused=false">
       <div class="grow"></div>
-      <button class="btn btn-ghost" onclick="exportCsv('users')">\u2b07 Export CSV</button>
+      ${ADMIN_ROLE === "owner" ? `<button class="btn btn-ghost" onclick="exportCsv('users')">\u2b07 Export CSV</button>` : ""}
     </div>
     ${(d.users || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>User ID</th><th>Name</th><th>Username</th><th>Balance</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>${pgBar}` : empty(usersSearchTerm ? "No users match that search" : "No users", "\ud83d\udc65")}</div>`;
   if (usersBoxFocused) { const sb = $("#usersSearchBox"); if (sb) { sb.focus(); sb.setSelectionRange(sb.value.length, sb.value.length); } }
@@ -1125,10 +1134,9 @@ async function viewSecurity() {
 async function twofaSetup() {
   const r = await post("/api/security/2fa/setup", {});
   if (!r.ok) return toast(r.error || "Failed", "err");
-  const qr = "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=" + encodeURIComponent(r.otpauth);
   openModal("\ud83d\udee1\ufe0f Set up 2FA", `
-    <p class="muted">1) Open Google Authenticator or Authy. 2) Scan this QR (or enter the key). 3) Type the 6-digit code to confirm.</p>
-    <div style="text-align:center;margin:10px 0"><img src="${qr}" alt="QR" style="border-radius:12px;background:#fff;padding:8px"></div>
+    <p class="muted">1) Open Google Authenticator or Authy. 2) ${r.qr ? "Scan this locally generated QR (or enter the key)." : "Enter the manual key."} 3) Type the 6-digit code to confirm.</p>
+    ${r.qr ? `<div style="text-align:center;margin:10px 0"><img src="${r.qr}" alt="Authenticator enrollment QR code" style="width:200px;height:200px;border-radius:12px;background:#fff;padding:8px"></div>` : ""}
     <label class="field"><span>Manual key</span><input value="${esc(r.secret)}" readonly onclick="this.select()"></label>
     <label class="field"><span>6-digit code</span><input id="tf_code" inputmode="numeric" placeholder="123456"></label>
     <div class="toolbar" style="margin-top:14px"><div class="grow"></div>
@@ -1253,11 +1261,18 @@ function toggleTheme() {
   const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
   applyTheme(next); toast("Theme: " + next, "ok");
 }
-function toggleSidebar() { document.body.classList.toggle("nav-open"); }
+function toggleSidebar() {
+  const open = document.body.classList.toggle("nav-open");
+  const button = $("#menuBtn");
+  if (button) button.setAttribute("aria-expanded", open ? "true" : "false");
+}
 try { applyTheme(localStorage.getItem("oggy_theme") || "neon"); } catch (e) { applyTheme("neon"); }
 const _themeBtn = $("#themeBtn"); if (_themeBtn) _themeBtn.onclick = toggleTheme;
 const _menuBtn = $("#menuBtn"); if (_menuBtn) _menuBtn.onclick = toggleSidebar;
 $$(".nav-item").forEach(b => b.addEventListener("click", () => document.body.classList.remove("nav-open")));
+$$('.owner-only').forEach(el => { el.hidden = ADMIN_ROLE !== 'owner'; });
+window.addEventListener("popstate", () => setView(location.hash.slice(1) || "dashboard"));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeModal(); document.body.classList.remove("nav-open"); } });
 
 /* boot */
-setView("dashboard");
+setView(location.hash.slice(1) || "dashboard");
