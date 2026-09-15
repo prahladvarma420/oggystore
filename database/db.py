@@ -385,6 +385,23 @@ def init_db():
     )
     """)
 
+    # A ticket is the conversation header; every user/admin/system entry lives
+    # in this child table. Legacy ticket columns remain intact for backwards
+    # compatibility with the Telegram admin screens and old backups.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS ticket_messages(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_id INTEGER NOT NULL,
+        sender_type TEXT NOT NULL,
+        sender_id INTEGER,
+        message TEXT NOT NULL,
+        created TEXT DEFAULT CURRENT_TIMESTAMP,
+        read_by_admin INTEGER DEFAULT 0,
+        legacy_slot TEXT,
+        UNIQUE(ticket_id, legacy_slot)
+    )
+    """)
+
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS referrals(
@@ -470,7 +487,29 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_deposits_status_created ON deposits(status, created)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_tickets_updated ON tickets(updated)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket_id ON ticket_messages(ticket_id, id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ticket_messages_unread ON ticket_messages(ticket_id, read_by_admin, sender_type)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawal_requests(status)")
+        conn.commit()
+    except Exception:
+        pass
+
+    # Backfill every legacy ticket exactly once. Existing data is preserved;
+    # the old columns continue to mirror the initial/latest messages.
+    try:
+        cur.execute("SELECT id, user_id, message, admin_reply, created, updated FROM tickets")
+        for tid, user_id, message, admin_reply, created, updated in cur.fetchall():
+            if message:
+                cur.execute(
+                    "INSERT OR IGNORE INTO ticket_messages(ticket_id,sender_type,sender_id,message,created,read_by_admin,legacy_slot) VALUES(?,?,?,?,?,0,'initial')",
+                    (tid, "user", user_id, message, created),
+                )
+            if admin_reply:
+                cur.execute(
+                    "INSERT OR IGNORE INTO ticket_messages(ticket_id,sender_type,sender_id,message,created,read_by_admin,legacy_slot) VALUES(?,?,?,?,?,1,'legacy_admin_reply')",
+                    (tid, "admin", ADMIN_ID, admin_reply, updated or created),
+                )
         conn.commit()
     except Exception:
         pass
@@ -1207,13 +1246,120 @@ def update_product_details(product_id: int, description: str, validity: str, war
     conn.commit()
 
 
+SUPPORT_RESOLUTION_MESSAGE = "Your support has been resolved. If you have any query contact admin @prahladvarma"
+
+
+def append_ticket_message(ticket_id: int, sender_type: str, message: str,
+                          sender_id=None, read_by_admin=None) -> int:
+    """Append one message to an existing conversation without creating a ticket."""
+    sender_type = str(sender_type or "").strip().lower()
+    if sender_type not in ("user", "admin", "system"):
+        raise ValueError("invalid sender type")
+    message = str(message or "").strip()
+    if not message:
+        raise ValueError("empty message")
+    cur.execute("SELECT id FROM tickets WHERE id=?", (ticket_id,))
+    if cur.fetchone() is None:
+        raise ValueError("ticket not found")
+    if read_by_admin is None:
+        read_by_admin = 0 if sender_type == "user" else 1
+    stamp = now_text()
+    cur.execute(
+        "INSERT INTO ticket_messages(ticket_id,sender_type,sender_id,message,created,read_by_admin) VALUES(?,?,?,?,?,?)",
+        (ticket_id, sender_type, sender_id, encrypt_text(message), stamp,
+         1 if read_by_admin else 0),
+    )
+    message_id = cur.lastrowid
+    if sender_type == "user":
+        cur.execute("UPDATE tickets SET status='open', updated=? WHERE id=? AND status<>'closed'",
+                    (stamp, ticket_id))
+    elif sender_type == "admin":
+        cur.execute("UPDATE tickets SET admin_reply=?, status='answered', updated=? WHERE id=? AND status<>'closed'",
+                    (encrypt_text(message), stamp, ticket_id))
+    else:
+        cur.execute("UPDATE tickets SET updated=? WHERE id=?", (stamp, ticket_id))
+    conn.commit()
+    return message_id
+
+
 def create_ticket(user_id: int, subject: str, message: str) -> int:
     cur.execute(
         "INSERT INTO tickets(user_id, subject, message, status) VALUES(?,?,?, 'open')",
         (user_id, encrypt_text(subject), encrypt_text(message))
     )
     conn.commit()
-    return cur.lastrowid
+    ticket_id = cur.lastrowid
+    append_ticket_message(ticket_id, "user", message, user_id, read_by_admin=False)
+    return ticket_id
+
+
+def add_user_ticket_reply(ticket_id: int, user_id: int, message: str) -> int:
+    cur.execute("SELECT status FROM tickets WHERE id=? AND user_id=?", (ticket_id, user_id))
+    row = cur.fetchone()
+    if row is None:
+        raise ValueError("ticket not found")
+    if str(row[0]) == "closed":
+        raise ValueError("ticket closed")
+    return append_ticket_message(ticket_id, "user", message, user_id, read_by_admin=False)
+
+
+def get_ticket_messages(ticket_id: int, limit: int = 100, before_id=None):
+    limit = max(1, min(int(limit or 100), 100))
+    sql = "SELECT id,ticket_id,sender_type,sender_id,message,created,read_by_admin FROM ticket_messages WHERE ticket_id=?"
+    params = [ticket_id]
+    if before_id:
+        sql += " AND id<?"
+        params.append(int(before_id))
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit + 1)
+    cur.execute(sql, tuple(params))
+    rows = [list(r) for r in cur.fetchall()]
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    for row in rows:
+        row[4] = decrypt_text(row[4])
+    rows.reverse()
+    return [tuple(r) for r in rows], has_more
+
+
+def mark_ticket_read(ticket_id: int):
+    cur.execute("UPDATE ticket_messages SET read_by_admin=1 WHERE ticket_id=? AND sender_type='user' AND read_by_admin=0",
+                (ticket_id,))
+    conn.commit()
+
+
+def get_ticket_conversations(status="all", limit=200):
+    where = ""
+    if status == "open":
+        where = "WHERE t.status='open'"
+    elif status == "answered":
+        where = "WHERE t.status='answered'"
+    elif status == "closed":
+        where = "WHERE t.status='closed'"
+    elif status == "unread":
+        where = "WHERE COALESCE(ms.unread_count,0)>0"
+    cur.execute("""
+        SELECT t.id,t.user_id,u.first_name,u.username,t.subject,t.status,t.created,t.updated,
+               lm.message,lm.sender_type,lm.created,
+               COALESCE(ms.message_count,0),COALESCE(ms.unread_count,0)
+        FROM tickets t
+        LEFT JOIN users u ON u.user_id=t.user_id
+        LEFT JOIN (
+            SELECT ticket_id,COUNT(*) message_count,
+                   SUM(CASE WHEN sender_type='user' AND read_by_admin=0 THEN 1 ELSE 0 END) unread_count,
+                   MAX(id) last_id
+            FROM ticket_messages GROUP BY ticket_id
+        ) ms ON ms.ticket_id=t.id
+        LEFT JOIN ticket_messages lm ON lm.id=ms.last_id
+        """ + where + " ORDER BY COALESCE(lm.created,t.updated,t.created) DESC, t.id DESC LIMIT ?",
+        (max(1, min(int(limit or 200), 500)),))
+    out = []
+    for r in cur.fetchall():
+        r = list(r)
+        r[4] = decrypt_text(r[4])
+        r[8] = decrypt_text(r[8]) if r[8] is not None else ""
+        out.append(tuple(r))
+    return out
 
 
 def get_user_tickets(user_id: int, limit: int = 10):
@@ -1269,19 +1415,28 @@ def get_ticket(ticket_id: int):
 
 
 def reply_ticket(ticket_id: int, admin_reply: str):
-    cur.execute(
-        "UPDATE tickets SET admin_reply=?, status='answered', updated=? WHERE id=?",
-        (encrypt_text(admin_reply), now_text(), ticket_id)
-    )
-    conn.commit()
+    cur.execute("SELECT status FROM tickets WHERE id=?", (ticket_id,))
+    row = cur.fetchone()
+    if row is None:
+        return False
+    if str(row[0]) == "closed":
+        return False
+    append_ticket_message(ticket_id, "admin", admin_reply, ADMIN_ID, read_by_admin=True)
+    return True
 
 
 def close_ticket(ticket_id: int):
-    cur.execute(
-        "UPDATE tickets SET status='closed', updated=? WHERE id=?",
-        (now_text(), ticket_id)
-    )
+    stamp = now_text()
+    cur.execute("UPDATE tickets SET status='closed', admin_reply=?, updated=? WHERE id=? AND status<>'closed'",
+                (encrypt_text(SUPPORT_RESOLUTION_MESSAGE), stamp, ticket_id))
+    changed = cur.rowcount > 0
+    if changed:
+        cur.execute(
+            "INSERT OR IGNORE INTO ticket_messages(ticket_id,sender_type,sender_id,message,created,read_by_admin,legacy_slot) VALUES(?,?,?,?,?,1,'resolution')",
+            (ticket_id, "system", ADMIN_ID, encrypt_text(SUPPORT_RESOLUTION_MESSAGE), stamp),
+        )
     conn.commit()
+    return changed
 
 
 
