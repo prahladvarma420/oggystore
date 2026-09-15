@@ -38,7 +38,7 @@ def use_postgres() -> bool:
 # these get "RETURNING id" appended so cur.lastrowid keeps working on Postgres.
 ID_TABLES = {
     "products", "product_stock", "orders", "deposits", "admin_logs",
-    "tickets", "referrals", "withdrawal_requests", "product_price_tiers",
+    "tickets", "ticket_messages", "referrals", "withdrawal_requests", "product_price_tiers",
     "restock_notifications", "scheduled_broadcasts", "web_login_log",
     "web_admins", "m365_invites",
 }
