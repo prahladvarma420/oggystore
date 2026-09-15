@@ -3,8 +3,10 @@ from pathlib import Path
 import html
 import re
 import time
+from telegram import InlineKeyboardMarkup
+from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 from telegram.ext import ContextTypes
-from database.db import get_setting, set_user_coupon, render_message_template, cur, conn, ensure_user, get_balance, is_blocked, is_admin, create_ticket, get_user_tickets, add_referral, get_referral_stats, create_withdrawal_request, get_user_withdrawals, get_user_coupon, validate_coupon, get_coupon_user_uses, clear_user_coupon, restore_backup_zip, add_restock_notification
+from database.db import get_setting, set_user_coupon, render_message_template, cur, conn, ensure_user, get_balance, is_blocked, is_admin, create_ticket, get_user_tickets, add_user_ticket_reply, get_ticket, get_ticket_messages, add_referral, get_referral_stats, create_withdrawal_request, get_user_withdrawals, get_user_coupon, validate_coupon, get_coupon_user_uses, clear_user_coupon, restore_backup_zip, add_restock_notification
 from utils.crypto import decrypt_text
 from utils.premium_emoji import strip_premium
 from utils.delivery_file import split_delivery_items, send_delivery_txt
@@ -1174,6 +1176,7 @@ Example:
     if data == "my_tickets":
         rows = get_user_tickets(uid, 10)
         text = "📂 <b>My Tickets</b>\n\n"
+        ticket_buttons = []
 
         if not rows:
             text += "No tickets found."
@@ -1196,12 +1199,36 @@ Example:
                     text += f"👑 <b>Admin Reply:</b> {admin_reply}\n"
 
                 text += "\n"
+                if status != "closed":
+                    ticket_buttons.append([InlineKeyboardButton(
+                        f"💬 Reply in Ticket #{ticket_id}", callback_data=f"support_reply_{ticket_id}")])
 
 
         if len(text) > 3900:
             text = text[:3900] + "\n..."
 
-        await edit_or_send(q, text, support_menu())
+        ticket_buttons.extend([
+            [InlineKeyboardButton("🎫 Create Ticket", callback_data="create_ticket")],
+            [back_button("support")],
+        ])
+        await edit_or_send(q, text, InlineKeyboardMarkup(ticket_buttons))
+        return
+
+    if data.startswith("support_reply_"):
+        try:
+            ticket_id = int(data.rsplit("_", 1)[1])
+        except Exception:
+            await q.answer("Invalid ticket", show_alert=True)
+            return
+        ticket = get_ticket(ticket_id)
+        if not ticket or int(ticket[1]) != int(uid):
+            await q.answer("Ticket not found", show_alert=True)
+            return
+        if ticket[6] == "closed":
+            await q.answer("This ticket is closed. Create a new support request if needed.", show_alert=True)
+            return
+        user_state[uid] = f"support_reply:{ticket_id}"
+        await edit_or_send(q, f"💬 <b>Reply to Ticket #{ticket_id}</b>\n\nSend your next message. It will stay in this same conversation.", support_menu())
         return
 
     if data == "clear_chat":
@@ -1789,6 +1816,34 @@ Admin will reply soon.""",
                 "❌ <b>Please send your issue/message.</b>",
                 parse_mode="HTML"
             )
+            return
+
+    if state and state.startswith("support_reply:"):
+        try:
+            ticket_id = int(state.split(":", 1)[1])
+            message = text.strip()
+            if not message:
+                raise ValueError("empty")
+            add_user_ticket_reply(ticket_id, uid, message)
+            user_state.pop(uid, None)
+            await update.message.reply_text(
+                f"✅ <b>Reply added to Ticket #{ticket_id}</b>\n\nYour conversation keeps the same ticket ID.",
+                reply_markup=support_menu(), parse_mode="HTML")
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(f"💬 <b>New reply in Ticket #{ticket_id}</b>\n\n"
+                          f"👤 <code>{uid}</code>\n"
+                          f"📝 {html.escape(message, quote=False)}"), parse_mode="HTML")
+            except Exception:
+                pass
+            return
+        except ValueError as exc:
+            if str(exc) == "ticket closed":
+                user_state.pop(uid, None)
+                await update.message.reply_text("🔒 This ticket is closed. Create a new support request if you need more help.", reply_markup=support_menu())
+            else:
+                await update.message.reply_text("❌ Could not add that reply. Please reopen My Tickets and try again.", reply_markup=support_menu())
             return
 
     if state == "create_ticket":
