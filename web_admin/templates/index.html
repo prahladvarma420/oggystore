@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="csrf-token" content="%%CSRF%%">
+<meta name="admin-role" content="%%ROLE%%">
 <title>%%STORE%% · Admin</title>
 <link rel="stylesheet" href="/static/css/style.css?v=30">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
@@ -23,22 +24,27 @@
     </div>
   </div>
   <nav class="nav" id="nav">
+    <div class="nav-label">Overview</div>
     <button class="nav-item active" data-view="dashboard"><i>📊</i><span>Dashboard</span></button>
+    <div class="nav-label">Catalog</div>
     <button class="nav-item" data-view="products"><i>📦</i><span>Products &amp; Stock</span></button>
+    <button class="nav-item" data-view="restock"><i>📥</i><span>Restock Requests</span></button>
+    <div class="nav-label">Sales</div>
     <button class="nav-item" data-view="orders"><i>🛒</i><span>Orders</span></button>
     <button class="nav-item" data-view="users"><i>👥</i><span>Users</span></button>
+    <button class="nav-item" data-view="deposits"><i>💳</i><span>Deposits</span></button>
+    <button class="nav-item" data-view="withdrawals"><i>💸</i><span>Withdrawals</span></button>
+    <button class="nav-item" data-view="profit"><i>📈</i><span>Profit &amp; Cost</span></button>
+    <div class="nav-label">Growth &amp; Support</div>
     <button class="nav-item" data-view="coupons"><i>🎟️</i><span>Coupons</span></button>
     <button class="nav-item" data-view="broadcasts"><i>📢</i><span>Broadcasts</span></button>
     <button class="nav-item" data-view="templates"><i>✏️</i><span>Templates</span></button>
     <button class="nav-item" data-view="tickets"><i>🎫</i><span>Support</span></button>
-    <button class="nav-item" data-view="withdrawals"><i>💸</i><span>Withdrawals</span></button>
+    <div class="nav-label">System</div>
     <button class="nav-item" data-view="settings"><i>⚙️</i><span>Settings</span></button>
-    <button class="nav-item" data-view="admins"><i>🌍</i><span>Admins</span></button>
-    <button class="nav-item" data-view="logs"><i>🧾</i><span>Logs</span></button>
-    <button class="nav-item" data-view="backups"><i>💾</i><span>Backups</span></button>
-    <button class="nav-item" data-view="deposits"><i>💳</i><span>Deposits</span></button>
-    <button class="nav-item" data-view="restock"><i>📥</i><span>Restock</span></button>
-    <button class="nav-item" data-view="profit"><i>📈</i><span>Profit &amp; Cost</span></button>
+    <button class="nav-item owner-only" data-view="admins"><i>🌍</i><span>Admins</span></button>
+    <button class="nav-item owner-only" data-view="logs"><i>🧾</i><span>Logs</span></button>
+    <button class="nav-item owner-only" data-view="backups"><i>💾</i><span>Backups</span></button>
     <button class="nav-item" data-view="security"><i>🔐</i><span>Security</span></button>
   </nav>
   <div class="side-foot">
@@ -51,15 +57,15 @@
 <main class="main">
   <header class="topbar glass">
     <div style="display:flex;align-items:center;gap:10px">
-      <button class="icon-btn menu-btn" id="menuBtn" title="Menu">☰</button>
+      <button class="icon-btn menu-btn" id="menuBtn" title="Menu" aria-label="Open navigation" aria-expanded="false">☰</button>
       <div class="topbar-title" id="viewTitle">Dashboard</div>
     </div>
     <div class="topbar-right">
-      <button class="icon-btn" id="themeBtn" title="Switch theme">🎨</button>
+      <button class="icon-btn" id="themeBtn" title="Switch theme" aria-label="Switch color theme">🎨</button>
       <div class="search-wrap" id="searchWrap" style="display:none">
         <input type="text" id="searchInput" placeholder="Search...">
       </div>
-      <button class="btn btn-glow" id="refreshBtn"><span>↻ Refresh</span></button>
+      <button class="btn btn-glow" id="refreshBtn" aria-label="Refresh current view"><span>↻ Refresh</span></button>
       <div class="avatar" title="%%USERNAME%%">%%USERNAME%%</div>
     </div>
   </header>
@@ -70,18 +76,18 @@
 </main>
 
 <!-- MODAL -->
-<div class="modal-backdrop" id="modalBackdrop">
-  <div class="modal glass" id="modal">
+<div class="modal-backdrop" id="modalBackdrop" aria-hidden="true">
+  <div class="modal glass" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
     <div class="modal-head">
       <h3 id="modalTitle">Title</h3>
-      <button class="modal-close" id="modalClose">✕</button>
+      <button class="modal-close" id="modalClose" aria-label="Close dialog">✕</button>
     </div>
     <div class="modal-body" id="modalBody"></div>
   </div>
 </div>
 
 <!-- TOAST -->
-<div class="toast-wrap" id="toastWrap"></div>
+<div class="toast-wrap" id="toastWrap" aria-live="polite" aria-atomic="true"></div>
 
 <script src="/static/js/app.js?v=30"></script>
 </body>
