@@ -838,42 +838,112 @@ async function saveTemplate(key) {
 
 /* =====================================================  TICKETS  ========== */
 let ticketFilter = "open";
+let ticketSearch = "";
+let selectedTicketId = null;
+let ticketSearchTimer = null;
+
+const ticketStatus = (status) => `<span class="ticket-status ${esc(status)}"><i></i>${esc(status)}</span>`;
+const ticketInitials = (name) => String(name || "U").trim().split(/\s+/).slice(0, 2).map(x => x[0] || "").join("").toUpperCase();
+const ticketTime = (value) => value ? fmtDate(value) : "";
+const ticketMessageHtml = (m) => `<div class="chat-row ${m.sender_type === "user" ? "incoming" : "outgoing"}">
+  <div class="chat-bubble ${m.sender_type === "system" ? "system" : ""}">
+    <div class="chat-sender">${m.sender_type === "user" ? "Customer" : m.sender_type === "system" ? "Resolution" : "Admin"}</div>
+    <div class="chat-text">${esc(m.message || "").replace(/\n/g, "<br>")}</div>
+    <time>${ticketTime(m.created)}</time>
+  </div></div>`;
+
+function ticketListHtml(tickets) {
+  return tickets.length ? tickets.map(t => `<button class="conversation-item ${selectedTicketId === t.id ? "active" : ""}" onclick="openTicket(${t.id})" data-ticket-id="${t.id}">
+    <span class="conversation-avatar">${esc(ticketInitials(t.first_name || t.username || t.user_id))}</span>
+    <span class="conversation-main"><span class="conversation-line"><b>${esc(t.first_name || t.username || t.user_id)}</b><time>${ticketTime(t.last_message_at || t.updated)}</time></span>
+    <span class="conversation-subject">#${t.id} · ${esc(t.subject || "Support Ticket")}</span>
+    <span class="conversation-preview">${t.last_sender === "admin" ? "You: " : ""}${esc(t.last_message || "No messages")}</span>
+    <span class="conversation-meta">${ticketStatus(t.status)} <span>${t.message_count || 0} messages</span>${t.unread_count ? `<strong class="unread-count">${t.unread_count}</strong>` : ""}</span></span>
+  </button>`).join("") : empty("No conversations match this view", "💬");
+}
+
 async function viewTickets() {
-  const d = await api("/api/tickets?status=" + ticketFilter);
-  const rows = (d.tickets || []).map(t => `<tr>
-    <td>#${t.id}</td><td>${esc(t.first_name || t.user_id)}</td>
-    <td>${esc(t.subject || "-")}</td>
-    <td class="muted">${esc((t.message || "").slice(0, 50))}</td>
-    <td><span class="badge ${t.status === "open" ? "warn" : t.status === "answered" ? "info" : "off"}">${esc(t.status)}</span></td>
-    <td><div class="row-actions">
-      <button class="btn btn-sm btn-glow" onclick="replyTicket(${t.id})"><span>Reply</span></button>
-      <button class="btn btn-sm btn-ghost" onclick="closeTicket(${t.id})">Close</button>
-    </div></td></tr>`).join("");
-  $("#content").innerHTML = `<div class="panel glass">
-    <div class="pill-tabs">
-      <div class="pill-tab ${ticketFilter === "open" ? "active" : ""}" onclick="setTicketFilter('open')">Open / Answered</div>
-      <div class="pill-tab ${ticketFilter === "all" ? "active" : ""}" onclick="setTicketFilter('all')">All</div>
-    </div>
-    ${(d.tickets || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>User</th><th>Subject</th><th>Message</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No tickets", "\ud83c\udfab")}</div>`;
+  const d = await api(`/api/tickets?status=${encodeURIComponent(ticketFilter)}&search=${encodeURIComponent(ticketSearch)}`);
   cache.tickets = d.tickets || [];
+  $("#content").innerHTML = `<div class="support-inbox glass" id="supportInbox">
+    <aside class="conversation-panel">
+      <div class="support-panel-head"><div><span class="eyebrow">Customer care</span><h2>Support Inbox</h2></div><span class="conversation-total">${d.total || 0}</span></div>
+      <label class="conversation-search"><span>⌕</span><input id="ticketSearch" value="${esc(ticketSearch)}" placeholder="Search name, ticket, subject…" aria-label="Search support conversations"></label>
+      <div class="support-filters">${["all","open","answered","closed","unread"].map(f => `<button class="${ticketFilter === f ? "active" : ""}" onclick="setTicketFilter('${f}')">${f}</button>`).join("")}</div>
+      <div class="conversation-list" id="conversationList">${ticketListHtml(cache.tickets)}</div>
+    </aside>
+    <section class="chat-panel" id="supportChatPane"><div class="chat-placeholder"><div>💬</div><h3>Select a conversation</h3><p>Choose a ticket to view its complete message history.</p></div></section>
+  </div>`;
+  const searchBox = $("#ticketSearch");
+  searchBox.oninput = () => { ticketSearch = searchBox.value; clearTimeout(ticketSearchTimer); ticketSearchTimer = setTimeout(viewTickets, 300); };
+  if (selectedTicketId && cache.tickets.some(t => t.id === selectedTicketId)) await openTicket(selectedTicketId);
+  else if (cache.tickets.length && matchMedia("(min-width: 761px)").matches) await openTicket(cache.tickets[0].id);
 }
-function setTicketFilter(f) { ticketFilter = f; render(); }
-function replyTicket(id) {
-  const t = (cache.tickets || []).find(x => x.id === id) || {};
-  openModal("\ud83c\udfab Reply to Ticket #" + id, `
-    <div class="kv"><span>User</span><b>${esc(t.first_name || t.user_id)}</b></div>
-    <div class="kv"><span>Subject</span><b>${esc(t.subject || "-")}</b></div>
-    <p class="muted" style="margin:12px 0">${esc(t.message || "")}</p>
-    <label class="field"><span>Your reply (sent to user on Telegram)</span><textarea id="tk_reply" style="min-height:100px"></textarea></label>
-    <div class="toolbar" style="margin-top:14px"><div class="grow"></div><button class="btn btn-glow" id="tkSend"><span>Send Reply</span></button></div>`);
-  $("#tkSend").onclick = async () => {
-    const reply = val("tk_reply");
-    if (!reply) return toast("Enter a reply", "err");
+function setTicketFilter(f) { ticketFilter = f; selectedTicketId = null; viewTickets(); }
+function closeTicketMobile() { $("#supportInbox")?.classList.remove("chat-open"); }
+
+async function openTicket(id) {
+  selectedTicketId = id;
+  const d = await api(`/api/tickets/${id}?limit=100`);
+  cache.ticketConversation = d;
+  $$(".conversation-item").forEach(el => el.classList.toggle("active", Number(el.dataset.ticketId) === id));
+  const t = d.ticket, closed = t.status === "closed";
+  $("#supportChatPane").innerHTML = `<header class="chat-head">
+    <button class="chat-back" onclick="closeTicketMobile()" aria-label="Back to conversations">←</button>
+    <span class="conversation-avatar large">${esc(ticketInitials(t.first_name || t.username || t.user_id))}</span>
+    <div class="chat-identity"><h3>${esc(t.first_name || t.username || t.user_id)}</h3><p>#${t.id} · ${esc(t.subject || "Support Ticket")}</p></div>
+    ${ticketStatus(t.status)}
+    ${closed ? "" : `<button class="btn btn-sm btn-red" onclick="closeTicket(${t.id})"><span>Close ticket</span></button>`}
+  </header>
+  <div class="chat-history" id="ticketHistory">${d.has_more ? `<button class="load-older" onclick="loadOlderMessages(${t.id})">Load older messages</button>` : ""}${(d.messages || []).map(ticketMessageHtml).join("")}</div>
+  ${closed ? `<div class="closed-composer"><b>● CLOSED</b><span>This conversation is read-only. Create a new ticket for another issue.</span></div>` : `<div class="chat-composer"><textarea id="ticketComposer" rows="1" placeholder="Type a message…" aria-label="Reply to ticket ${t.id}"></textarea><button class="btn btn-glow" id="ticketSend" onclick="sendTicketReply(${t.id})"><span>Send</span></button></div>`}`;
+  $("#supportInbox")?.classList.add("chat-open");
+  const history = $("#ticketHistory"); if (history) history.scrollTop = history.scrollHeight;
+  const composer = $("#ticketComposer");
+  if (composer) composer.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendTicketReply(id); } };
+  const item = $(`.conversation-item[data-ticket-id="${id}"] .unread-count`); if (item) item.remove();
+}
+
+async function loadOlderMessages(id) {
+  const current = cache.ticketConversation?.messages || [];
+  if (!current.length) return;
+  const d = await api(`/api/tickets/${id}?limit=100&before_id=${current[0].id}`);
+  cache.ticketConversation.messages = [...d.messages, ...current];
+  const history = $("#ticketHistory");
+  history.innerHTML = `${d.has_more ? `<button class="load-older" onclick="loadOlderMessages(${id})">Load older messages</button>` : ""}${cache.ticketConversation.messages.map(ticketMessageHtml).join("")}`;
+}
+
+async function sendTicketReply(id) {
+  const composer = $("#ticketComposer"), button = $("#ticketSend");
+  const reply = (composer?.value || "").trim();
+  if (!reply || button?.disabled) return;
+  button.disabled = true; button.querySelector("span").textContent = "Sending…"; composer.disabled = true;
+  try {
     const r = await post(`/api/tickets/${id}/reply`, { reply });
-    if (r.ok) { toast("Reply sent"); closeModal(); render(); } else toast("Failed", "err");
-  };
+    if (r.message) { $("#ticketHistory").insertAdjacentHTML("beforeend", ticketMessageHtml(r.message)); cache.ticketConversation.messages.push(r.message); }
+    composer.value = ""; toast("Reply sent");
+    const history = $("#ticketHistory"); history.scrollTop = history.scrollHeight;
+    await refreshTicketList();
+  } catch (e) { toast(e.message || "Reply failed", "err"); }
+  finally { button.disabled = false; button.querySelector("span").textContent = "Send"; composer.disabled = false; composer.focus(); }
 }
-async function closeTicket(id) { const r = await post(`/api/tickets/${id}/close`, {}); if (r.ok) { toast("Ticket closed"); render(); } }
+
+async function refreshTicketList() {
+  const d = await api(`/api/tickets?status=${encodeURIComponent(ticketFilter)}&search=${encodeURIComponent(ticketSearch)}`);
+  cache.tickets = d.tickets || [];
+  const list = $("#conversationList"); if (list) list.innerHTML = ticketListHtml(cache.tickets);
+}
+
+async function closeTicket(id) {
+  if (!confirm(`Close Ticket #${id}?\n\nThis will mark the support conversation as resolved and send the user a final resolution message.`)) return;
+  try {
+    const r = await post(`/api/tickets/${id}/close`, {});
+    toast(r.resolution_sent ? "Ticket resolved and customer notified" : "Ticket was already closed");
+    await refreshTicketList(); await openTicket(id);
+  } catch (e) { toast(e.message || "Could not close ticket", "err"); }
+}
+
+function replyTicket(id) { openTicket(id); }
 
 /* =====================================================  WITHDRAWALS  ====== */
 async function viewWithdrawals() {
@@ -1247,7 +1317,7 @@ Object.assign(window, {
   manageCategories, createCategory, saveCategory, toggleCategory, moveCategory, delCategory,
   delStock, manageTiers, delTier, refundOrder, resendOrder, adjustBalance,
   blockUser, userDetail, addCoupon, toggleCoupon, delCoupon, saveTemplate,
-  replyTicket, closeTicket, setTicketFilter, withdrawAction, removeAdmin,
+  replyTicket, openTicket, closeTicket, closeTicketMobile, loadOlderMessages, sendTicketReply, setTicketFilter, withdrawAction, removeAdmin,
   clearLogs, exportCsv, closeModal, deleteBackup, usersGo,
   depositFilter, twofaSetup, twofaDisable, twofaRecovery, showRecoveryCodes, copyRecovery, signoutAll, revokeSession,
   createWebAdmin, resetWebAdminPw, resetWebAdmin2fa, toggleWebAdmin, deleteWebAdmin, sendBroadcastNow, toggleTheme, toggleSidebar,
