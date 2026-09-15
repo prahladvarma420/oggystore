@@ -15,6 +15,7 @@ import csv
 import io
 import time
 import json
+import html
 import hmac
 import hashlib
 import secrets
@@ -2254,18 +2255,40 @@ def api_template_update(key):
 @app.route("/api/tickets")
 @login_required
 def api_tickets():
-    status = request.args.get("status", "all")
-    base = ("SELECT t.*, u.first_name, u.username FROM tickets t "
-            "LEFT JOIN users u ON t.user_id=u.user_id ")
-    if status == "open":
-        rows = q(base + "WHERE t.status IN ('open','answered') ORDER BY t.id DESC")
-    else:
-        rows = q(base + "ORDER BY t.id DESC LIMIT 100")
-    for r in rows:
-        for f in ("subject", "message", "admin_reply"):
-            if r.get(f) is not None:
-                r[f] = decrypt_text(r[f])
-    return jsonify({"ok": True, "tickets": rows})
+    status = (request.args.get("status") or "all").lower()
+    search = (request.args.get("search") or "").strip().lower()
+    page = max(1, int(request.args.get("page") or 1))
+    per_page = max(10, min(int(request.args.get("per_page") or 30), 50))
+    # Summaries only (never message histories), so a bounded 500-ticket window
+    # keeps total/page counts accurate without loading every message.
+    raw = botdb.get_ticket_conversations(status, 500)
+    rows = []
+    for r in raw:
+        item = dict(zip(("id","user_id","first_name","username","subject","status","created","updated",
+                         "last_message","last_sender","last_message_at","message_count","unread_count"), r))
+        haystack = " ".join(str(item.get(k) or "") for k in
+                            ("id","user_id","first_name","username","subject","last_message")).lower()
+        if not search or search in haystack:
+            rows.append(item)
+    total = len(rows)
+    start = (page - 1) * per_page
+    return jsonify({"ok": True, "tickets": rows[start:start + per_page], "page": page,
+                    "pages": max(1, (total + per_page - 1) // per_page), "total": total})
+
+
+@app.route("/api/tickets/<int:tid>")
+@login_required
+def api_ticket_conversation(tid):
+    ticket = botdb.get_ticket(tid)
+    if not ticket:
+        return jsonify({"ok": False, "error": "Ticket not found"}), 404
+    before = request.args.get("before_id")
+    messages, has_more = botdb.get_ticket_messages(tid, request.args.get("limit", 100), before)
+    botdb.mark_ticket_read(tid)
+    keys = ("id","ticket_id","sender_type","sender_id","message","created","read_by_admin")
+    return jsonify({"ok": True, "ticket": dict(zip(
+        ("id","user_id","first_name","username","subject","message","status","admin_reply","created","updated"), ticket)),
+        "messages": [dict(zip(keys, m)) for m in messages], "has_more": has_more})
 
 
 @app.route("/api/tickets/<int:tid>/reply", methods=["POST"])
@@ -2274,20 +2297,32 @@ def api_ticket_reply(tid):
     reply = (request.get_json(force=True).get("reply") or "").strip()
     if not reply:
         return jsonify({"ok": False, "error": "Reply required"}), 400
-    botdb.reply_ticket(tid, reply)
     t = botdb.get_ticket(tid)
-    if t:
-        tg_send(t[1], "\U0001f3ab <b>Support reply (Ticket #{})</b>\n\n{}".format(tid, reply))
+    if not t:
+        return jsonify({"ok": False, "error": "Ticket not found"}), 404
+    if t[6] == "closed":
+        return jsonify({"ok": False, "error": "Closed tickets cannot receive replies"}), 409
+    botdb.reply_ticket(tid, reply)
+    tg_send(t[1], "\U0001f3ab <b>Support reply (Ticket #{})</b>\n\n{}".format(
+        tid, html.escape(reply, quote=False)))
     log_action("reply_ticket", "#{}".format(tid))
-    return jsonify({"ok": True})
+    messages, _ = botdb.get_ticket_messages(tid, 1)
+    keys = ("id","ticket_id","sender_type","sender_id","message","created","read_by_admin")
+    return jsonify({"ok": True, "message": dict(zip(keys, messages[-1])) if messages else None})
 
 
 @app.route("/api/tickets/<int:tid>/close", methods=["POST"])
 @login_required
 def api_ticket_close(tid):
-    botdb.close_ticket(tid)
+    t = botdb.get_ticket(tid)
+    if not t:
+        return jsonify({"ok": False, "error": "Ticket not found"}), 404
+    changed = botdb.close_ticket(tid)
+    if changed:
+        tg_send(t[1], botdb.SUPPORT_RESOLUTION_MESSAGE)
     log_action("close_ticket", "#{}".format(tid))
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "closed": True, "resolution_sent": bool(changed),
+                    "resolution_message": botdb.SUPPORT_RESOLUTION_MESSAGE if changed else None})
 
 
 # ========================================================== API: WITHDRAWALS
