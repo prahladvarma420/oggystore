@@ -18,6 +18,7 @@ import json
 import hmac
 import hashlib
 import secrets
+import base64
 import sqlite3
 import datetime as dt
 from functools import wraps
@@ -299,6 +300,14 @@ def _ip_and_rate_guard():
             return jsonify({"ok": False, "error": "Your IP is not allowed"}), 403
         return Response("Forbidden", status=403)
     now_s = time.time()
+    # Prevent the process-local limiter from growing forever when exposed to
+    # many one-off source IPs. This keeps the existing lightweight design while
+    # removing an avoidable memory-exhaustion vector.
+    if len(_RATE) > 10000:
+        stale = [key for key, value in _RATE.items()
+                 if now_s - value[1] > RATE_LIMIT_WINDOW]
+        for key in stale:
+            _RATE.pop(key, None)
     bucket = _RATE.get(ip)
     if not bucket or now_s - bucket[1] > RATE_LIMIT_WINDOW:
         _RATE[ip] = [1, now_s]
@@ -338,7 +347,7 @@ def _security_headers(resp):
     resp.headers["X-XSS-Protection"] = "1; mode=block"
     resp.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "img-src 'self' data: https://api.qrserver.com; "
+        "img-src 'self' data:; "
         "style-src 'self' 'unsafe-inline'; "
         "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
         "connect-src 'self'; base-uri 'self'; frame-ancestors 'none'"
@@ -776,6 +785,16 @@ def login_required(fn):
     return wrapper
 
 
+def owner_required(fn):
+    """Restrict security-sensitive operations to the owner role."""
+    @wraps(fn)
+    def wrapper(*a, **kw):
+        if session.get("web_role") != "owner":
+            return jsonify({"ok": False, "error": "Owner permission required"}), 403
+        return fn(*a, **kw)
+    return wrapper
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     store = getattr(config, "STORE_NAME", "Store")
@@ -808,12 +827,23 @@ def login():
         )
 
     def _fields_setup(secret, otpauth):
-        import urllib.parse as _u
-        qr = "https://api.qrserver.com/v1/create-qr-code/?size=190x190&data=" + _u.quote(otpauth, safe="")
+        # Generate the enrollment QR locally. The previous implementation sent
+        # the full otpauth URI (including the TOTP seed) to a third-party QR
+        # service, which disclosed the second-factor secret.
+        try:
+            import qrcode
+            qr_io = io.BytesIO()
+            qrcode.make(otpauth).save(qr_io, format="PNG")
+            qr = "data:image/png;base64," + base64.b64encode(qr_io.getvalue()).decode("ascii")
+            qr_html = '<div style="text-align:center;margin:4px 0 12px"><img src="' + qr + '" alt="Authenticator enrollment QR code" style="width:190px;height:190px;border-radius:12px;background:#fff;padding:8px"></div>\n'
+        except Exception:
+            # Manual enrollment remains fully functional if the optional QR
+            # renderer is unavailable during a partial/legacy deployment.
+            qr_html = '<p class="alert error">QR generation is unavailable. Enter the manual key in your authenticator app.</p>\n'
         return (
             '<input type="hidden" name="step" value="setup_2fa">\n'
             '    <p style="color:#9aa;margin:0 0 10px;font-size:13px">Scan this QR in Google Authenticator or Authy (or type the key), then enter the 6-digit code to finish.</p>\n'
-            '    <div style="text-align:center;margin:4px 0 12px"><img src="' + qr + '" alt="QR" style="border-radius:12px;background:#fff;padding:8px"></div>\n'
+            + qr_html +
             '    <label class="field">\n'
             '      <span>Manual key</span>\n'
             '      <input type="text" value="' + secret + '" readonly onclick="this.select()">\n'
@@ -918,7 +948,7 @@ def login():
                 _clear_pending()
                 return _show_step1("Account not found. Please log in again.")
             code = (request.form.get("code") or "").strip()
-            if verify_totp(admin.get("twofa_secret"), code) or consume_admin_recovery(admin["id"], code):
+            if verify_totp(decrypt_text(admin.get("twofa_secret")), code) or consume_admin_recovery(admin["id"], code):
                 return _complete_login(admin)
             record_fail(ip)
             log_login(admin["username"], "bad_2fa")
@@ -942,7 +972,7 @@ def login():
                 return _show_setup("That code did not match. Enter the current 6-digit code.")
             codes = gen_recovery_codes()
             ex("UPDATE web_admins SET twofa_secret=?, twofa_enabled=1, twofa_recovery=? WHERE id=?",
-               (secret, json.dumps([sha256_hex(c) for c in codes]), admin["id"]))
+               (encrypt_text(secret), json.dumps([sha256_hex(c) for c in codes]), admin["id"]))
             log_action("enable_2fa", "2FA set up at first login: " + admin["username"])
             log_login(admin["username"], "success")
             _set_session(get_web_admin_by_id(admin["id"]))
@@ -999,6 +1029,7 @@ def index():
     return render_page("index.html",
                        STORE=getattr(config, "STORE_NAME", "Store"),
                        USERNAME=session.get("username", "admin"),
+                       ROLE=session.get("web_role", "admin"),
                        CSRF=csrf_token(),
                        BOT=("online" if TELEGRAM_API else "offline"))
 
@@ -1015,14 +1046,18 @@ def api_dashboard():
     # Revenue reset marker (UTC, same clock as orders.created). Empty = all-time.
     reset_setting = botdb.get_setting("revenue_reset_at", "") or ""
     reset_at = reset_setting or "1970-01-01 00:00:00"
-    # 7-day revenue series
-    series = []
-    for i in range(6, -1, -1):
-        day = (now() - dt.timedelta(days=i)).strftime("%Y-%m-%d")
-        row = q("SELECT COALESCE(SUM(price),0) AS rev, COUNT(*) AS cnt "
-                "FROM orders WHERE DATE(created)=? AND created >= ?" + not_admin, (day, reset_at), one=True)
-        series.append({"date": day, "revenue": round(row["rev"] or 0, 2),
-                       "orders": row["cnt"] or 0})
+    # 7-day revenue series in one grouped query (formerly seven connections
+    # and seven scans, which was especially slow against remote Postgres).
+    series_days = [(now() - dt.timedelta(days=i)).strftime("%Y-%m-%d")
+                   for i in range(6, -1, -1)]
+    grouped = q("SELECT DATE(created) AS day, COALESCE(SUM(price),0) AS rev, "
+                "COUNT(*) AS cnt FROM orders WHERE DATE(created)>=? AND created>=?" +
+                not_admin + " GROUP BY DATE(created)", (series_days[0], reset_at))
+    grouped_map = {str(r["day"]): r for r in grouped}
+    series = [{"date": day,
+               "revenue": round((grouped_map.get(day) or {}).get("rev", 0) or 0, 2),
+               "orders": (grouped_map.get(day) or {}).get("cnt", 0) or 0}
+              for day in series_days]
     totals = {
         "users": (q("SELECT COUNT(*) c FROM users", one=True) or {}).get("c", 0),
         "products": (q("SELECT COUNT(*) c FROM products", one=True) or {}).get("c", 0),
@@ -2287,6 +2322,7 @@ def api_withdrawal_action(wid):
 # =============================================================== API: ADMINS
 @app.route("/api/admins")
 @login_required
+@owner_required
 def api_admins():
     rows = botdb.get_admins()
     out = [{"user_id": r[0], "first_name": r[1], "username": r[2],
@@ -2297,6 +2333,7 @@ def api_admins():
 
 @app.route("/api/admins/add", methods=["POST"])
 @login_required
+@owner_required
 def api_admin_add():
     uid = int(request.get_json(force=True).get("user_id"))
     botdb.add_admin(uid, session.get("admin_id", 0))
@@ -2306,6 +2343,7 @@ def api_admin_add():
 
 @app.route("/api/admins/<int:uid>/remove", methods=["POST"])
 @login_required
+@owner_required
 def api_admin_remove(uid):
     ok = botdb.remove_admin(uid)
     log_action("remove_admin", str(uid))
@@ -2344,6 +2382,7 @@ def api_settings_update():
 # ================================================================== API: LOGS
 @app.route("/api/logs")
 @login_required
+@owner_required
 def api_logs():
     rows = q("SELECT * FROM admin_logs ORDER BY id DESC LIMIT 200")
     return jsonify({"ok": True, "logs": rows})
@@ -2351,6 +2390,7 @@ def api_logs():
 
 @app.route("/api/logs/clear", methods=["POST"])
 @login_required
+@owner_required
 def api_logs_clear():
     botdb.clear_admin_logs()
     log_action("clear_logs", "")
@@ -2360,6 +2400,7 @@ def api_logs_clear():
 # ================================================================ API: BACKUPS
 @app.route("/api/backup/create", methods=["POST"])
 @login_required
+@owner_required
 def api_backup_create():
     cwd = os.getcwd()
     encrypted = False
@@ -2387,6 +2428,7 @@ def api_backup_create():
 
 @app.route("/api/backup/download/<name>")
 @login_required
+@owner_required
 def api_backup_download(name):
     name = os.path.basename(name)
     path = os.path.join(PROJECT_ROOT, getattr(config, "BACKUP_DIR", "backups"), name)
@@ -2408,6 +2450,7 @@ def api_backup_download(name):
 
 @app.route("/api/backup/list")
 @login_required
+@owner_required
 def api_backup_list():
     bdir = os.path.join(PROJECT_ROOT, getattr(config, "BACKUP_DIR", "backups"))
     items = []
@@ -2423,6 +2466,7 @@ def api_backup_list():
 
 @app.route("/api/backup/delete/<name>", methods=["POST"])
 @login_required
+@owner_required
 def api_backup_delete(name):
     name = os.path.basename(name)
     bdir = os.path.join(PROJECT_ROOT, getattr(config, "BACKUP_DIR", "backups"))
@@ -2451,6 +2495,7 @@ def _csv_response(rows, filename):
 
 @app.route("/api/export/<kind>")
 @login_required
+@owner_required
 def api_export(kind):
     if kind == "orders":
         rows = q("SELECT * FROM orders ORDER BY id DESC")
@@ -2498,16 +2543,16 @@ def api_deposits():
 @app.route("/api/restock")
 @login_required
 def api_restock():
-    rows = q("SELECT r.product_id, COUNT(*) requests, p.name "
+    rows = q("SELECT r.product_id, COUNT(*) requests, p.name, "
+             "COALESCE(s.available,0) AS available "
              "FROM restock_notifications r LEFT JOIN products p ON r.product_id=p.id "
-             "WHERE COALESCE(r.notified,0)=0 GROUP BY r.product_id, p.name "
+             "LEFT JOIN (SELECT product_id, COUNT(*) AS available FROM product_stock "
+             "WHERE sold=0 GROUP BY product_id) s ON s.product_id=r.product_id "
+             "WHERE COALESCE(r.notified,0)=0 GROUP BY r.product_id, p.name, s.available "
              "ORDER BY requests DESC")
-    out = []
-    for r in rows:
-        pid = r.get("product_id")
-        out.append({"name": r.get("name") or ("#" + str(pid)),
-                    "requests": r.get("requests", 0),
-                    "available": botdb.get_available_stock_count(pid)})
+    out = [{"name": r.get("name") or ("#" + str(r.get("product_id"))),
+            "requests": r.get("requests", 0), "available": r.get("available", 0)}
+           for r in rows]
     return jsonify({"ok": True, "restock": out})
 
 
@@ -2515,17 +2560,29 @@ def api_restock():
 @login_required
 def api_profit():
     prods = q("SELECT id, name, price, COALESCE(cost,0) cost FROM products ORDER BY id DESC")
+    stock_counts = {r["product_id"]: r["units"] for r in q(
+        "SELECT product_id, COUNT(*) units FROM product_stock WHERE sold=1 GROUP BY product_id")}
+    order_groups = q("SELECT product_id, product_name, COALESCE(SUM(price),0) s "
+                     "FROM orders GROUP BY product_id, product_name")
+    revenue_by_id = {}
+    legacy_revenue = []
+    for order in order_groups:
+        if order.get("product_id") is not None:
+            revenue_by_id[order["product_id"]] = revenue_by_id.get(order["product_id"], 0) + (order.get("s") or 0)
+        else:
+            legacy_revenue.append(order)
     rows = []
     tot_rev = tot_cost = 0.0
     for p in prods:
         pid = p["id"]
-        units = botdb.get_sold_stock_count(pid) or 0
+        units = stock_counts.get(pid, 0) or 0
         # Orders store product_name as "<name> xN", so an exact match never hit
         # and revenue silently fell back to price*units for every product.
-        rev_row = q("SELECT COALESCE(SUM(price),0) s FROM orders "
-                    "WHERE product_id=? OR product_name=? OR product_name LIKE ?",
-                    (pid, p["name"], (p["name"] or "") + " x%"), one=True) or {}
-        revenue = rev_row.get("s", 0) or 0
+        revenue = revenue_by_id.get(pid, 0) or 0
+        pname = p["name"] or ""
+        revenue += sum((o.get("s") or 0) for o in legacy_revenue
+                       if o.get("product_name") == pname or
+                       str(o.get("product_name") or "").startswith(pname + " x"))
         if not revenue and units:
             revenue = (p["price"] or 0) * units
         cost_unit = p["cost"] or 0
@@ -2547,16 +2604,25 @@ def api_profit():
 @app.route("/api/analytics")
 @login_required
 def api_analytics():
-    sales_deposits = []
-    user_growth = []
-    for i in range(13, -1, -1):
-        day = (now() - dt.timedelta(days=i)).strftime("%Y-%m-%d")
-        sales = (q("SELECT COALESCE(SUM(price),0) s FROM orders WHERE DATE(created)=?", (day,), one=True) or {}).get("s", 0)
-        deps = (q("SELECT COALESCE(SUM(amount),0) s FROM deposits WHERE status=? AND DATE(COALESCE(paid_at,created))=?", ("paid", day), one=True) or {}).get("s", 0)
-        sales_deposits.append({"date": day, "sales": round(sales or 0, 2), "deposits": round(deps or 0, 2)})
-        new_u = (q("SELECT COUNT(*) c FROM users WHERE DATE(joined)=?", (day,), one=True) or {}).get("c", 0)
-        total_u = (q("SELECT COUNT(*) c FROM users WHERE DATE(joined)<=?", (day,), one=True) or {}).get("c", 0)
-        user_growth.append({"date": day, "new": new_u or 0, "total": total_u or 0})
+    days = [(now() - dt.timedelta(days=i)).strftime("%Y-%m-%d")
+            for i in range(13, -1, -1)]
+    sales_map = {str(r["day"]): r.get("s", 0) or 0 for r in q(
+        "SELECT DATE(created) day, COALESCE(SUM(price),0) s FROM orders "
+        "WHERE DATE(created)>=? GROUP BY DATE(created)", (days[0],))}
+    deposit_map = {str(r["day"]): r.get("s", 0) or 0 for r in q(
+        "SELECT DATE(COALESCE(paid_at,created)) day, COALESCE(SUM(amount),0) s "
+        "FROM deposits WHERE status=? AND DATE(COALESCE(paid_at,created))>=? "
+        "GROUP BY DATE(COALESCE(paid_at,created))", ("paid", days[0]))}
+    new_map = {str(r["day"]): r.get("c", 0) or 0 for r in q(
+        "SELECT DATE(joined) day, COUNT(*) c FROM users WHERE DATE(joined)>=? "
+        "GROUP BY DATE(joined)", (days[0],))}
+    running = (q("SELECT COUNT(*) c FROM users WHERE DATE(joined)<?", (days[0],), one=True) or {}).get("c", 0) or 0
+    sales_deposits, user_growth = [], []
+    for day in days:
+        running += new_map.get(day, 0)
+        sales_deposits.append({"date": day, "sales": round(sales_map.get(day, 0), 2),
+                               "deposits": round(deposit_map.get(day, 0), 2)})
+        user_growth.append({"date": day, "new": new_map.get(day, 0), "total": running})
     busy = [0] * 24
     # Portable hour extraction (SQLite + Postgres): created is 'YYYY-MM-DD HH:MM:SS' text.
     for r in q("SELECT CAST(substr(created, 12, 2) AS INTEGER) h, COUNT(*) c FROM orders GROUP BY h"):
@@ -2568,11 +2634,11 @@ def api_analytics():
         threshold = int(botdb.get_setting("low_stock_alert_threshold", "5") or 5)
     except Exception:
         threshold = 5
-    low = []
-    for p in q("SELECT id, name FROM products WHERE COALESCE(active,1)=1 ORDER BY id DESC"):
-        avail = botdb.get_available_stock_count(p["id"])
-        if avail <= threshold:
-            low.append({"name": p["name"], "available": avail})
+    low = q("SELECT p.name, COALESCE(s.available,0) available FROM products p "
+            "LEFT JOIN (SELECT product_id, COUNT(*) available FROM product_stock "
+            "WHERE sold=0 GROUP BY product_id) s ON s.product_id=p.id "
+            "WHERE COALESCE(p.active,1)=1 AND COALESCE(s.available,0)<=? "
+            "ORDER BY available ASC, p.id DESC", (threshold,))
     return jsonify({"ok": True, "sales_deposits": sales_deposits,
                     "user_growth": user_growth, "busy_hours": busy,
                     "top_products": top, "low_stock": low, "low_threshold": threshold})
@@ -2612,7 +2678,15 @@ def api_2fa_setup():
     label = session.get("username", "admin")
     enc_issuer = issuer.replace(" ", "%20")
     otpauth = "otpauth://totp/" + enc_issuer + ":" + label + "?secret=" + secret + "&issuer=" + enc_issuer
-    return jsonify({"ok": True, "secret": secret, "otpauth": otpauth})
+    qr_data = ""
+    try:
+        import qrcode
+        qr_io = io.BytesIO()
+        qrcode.make(otpauth).save(qr_io, format="PNG")
+        qr_data = "data:image/png;base64," + base64.b64encode(qr_io.getvalue()).decode("ascii")
+    except Exception:
+        pass
+    return jsonify({"ok": True, "secret": secret, "qr": qr_data})
 
 
 @app.route("/api/security/2fa/enable", methods=["POST"])
@@ -2626,7 +2700,7 @@ def api_2fa_enable():
         return jsonify({"ok": False, "error": "Invalid code"}), 400
     codes = gen_recovery_codes()
     ex("UPDATE web_admins SET twofa_secret=?, twofa_enabled=1, twofa_recovery=? WHERE id=?",
-       (secret, json.dumps([sha256_hex(c) for c in codes]), session.get("wa_id")))
+       (encrypt_text(secret), json.dumps([sha256_hex(c) for c in codes]), session.get("wa_id")))
     session.pop("pending_2fa", None)
     log_action("enable_2fa", "Web admin 2FA enabled")
     return jsonify({"ok": True, "recovery_codes": codes})
@@ -2646,7 +2720,7 @@ def api_2fa_recovery():
     if int(admin.get("twofa_enabled") or 0) != 1:
         return jsonify({"ok": False, "error": "Enable 2FA first"}), 400
     d = request.get_json(force=True) or {}
-    if not verify_totp(admin.get("twofa_secret"), d.get("code")):
+    if not verify_totp(decrypt_text(admin.get("twofa_secret")), d.get("code")):
         return jsonify({"ok": False, "error": "Invalid code"}), 400
     codes = gen_recovery_codes()
     ex("UPDATE web_admins SET twofa_recovery=? WHERE id=?",
@@ -2658,6 +2732,7 @@ def api_2fa_recovery():
 # ======================================= Web admin accounts (owner-only) ======
 @app.route("/api/webadmins")
 @login_required
+@owner_required
 def api_webadmins():
     if not _is_owner():
         return jsonify({"ok": False, "error": "Only an owner can manage admin accounts"}), 403
@@ -2666,6 +2741,7 @@ def api_webadmins():
 
 @app.route("/api/webadmins/create", methods=["POST"])
 @login_required
+@owner_required
 def api_webadmins_create():
     if not _is_owner():
         return jsonify({"ok": False, "error": "Only an owner can add admins"}), 403
@@ -2687,6 +2763,7 @@ def api_webadmins_create():
 
 @app.route("/api/webadmins/<int:aid>/password", methods=["POST"])
 @login_required
+@owner_required
 def api_webadmins_password(aid):
     if not _is_owner():
         return jsonify({"ok": False, "error": "Only an owner can reset passwords"}), 403
@@ -2704,6 +2781,7 @@ def api_webadmins_password(aid):
 
 @app.route("/api/webadmins/<int:aid>/twofa/reset", methods=["POST"])
 @login_required
+@owner_required
 def api_webadmins_2fa_reset(aid):
     if not _is_owner():
         return jsonify({"ok": False, "error": "Only an owner can reset 2FA"}), 403
@@ -2717,6 +2795,7 @@ def api_webadmins_2fa_reset(aid):
 
 @app.route("/api/webadmins/<int:aid>/toggle", methods=["POST"])
 @login_required
+@owner_required
 def api_webadmins_toggle(aid):
     if not _is_owner():
         return jsonify({"ok": False, "error": "Only an owner can change accounts"}), 403
@@ -2735,6 +2814,7 @@ def api_webadmins_toggle(aid):
 
 @app.route("/api/webadmins/<int:aid>/delete", methods=["POST"])
 @login_required
+@owner_required
 def api_webadmins_delete(aid):
     if not _is_owner():
         return jsonify({"ok": False, "error": "Only an owner can delete accounts"}), 403
