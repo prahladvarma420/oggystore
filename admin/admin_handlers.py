@@ -4031,7 +4031,10 @@ Choose an order to view details:""",
             if inv_error:
                 text_out += f"\n⚠️ <code>{html.escape(str(inv_error)[:90], quote=False)}</code>"
             text_out += "\n"
-            if inv_status == "failed":
+            if inv_status in ("failed", "pending"):
+                # 'pending' can get stuck if the process crashed/restarted
+                # mid-invite — give the admin a retry there too, not just on
+                # explicit failures.
                 rows.append([InlineKeyboardButton(f"🔁 Retry #{inv_id}", callback_data=f"admin_canva_retry_{inv_id}")])
 
         if not invites:

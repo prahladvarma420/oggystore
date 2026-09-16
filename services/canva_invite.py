@@ -655,6 +655,10 @@ async def process_invite(bot, invite_id: int):
         return
 
     _id, user_id, order_id, email, _status, _error, _created = invite
+    if _status == "sent":
+        # Already delivered — a stale/duplicate retry must never double-invite.
+        _log(f"invite #{invite_id} already sent; skipping duplicate run")
+        return
     safe_email = html.escape(str(email), quote=False)
 
     try:
