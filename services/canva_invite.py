@@ -102,7 +102,43 @@ _CHROMIUM_ARGS = [
     "--mute-audio",
     "--hide-scrollbars",
     "--no-first-run",
+    "--start-maximized",
+    "--disable-features=IsolateOrigins,site-per-process,AutomationControlled",
+    "--disable-infobars",
 ]
+
+# Injected into every page/frame BEFORE any site script runs — the SAME stealth
+# recipe the M365 automation uses successfully from this server. Removes the
+# "this is an automated browser" tells Canva/Cloudflare score (navigator.webdriver,
+# missing plugins, empty language list, WebGL renderer, hardware hints, ...).
+_STEALTH_JS = r"""
+(() => {
+  try { Object.defineProperty(navigator, 'webdriver', {get: () => undefined}); } catch (e) {}
+  try { Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']}); } catch (e) {}
+  try { Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]}); } catch (e) {}
+  try { Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8}); } catch (e) {}
+  try { Object.defineProperty(navigator, 'deviceMemory', {get: () => 8}); } catch (e) {}
+  try { window.chrome = window.chrome || { runtime: {} }; } catch (e) {}
+  try {
+    const orig = navigator.permissions && navigator.permissions.query;
+    if (orig) {
+      navigator.permissions.query = (p) => (
+        p && p.name === 'notifications'
+          ? Promise.resolve({ state: Notification.permission })
+          : orig(p)
+      );
+    }
+  } catch (e) {}
+  try {
+    const gp = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function (param) {
+      if (param === 37445) return 'Intel Inc.';
+      if (param === 37446) return 'Intel Iris OpenGL Engine';
+      return gp.call(this, param);
+    };
+  } catch (e) {}
+})();
+"""
 
 
 _PROXY_SCHEMES = ("http", "https", "socks5", "socks5h")
@@ -417,19 +453,29 @@ def _send_canva_invite_locked(email: str):
             context = browser.new_context(
                 storage_state=tmp.name,
                 viewport={"width": 1280, "height": 800},
+                screen={"width": 1920, "height": 1080},
+                device_scale_factor=1,
+                is_mobile=False,
+                has_touch=False,
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
                 ),
                 locale="en-US",
+                timezone_id="America/New_York",
+                extra_http_headers={
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Sec-Ch-Ua": '"Chromium";v="149", "Not.A/Brand";v="24", "Google Chrome";v="149"',
+                    "Sec-Ch-Ua-Mobile": "?0",
+                    "Sec-Ch-Ua-Platform": '"Windows"',
+                },
             )
-            # Hide the navigator.webdriver automation flag from Cloudflare.
+            # Apply the full M365-grade stealth fingerprint to every page/frame
+            # before any site script runs.
             try:
-                context.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-                )
-            except Exception:
-                pass
+                context.add_init_script(_STEALTH_JS)
+            except Exception as _sj_exc:
+                _log(f"stealth init_script failed (non-fatal): {repr(_sj_exc)[:120]}")
             try:
                 context.route("**/*", _block_heavy_resources)
             except Exception:
@@ -629,6 +675,15 @@ def _send_canva_invite_locked(email: str):
                 screenshot = _snap()
                 browser.close()
                 return False, sec_block, screenshot
+
+            # Human-like dwell between filling the email and committing —
+            # instant click-after-fill is a bot tell Canva's risk engine scores.
+            try:
+                page.mouse.move(640, 400)
+                page.mouse.move(580, 360)
+            except Exception:
+                pass
+            page.wait_for_timeout(1800)
 
             # 3) Click 'Send invitations'.
             _LAST_PHASE = "clicking 'Send invitations'"
