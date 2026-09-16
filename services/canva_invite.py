@@ -253,7 +253,7 @@ def _cloudflare_block_advice() -> str:
             "Cloudflare flagged THIS proxy IP with a 'Verify you are human' check. "
             "Your session is fine — the exit IP is the problem. Geonix rotates IPs "
             "per connection, so just tap Retry: each attempt lands on a different IP "
-            "(this build also auto-retries once with a fresh IP). If it keeps failing, "
+            "(this build also auto-retries with fresh IPs). If it keeps failing, "
             "ask Geonix for a STICKY session (same IP for 10-30 min), set CANVA_PROXY "
             "to that, then re-capture and re-upload the Canva session via "
             "tools/canva_login.py."
@@ -434,9 +434,11 @@ def send_canva_invite_sync(email: str):
     """Lane-guarded entry: never run two Chromium jobs at the same time.
 
     IP-level failures (Cloudflare challenge, Canva error page, unreachable via
-    the proxy) get ONE automatic retry with a fresh browser — rotating
-    residential proxies assign a new exit IP per connection, so the second
-    attempt usually lands on a different, clean IP.
+    the proxy) are retried automatically with a fresh browser — rotating
+    residential proxies assign a new exit IP per connection. Fast hard-blocks
+    (redirect to the troubleshoot page) leave room for up to 3 attempts; a slow
+    soft-challenge wait consumes the budget sooner, so the loop stops whenever
+    the 120s outer cap can no longer fit another attempt.
     """
     if not pw_lane.acquire(f"Canva invite {email}", wait_seconds=60):
         _log(f"browser lane busy ({pw_lane.busy_info()}) -> Canva invite deferred")
@@ -447,13 +449,18 @@ def send_canva_invite_sync(email: str):
             None,
         )
     try:
-        for attempt in (1, 2):
+        started = time.monotonic()
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
             ok, message, screenshot = _send_canva_invite_locked(email)
             if ok or not (isinstance(message, str) and message.startswith(_IP_BLOCK_MARK)):
                 return ok, message, screenshot
-            if attempt == 1:
-                _log("IP-level block on attempt 1 — fresh browser = new rotating proxy IP; retrying once")
+            elapsed = time.monotonic() - started
+            if attempt < max_attempts and elapsed < 70:
+                _log(f"IP-level block on attempt {attempt} ({int(elapsed)}s) — fresh browser = new rotating proxy IP; retrying")
                 time.sleep(3)
+                continue
+            break
         return False, message[len(_IP_BLOCK_MARK):], screenshot
     finally:
         pw_lane.release()

@@ -40,6 +40,30 @@ _STEALTH_ARGS = [
 _STEALTH_JS = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
 
 
+def _proxy_from_env():
+    """Optional CANVA_PROXY for the login run.
+
+    When the server uses a STICKY proxy, capture the session through the SAME
+    proxy IP so Canva sees one consistent address for login + automation:
+        CANVA_PROXY=http://user:pass@host:port python tools/canva_login.py
+    """
+    raw = os.environ.get("CANVA_PROXY", "").strip()
+    if not raw:
+        return None
+    try:
+        from urllib.parse import urlparse
+        u = urlparse(raw if "://" in raw else "http://" + raw)
+        cfg = {"server": f"{u.scheme}://{u.hostname}:{u.port}"}
+        if u.username:
+            cfg["username"] = u.username
+        if u.password:
+            cfg["password"] = u.password
+        print(f"Using proxy {cfg['server']} for this login run")
+        return cfg
+    except Exception:
+        return {"server": raw}
+
+
 def _launch(p):
     """Try the user's real Chrome first, then Edge, then bundled Chromium."""
     for channel in ("chrome", "msedge", None):
@@ -52,6 +76,7 @@ def _launch(p):
                 ignore_default_args=["--enable-automation"],
                 viewport={"width": 1366, "height": 900},
                 locale="en-US",
+                proxy=_proxy_from_env(),
             )
             label = channel or "bundled chromium"
             print(f"✅ Opened browser: {label}")
