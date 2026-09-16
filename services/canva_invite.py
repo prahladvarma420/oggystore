@@ -364,6 +364,47 @@ def _toast_screenshot(page):
         return None
 
 
+def _await_confirmation(page):
+    """Poll up to ~18s for Canva's invite-send confirmation.
+
+    Returns (ok, security_block_message). Success signals: any known success
+    wording (it varies by team/plan type), or the Send button vanishing (the
+    invite dialog only closes after a successful send). The RRS security banner
+    can also appear only AFTER the click — detected here and reported
+    immediately instead of waiting out the full timeout."""
+    success_markers = (
+        "invitation sent to", "invitations sent", "invitation sent",
+        "invites sent", "invite sent", "invitations on their way",
+        "invitation on its way", "email sent", "successfully sent",
+        "check your inbox", "check their inbox", "check their email",
+        "has been invited", "been invited",
+    )
+    for wait_i in range(12):
+        page.wait_for_timeout(1500)
+        sec = _security_block_message(page)
+        if sec:
+            _log("security block appeared after the send click")
+            return False, sec
+        body = ""
+        try:
+            body = page.inner_text("body", timeout=4000).lower()
+        except Exception:
+            pass
+        if any(m in body for m in success_markers):
+            return True, None
+        try:
+            send_gone = not page.get_by_role(
+                "button", name="Send invitation", exact=False
+            ).first.is_visible(timeout=800)
+        except Exception:
+            send_gone = False
+        if send_gone:
+            _log("Send button disappeared after click — dialog closed, invite accepted")
+            return True, None
+        _log(f"confirmation poll {wait_i}: not yet")
+    return False, None
+
+
 def send_canva_invite_sync(email: str):
     """Lane-guarded entry: never run two Chromium jobs at the same time."""
     if not pw_lane.acquire(f"Canva invite {email}", wait_seconds=60):
@@ -718,24 +759,12 @@ def _send_canva_invite_locked(email: str):
                     return False, sec_block, screenshot
                 return False, "Could not click 'Send invitations' in the Canva dialog (layout may have changed).", screenshot
 
-            # 4) Wait for the 'Invitation sent to <email>' confirmation toast.
+            # 4) Confirm the invite actually went out. The send API call can be
+            # slow (especially through a proxy) and Canva's confirmation wording
+            # varies by team type — poll for ANY success signal instead of one
+            # fixed 4s wait.
             _LAST_PHASE = "waiting for the 'Invitation sent' confirmation"
-            _log("waiting for confirmation toast")
-            page.wait_for_timeout(4000)
-
-            body_text = ""
-            try:
-                body_text = page.inner_text("body", timeout=5000).lower()
-            except Exception:
-                pass
-
-            success_markers = (
-                "invitation sent to",
-                "invitations sent",
-                "invitation sent",
-                "invite sent",
-            )
-            ok = any(marker in body_text for marker in success_markers)
+            ok, sec_block = _await_confirmation(page)
             _log(f"confirmation check: ok={ok}")
 
             if ok:
@@ -755,10 +784,13 @@ def _send_canva_invite_locked(email: str):
 
             if ok:
                 return True, "Invite sent successfully.", screenshot
-            sec_block = _security_block_message(page)
             if sec_block:
                 return False, sec_block, screenshot
-            return False, "Could not confirm the invite was sent (check the screenshot).", screenshot
+            return False, (
+                "The Send click went through but Canva showed no confirmation in time. "
+                "CHECK THE TEST INBOX — the invite may actually have arrived (Canva "
+                "sometimes sends without showing the toast). If it arrived, the flow works."
+            ), screenshot
 
     except Exception as exc:
         log_error("Canva invite automation failed", exc, extra=f"email={email}")
