@@ -6,7 +6,7 @@ import time
 from telegram import InlineKeyboardMarkup
 from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 from telegram.ext import ContextTypes
-from database.db import get_setting, set_user_coupon, render_message_template, cur, conn, ensure_user, get_balance, is_blocked, is_admin, create_ticket, get_user_tickets, add_user_ticket_reply, get_ticket, get_ticket_messages, add_referral, get_referral_stats, create_withdrawal_request, get_user_withdrawals, get_user_coupon, validate_coupon, get_coupon_user_uses, clear_user_coupon, restore_backup_zip, add_restock_notification
+from database.db import get_setting, set_user_coupon, render_message_template, cur, conn, ensure_user, get_balance, is_blocked, is_admin, create_ticket, get_user_tickets, get_user_tickets_page, count_user_tickets, add_user_ticket_reply, get_ticket, get_ticket_messages, close_ticket, SUPPORT_RESOLUTION_MESSAGE, add_referral, get_referral_stats, create_withdrawal_request, get_user_withdrawals, get_user_coupon, validate_coupon, get_coupon_user_uses, clear_user_coupon, restore_backup_zip, add_restock_notification
 from utils.crypto import decrypt_text
 from utils.premium_emoji import strip_premium
 from utils.delivery_file import split_delivery_items, send_delivery_txt
@@ -238,6 +238,56 @@ WALLET_MSG_DEFAULT = (
 SUPPORT_PROMPT_DEFAULT = (
     "🎫 <b>Create Support Ticket</b>\n\nSend your issue/message now.\n\nExample:\nPayment done but balance not added."
 )
+
+
+# ------------------------------------------------------------------ My Tickets
+MY_TICKETS_PAGE_SIZE = 5
+
+
+def _ticket_status_label(status):
+    """Display label. 'answered' is the persisted form of UNRESOLVED: an admin
+    has replied, but nobody has closed the ticket yet."""
+    return {
+        "open": "🟢 Open",
+        "answered": "🟠 Unresolved",
+        "closed": "🔒 Closed",
+    }.get(status, "🟢 Open")
+
+
+def _my_tickets_view(uid, page=0):
+    """Paginated My Tickets — shows ALL of the customer's tickets (open,
+    unresolved and closed alike), one detail button per ticket."""
+    total = count_user_tickets(uid)
+    pages = max(1, (total + MY_TICKETS_PAGE_SIZE - 1) // MY_TICKETS_PAGE_SIZE)
+    page = max(0, min(int(page or 0), pages - 1))
+    rows = get_user_tickets_page(uid, MY_TICKETS_PAGE_SIZE, page * MY_TICKETS_PAGE_SIZE)
+    text = "📂 <b>My Tickets</b>"
+    if total:
+        text += "  <code>page {}/{}</code>".format(page + 1, pages)
+    text += "\n\n"
+    kb = []
+    if not rows:
+        text += "No tickets found."
+    for ticket_id, subject, status, created, updated in rows:
+        subj = str(subject or "Support Ticket")
+        text += "🎫 <b>#{}</b> — {}\n{} · 🕒 {}\n\n".format(
+            ticket_id, html.escape(subj, quote=False),
+            _ticket_status_label(status), display_time(created))
+        short = subj if len(subj) <= 24 else subj[:24] + "…"
+        kb.append([InlineKeyboardButton(
+            "🎫 #{} · {}".format(ticket_id, short),
+            callback_data="support_view_{}".format(ticket_id))])
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("◀️ Prev", callback_data="my_tickets_page_{}".format(page - 1)))
+        if page < pages - 1:
+            nav.append(InlineKeyboardButton("Next ▶️", callback_data="my_tickets_page_{}".format(page + 1)))
+        if nav:
+            kb.append(nav)
+    kb.append([InlineKeyboardButton("🎫 Create Ticket", callback_data="create_ticket")])
+    kb.append([back_button("support")])
+    return text, InlineKeyboardMarkup(kb)
 
 
 def is_rate_limited(user_id: int) -> bool:
@@ -817,7 +867,6 @@ Example:
         return
 
     if data == "gift_codes":
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         gmin = float(get_setting("gift_min_amount", "1") or 1)
         gmax = float(get_setting("gift_max_amount", "500") or 500)
         kb = InlineKeyboardMarkup([
@@ -884,7 +933,6 @@ Example:
             )
             return
 
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         kb_rows = []
         for w_order_id, w_pname, _wpid, _wcreated in w_rows:
             label = "🧾 #" + str(w_order_id) + " — " + strip_premium(str(w_pname))[:30]
@@ -1015,9 +1063,6 @@ Thank you for using our store.""",
             (uid,)
         )
         rows = cur.fetchall()
-
-        from telegram import InlineKeyboardMarkup
-        from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 
         text = "📦 <b>My Orders</b>\n\n"
         kb_rows = []
@@ -1174,44 +1219,17 @@ Example:
         return
 
     if data == "my_tickets":
-        rows = get_user_tickets(uid, 10)
-        text = "📂 <b>My Tickets</b>\n\n"
-        ticket_buttons = []
+        text, markup = _my_tickets_view(uid, 0)
+        await edit_or_send(q, text, markup)
+        return
 
-        if not rows:
-            text += "No tickets found."
-        else:
-            for ticket_id, subject, message, status, admin_reply, created, updated in rows:
-                subject = html.escape(str(subject), quote=False)
-                message = html.escape(str(message), quote=False)
-                if admin_reply:
-                    admin_reply = html.escape(str(admin_reply), quote=False)
-                status_icon = "🟢 Open" if status == "open" else "✅ Answered" if status == "answered" else "🔒 Closed"
-                short_msg = message[:120] + "..." if len(message) > 120 else message
-                text += (
-                    f"🎫 <b>Ticket #{ticket_id}</b>\n"
-                    f"📌 <b>Subject:</b> {subject}\n"
-                    f"📍 <b>Status:</b> {status_icon}\n"
-                    f"📝 <b>Message:</b> {short_msg}\n"
-                )
-
-                if admin_reply:
-                    text += f"👑 <b>Admin Reply:</b> {admin_reply}\n"
-
-                text += "\n"
-                if status != "closed":
-                    ticket_buttons.append([InlineKeyboardButton(
-                        f"💬 Reply in Ticket #{ticket_id}", callback_data=f"support_reply_{ticket_id}")])
-
-
-        if len(text) > 3900:
-            text = text[:3900] + "\n..."
-
-        ticket_buttons.extend([
-            [InlineKeyboardButton("🎫 Create Ticket", callback_data="create_ticket")],
-            [back_button("support")],
-        ])
-        await edit_or_send(q, text, InlineKeyboardMarkup(ticket_buttons))
+    if data.startswith("my_tickets_page_"):
+        try:
+            page = int(data.rsplit("_", 1)[1])
+        except Exception:
+            page = 0
+        text, markup = _my_tickets_view(uid, page)
+        await edit_or_send(q, text, markup)
         return
 
     if data.startswith("support_reply_"):
@@ -1229,6 +1247,89 @@ Example:
             return
         user_state[uid] = f"support_reply:{ticket_id}"
         await edit_or_send(q, f"💬 <b>Reply to Ticket #{ticket_id}</b>\n\nSend your next message. It will stay in this same conversation.", support_menu())
+        return
+
+    if data.startswith("support_view_"):
+        try:
+            ticket_id = int(data.rsplit("_", 1)[1])
+        except Exception:
+            await q.answer("Invalid ticket.", show_alert=True)
+            return
+        ticket = get_ticket(ticket_id)
+        # Ownership check: a customer may only ever open their own ticket.
+        if not ticket or int(ticket[1]) != int(uid):
+            await q.answer("Ticket not found.", show_alert=True)
+            return
+        tid, _owner, _fn, _un, subject, _msg, status, _reply, created, updated = ticket
+        msgs, _has_more = get_ticket_messages(tid, 100)
+        header = (
+            f"🎫 <b>Ticket #{tid}</b>\n\n"
+            f"📌 <b>Subject:</b> {html.escape(str(subject or 'Support Ticket'), quote=False)}\n"
+            f"📊 <b>Status:</b> {_ticket_status_label(status)}\n"
+            f"📅 <b>Created:</b> {display_time(created)}\n"
+            f"🕒 <b>Last activity:</b> {display_time(updated)}\n\n"
+            "💬 <b>Conversation:</b>\n\n"
+        )
+        lines = []
+        for m in msgs:
+            who = "👤 <b>You</b>" if m[2] == "user" else ("🛡 <b>Admin</b>" if m[2] == "admin" else "ℹ️ <b>System</b>")
+            lines.append(f"{who} · <i>{display_time(m[5])}</i>\n{html.escape(str(m[4]), quote=False)}")
+        body = "\n\n".join(lines)
+        if len(header) + len(body) > 3900 and lines:
+            kept, size = [], 0
+            for line in reversed(lines):
+                if size + len(line) > 3300:
+                    break
+                kept.append(line)
+                size += len(line)
+            kept.reverse()
+            body = (f"<i>… {len(lines) - len(kept)} earlier message(s) omitted — full history is in the web panel …</i>\n\n"
+                    + "\n\n".join(kept))
+        text = header + (body or "<i>No messages yet.</i>")
+        kb = []
+        if status != "closed":
+            kb.append([InlineKeyboardButton("💬 Reply Ticket", callback_data=f"support_reply_{tid}")])
+            kb.append([InlineKeyboardButton("✅ Close Ticket", callback_data=f"support_close_{tid}")])
+        kb.append([InlineKeyboardButton("⬅️ Back to My Tickets", callback_data="my_tickets")])
+        await edit_or_send(q, text, InlineKeyboardMarkup(kb))
+        return
+
+    if data.startswith("support_close_"):
+        try:
+            ticket_id = int(data.rsplit("_", 1)[1])
+        except Exception:
+            await q.answer("Invalid ticket.", show_alert=True)
+            return
+        ticket = get_ticket(ticket_id)
+        # Ownership check before closing.
+        if not ticket or int(ticket[1]) != int(uid):
+            await q.answer("Ticket not found.", show_alert=True)
+            return
+        if ticket[6] == "closed":
+            await q.answer("This ticket is already closed.", show_alert=True)
+            return
+        changed = close_ticket(ticket_id)  # idempotent; stores the resolution message once
+        if not changed:
+            await q.answer("This ticket is already closed.", show_alert=True)
+            return
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"🔒 <b>Customer closed Ticket #{ticket_id}</b>\n\n👤 User: <code>{uid}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        await edit_or_send(
+            q,
+            f"✅ <b>Ticket #{ticket_id} has been closed.</b>\n\n"
+            f"{html.escape(SUPPORT_RESOLUTION_MESSAGE, quote=False)}\n\n"
+            "Your complete conversation history is still available in 📂 <b>My Tickets</b>.",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("📂 My Tickets", callback_data="my_tickets")],
+                [back_button("support")],
+            ]),
+        )
         return
 
     if data == "clear_chat":
@@ -1623,8 +1724,6 @@ It will be used on your next wallet purchase.""",
                 )
                 return
 
-            from telegram import InlineKeyboardMarkup
-            from utils.button_styles import AutoStyledButton as InlineKeyboardButton
             from utils.premium_emoji import strip_premium, first_premium_id, button_premium
             buttons = []
             msg = f"🔍 <b>Search Results for:</b> <code>{html.escape(str(keyword), quote=False)}</code>\n\n"
@@ -1788,7 +1887,11 @@ Admin will review your request.""",
 🎫 <b>Ticket ID:</b> <code>#{ticket_id}</code>
 
 Admin will reply soon.""",
-                reply_markup=support_menu(),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💬 Reply Ticket", callback_data=f"support_reply_{ticket_id}")],
+                    [InlineKeyboardButton("📂 My Tickets", callback_data="my_tickets")],
+                    [InlineKeyboardButton("✅ Close Ticket", callback_data=f"support_close_{ticket_id}")],
+                ]),
                 parse_mode="HTML"
             )
 
@@ -1863,7 +1966,11 @@ Admin will reply soon.""",
 📌 <b>Subject:</b> {html.escape(str(subject), quote=False)}
 
 Admin will reply soon.""",
-                reply_markup=support_menu(),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💬 Reply Ticket", callback_data=f"support_reply_{ticket_id}")],
+                    [InlineKeyboardButton("📂 My Tickets", callback_data="my_tickets")],
+                    [InlineKeyboardButton("✅ Close Ticket", callback_data=f"support_close_{ticket_id}")],
+                ]),
                 parse_mode="HTML"
             )
 

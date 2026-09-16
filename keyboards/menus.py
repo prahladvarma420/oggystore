@@ -232,6 +232,26 @@ def support_menu():
     ])
 
 
+def ticket_customer_keyboard(ticket_id):
+    """Buttons attached DIRECTLY under an admin's reply message. These are for
+    the CUSTOMER: continue or close their own ticket (ownership is verified
+    again in the callback handler)."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Reply Ticket", callback_data=f"support_reply_{ticket_id}")],
+        [InlineKeyboardButton("✅ Close Ticket", callback_data=f"support_close_{ticket_id}")],
+    ])
+
+
+def ticket_admin_keyboard(ticket_id):
+    """Buttons for ADMIN ticket notifications/reminders. Reuses the existing
+    admin_ticket_* callbacks, which are guarded by is_admin in
+    handle_admin_callback."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Reply Ticket", callback_data=f"admin_ticket_reply_{ticket_id}")],
+        [InlineKeyboardButton("✅ Close Ticket", callback_data=f"admin_ticket_close_{ticket_id}")],
+    ])
+
+
 
 
 def _flash_sale_price(product_id):

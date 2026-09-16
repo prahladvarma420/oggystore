@@ -2303,8 +2303,14 @@ def api_ticket_reply(tid):
     if t[6] == "closed":
         return jsonify({"ok": False, "error": "Closed tickets cannot receive replies"}), 409
     botdb.reply_ticket(tid, reply)
+    # Customer action buttons directly under the admin reply message (the same
+    # support_reply_/support_close_ callbacks the bot's own support flow uses).
+    kb = {"inline_keyboard": [
+        [{"text": "\U0001f4ac Reply Ticket", "callback_data": "support_reply_{}".format(tid)}],
+        [{"text": "✅ Close Ticket", "callback_data": "support_close_{}".format(tid)}],
+    ]}
     tg_send(t[1], "\U0001f3ab <b>Support reply (Ticket #{})</b>\n\n{}".format(
-        tid, html.escape(reply, quote=False)))
+        tid, html.escape(reply, quote=False)), reply_markup=kb)
     log_action("reply_ticket", "#{}".format(tid))
     messages, _ = botdb.get_ticket_messages(tid, 1)
     keys = ("id","ticket_id","sender_type","sender_id","message","created","read_by_admin")

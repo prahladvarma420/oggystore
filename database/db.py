@@ -517,6 +517,8 @@ def init_db():
     # "USDT BEP20", "USDT TRC20", "Binance Pay"). NULL on legacy rows --
     # those are derived from the funding checkout deposit at display time.
     _safe_add_column("orders", "payment_method", "TEXT")
+    # Persistent 24h unresolved-reminder dedupe (survives restarts; NULL = never reminded).
+    _safe_add_column("tickets", "last_reminder_at", "TEXT")
     # Always keep main owner as admin
     cur.execute("INSERT OR IGNORE INTO admins(user_id, added_by) VALUES(?, ?)", (ADMIN_ID, ADMIN_ID))
     # Encrypt any product codes / delivered codes still stored in plaintext.
@@ -1271,7 +1273,9 @@ def append_ticket_message(ticket_id: int, sender_type: str, message: str,
     )
     message_id = cur.lastrowid
     if sender_type == "user":
-        cur.execute("UPDATE tickets SET status='open', updated=? WHERE id=? AND status<>'closed'",
+        # A customer follow-up never resets the status: once an admin has
+        # answered, the ticket stays UNRESOLVED until someone closes it.
+        cur.execute("UPDATE tickets SET updated=? WHERE id=? AND status<>'closed'",
                     (stamp, ticket_id))
     elif sender_type == "admin":
         cur.execute("UPDATE tickets SET admin_reply=?, status='answered', updated=? WHERE id=? AND status<>'closed'",
@@ -1336,6 +1340,12 @@ def get_ticket_conversations(status="all", limit=200):
         where = "WHERE t.status='answered'"
     elif status == "closed":
         where = "WHERE t.status='closed'"
+    elif status == "unresolved":
+        # Admin/system has responded at least once but the ticket is not
+        # closed. Derived from message history (not the status string), so
+        # legacy rows and edge cases are included.
+        where = ("WHERE t.status<>'closed' AND EXISTS (SELECT 1 FROM ticket_messages tm "
+                 "WHERE tm.ticket_id=t.id AND tm.sender_type IN ('admin','system'))")
     elif status == "unread":
         where = "WHERE COALESCE(ms.unread_count,0)>0"
     cur.execute("""
@@ -1376,6 +1386,64 @@ def get_user_tickets(user_id: int, limit: int = 10):
             r[4] = decrypt_text(r[4])
         out.append(tuple(r))
     return out
+
+
+def count_user_tickets(user_id: int) -> int:
+    cur.execute("SELECT COUNT(*) FROM tickets WHERE user_id=?", (user_id,))
+    try:
+        return int(cur.fetchone()[0] or 0)
+    except Exception:
+        return 0
+
+
+def get_user_tickets_page(user_id: int, limit: int = 5, offset: int = 0):
+    """Paginated My Tickets list — ALL statuses, newest first."""
+    cur.execute(
+        "SELECT id, subject, status, created, updated FROM tickets WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+        (user_id, max(1, int(limit)), max(0, int(offset)))
+    )
+    out = []
+    for r in cur.fetchall():
+        r = list(r)
+        r[1] = decrypt_text(r[1])
+        out.append(tuple(r))
+    return out
+
+
+def get_tickets_due_for_reminder(hours: int = 24):
+    """Unresolved tickets (an admin has replied, ticket not closed) whose last
+    activity AND last reminder are both at least `hours` old.
+
+    Timestamps are stored as 'YYYY-MM-DD HH:MM:SS' text in the store timezone,
+    so lexicographic comparison is correct on both SQLite and Postgres.
+    """
+    cutoff = (ist_now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute(
+        """
+        SELECT t.id, t.user_id, u.first_name, u.username, t.subject, t.status, t.updated
+        FROM tickets t
+        LEFT JOIN users u ON u.user_id = t.user_id
+        WHERE t.status <> 'closed'
+          AND EXISTS (SELECT 1 FROM ticket_messages tm
+                      WHERE tm.ticket_id = t.id AND tm.sender_type IN ('admin','system'))
+          AND COALESCE(t.updated, t.created) <= ?
+          AND (t.last_reminder_at IS NULL OR t.last_reminder_at <= ?)
+        ORDER BY t.id ASC
+        """,
+        (cutoff, cutoff)
+    )
+    out = []
+    for r in cur.fetchall():
+        r = list(r)
+        r[4] = decrypt_text(r[4])
+        out.append(tuple(r))
+    return out
+
+
+def mark_ticket_reminded(ticket_id: int):
+    """Persist the reminder time so restarts/jobs never duplicate reminders."""
+    cur.execute("UPDATE tickets SET last_reminder_at=? WHERE id=?", (now_text(), ticket_id))
+    conn.commit()
 
 
 def get_open_tickets(limit: int = 20):

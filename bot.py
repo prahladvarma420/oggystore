@@ -11,6 +11,7 @@ from payments.bep20_checker import check_payments
 from payments.trc20_checker import check_trc20_payments
 from payments.binance_checker import check_binance_payments
 from tasks.invoice_reminders import run_invoice_reminders
+from tasks.ticket_reminders import run_ticket_reminders
 from admin.backup_handler import backup_command
 from admin.admin_handlers import block_command, unblock_command, add_admin_command, remove_admin_command, admins_command, reply_ticket_command, close_ticket_command
 from utils.backup import scheduled_backup
@@ -68,6 +69,14 @@ def main():
             run_invoice_reminders,
             interval=600,
             first=120,
+        )
+        # Unresolved support-ticket reminders: nudge the admin every 24h while
+        # a customer conversation still needs attention. Deduped persistently
+        # via tickets.last_reminder_at, so restarts never resend.
+        app.job_queue.run_repeating(
+            run_ticket_reminders,
+            interval=3600,
+            first=180,
         )
         # Automatic database backup (was imported but never registered).
         app.job_queue.run_repeating(

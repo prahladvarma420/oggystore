@@ -12,7 +12,7 @@ from database.db import create_scheduled_broadcast, get_scheduled_broadcasts, re
 from utils.crypto import decrypt_text
 from database.db import get_display_stock, tiers_recently_edited, SUPPORT_RESOLUTION_MESSAGE
 from database.db import get_pending_replacements, get_replacement, set_replacement_status, set_warranty_ban, is_warranty_banned, count_recent_replacements, reserve_stock_item, create_gift_code, list_gift_codes, rename_m365_session, list_m365_sessions, get_current_m365_session, reset_m365_session, delete_m365_session
-from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu, back_button, refresh_button, EXTRA_CUSTOM_BUTTONS
+from keyboards.menus import admin_menu, back_home, admin_products_menu, admin_orders_users_menu, admin_marketing_menu, admin_system_menu, admin_support_menu, back_button, refresh_button, EXTRA_CUSTOM_BUTTONS, ticket_customer_keyboard
 from config import DB_PATH, ADMIN_ID
 from utils.ui import edit_or_send
 from utils.premium_emoji import premium_html, strip_premium, first_premium_id, sanitize_premium_name, button_premium, premium_safe
@@ -4404,7 +4404,8 @@ async def handle_admin_message(update, context, uid, text, state):
         await update.message.reply_text(f"✅ Reply added to Ticket <code>#{ticket_id}</code>.", parse_mode="HTML")
         try:
             await context.bot.send_message(chat_id=ticket[1], text=(
-                f"👑 <b>Support reply (Ticket #{ticket_id})</b>\n\n{html.escape(reply, quote=False)}"), parse_mode="HTML")
+                f"👑 <b>Support reply (Ticket #{ticket_id})</b>\n\n{html.escape(reply, quote=False)}"),
+                parse_mode="HTML", reply_markup=ticket_customer_keyboard(ticket_id))
         except Exception:
             pass
         return True
@@ -7304,7 +7305,8 @@ async def reply_ticket_command(update, context):
                     f"📌 <b>Subject:</b> {subject}\n\n"
                     f"💬 <b>Reply:</b>\n{reply}"
                 ),
-                parse_mode="HTML"
+                parse_mode="HTML",
+                reply_markup=ticket_customer_keyboard(ticket_id),
             )
         except Exception:
             pass

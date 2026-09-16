@@ -869,7 +869,7 @@ async function viewTickets() {
     <aside class="conversation-panel">
       <div class="support-panel-head"><div><span class="eyebrow">Customer care</span><h2>Support Inbox</h2></div><span class="conversation-total">${d.total || 0}</span></div>
       <label class="conversation-search"><span>⌕</span><input id="ticketSearch" value="${esc(ticketSearch)}" placeholder="Search name, ticket, subject…" aria-label="Search support conversations"></label>
-      <div class="support-filters">${["all","open","answered","closed","unread"].map(f => `<button class="${ticketFilter === f ? "active" : ""}" onclick="setTicketFilter('${f}')">${f}</button>`).join("")}</div>
+      <div class="support-filters">${["all","open","answered","unresolved","closed","unread"].map(f => `<button class="${ticketFilter === f ? "active" : ""}" onclick="setTicketFilter('${f}')">${f}</button>`).join("")}</div>
       <div class="conversation-list" id="conversationList">${ticketListHtml(cache.tickets)}</div>
     </aside>
     <section class="chat-panel" id="supportChatPane"><div class="chat-placeholder"><div>💬</div><h3>Select a conversation</h3><p>Choose a ticket to view its complete message history.</p></div></section>
