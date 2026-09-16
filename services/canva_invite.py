@@ -245,12 +245,34 @@ def _generic_error_message(page):
     return None
 
 
+def _cloudflare_block_advice() -> str:
+    """Guidance for an IP-level Cloudflare block, aware of whether CANVA_PROXY
+    is already configured (the advice differs: set a proxy vs rotate/Sticky)."""
+    if _proxy_config():
+        return (
+            "Cloudflare flagged THIS proxy IP with a 'Verify you are human' check. "
+            "Your session is fine — the exit IP is the problem. Geonix rotates IPs "
+            "per connection, so just tap Retry: each attempt lands on a different IP "
+            "(this build also auto-retries once with a fresh IP). If it keeps failing, "
+            "ask Geonix for a STICKY session (same IP for 10-30 min), set CANVA_PROXY "
+            "to that, then re-capture and re-upload the Canva session via "
+            "tools/canva_login.py."
+        )
+    return (
+        "Cloudflare is blocking the server's IP with a 'Verify you are human' "
+        "check, and the automatic pass attempt failed. Your Canva session is fine — "
+        "the server's datacenter IP is the problem. Fix: set the CANVA_PROXY "
+        "environment variable on the Railway worker to a residential proxy "
+        "(format: http://user:pass@host:port), redeploy, then Retry."
+    )
+
+
 def _try_cloudflare_challenge(page) -> bool:
     """Try to pass Cloudflare's 'Verify you are human' checkbox.
 
     Returns True when the challenge page is no longer visible.
     """
-    for round_i in range(6):
+    for round_i in range(3):
         if not _looks_like_cloudflare(page):
             return True
         _log(f"cloudflare challenge visible (round {round_i + 1}) — trying checkbox")
@@ -405,7 +427,36 @@ def _await_confirmation(page):
     return False, None
 
 
+_IP_BLOCK_MARK = "[IP-BLOCK] "
+
+
 def send_canva_invite_sync(email: str):
+    """Lane-guarded entry: never run two Chromium jobs at the same time.
+
+    IP-level failures (Cloudflare challenge, Canva error page, unreachable via
+    the proxy) get ONE automatic retry with a fresh browser — rotating
+    residential proxies assign a new exit IP per connection, so the second
+    attempt usually lands on a different, clean IP.
+    """
+    if not pw_lane.acquire(f"Canva invite {email}", wait_seconds=60):
+        _log(f"browser lane busy ({pw_lane.busy_info()}) -> Canva invite deferred")
+        return (
+            False,
+            "Another browser task is still running. Retry this invite in a "
+            "minute.",
+            None,
+        )
+    try:
+        for attempt in (1, 2):
+            ok, message, screenshot = _send_canva_invite_locked(email)
+            if ok or not (isinstance(message, str) and message.startswith(_IP_BLOCK_MARK)):
+                return ok, message, screenshot
+            if attempt == 1:
+                _log("IP-level block on attempt 1 — fresh browser = new rotating proxy IP; retrying once")
+                time.sleep(3)
+        return False, message[len(_IP_BLOCK_MARK):], screenshot
+    finally:
+        pw_lane.release()
     """Lane-guarded entry: never run two Chromium jobs at the same time."""
     if not pw_lane.acquire(f"Canva invite {email}", wait_seconds=60):
         _log(f"browser lane busy ({pw_lane.busy_info()}) -> Canva invite deferred")
@@ -445,7 +496,7 @@ def _send_canva_invite_locked(email: str):
     global _LAST_PHASE, _LAST_SCREENSHOT
     _LAST_PHASE = "launching browser"
     _LAST_SCREENSHOT = None
-    _deadline = time.monotonic() + 100
+    _deadline = time.monotonic() + 55
 
     _log(f"invite start -> {email}")
 
@@ -550,8 +601,9 @@ def _send_canva_invite_locked(email: str):
                     pass
                 return (
                     False,
-                    "Could not reach canva.com from the server — the page never started "
-                    "responding. Check Deploy Logs (filter 'CANVA') for details.",
+                    _IP_BLOCK_MARK + "Could not reach canva.com from the server — the page never started "
+                    "responding (the proxy connection may be dead; a retry gets a fresh exit IP). "
+                    "Check Deploy Logs (filter 'CANVA') for details.",
                     None,
                 )
 
@@ -587,7 +639,7 @@ def _send_canva_invite_locked(email: str):
             gen_err = _generic_error_message(page)
             if gen_err:
                 browser.close()
-                return False, gen_err, screenshot
+                return False, _IP_BLOCK_MARK + gen_err, screenshot
 
             # Poll until the 'Invite people' button or a login redirect appears.
             invite_ui_found = False
@@ -600,6 +652,10 @@ def _send_canva_invite_locked(email: str):
                 except Exception:
                     cur_url = ""
                 _log(f"poll {poll_i}: url={cur_url[:120]}")
+                if "troubleshoot-cloudflare-error" in cur_url:
+                    _log("canva redirected to the cloudflare troubleshooting page — IP-level block")
+                    browser.close()
+                    return False, _IP_BLOCK_MARK + _cloudflare_block_advice(), screenshot
                 if "/login" in cur_url or "/signup" in cur_url:
                     break
                 for probe in ("Invite people", "Invite"):
@@ -637,18 +693,10 @@ def _send_canva_invite_locked(email: str):
                 _log(f"invite button not found; url={cur_url[:120]} | text={snippet[:150]}")
                 browser.close()
                 if any(m in snippet.lower() for m in _CF_MARKERS):
-                    return (
-                        False,
-                        "Cloudflare is blocking the server's IP with a 'Verify you are human' "
-                        "check, and the automatic pass attempt failed. Your Canva session is fine — "
-                        "the server's datacenter IP is the problem. Fix: set the CANVA_PROXY "
-                        "environment variable on the Railway worker to a residential proxy "
-                        "(format: http://user:pass@host:port), redeploy, then Retry.",
-                        screenshot,
-                    )
+                    return False, _IP_BLOCK_MARK + _cloudflare_block_advice(), screenshot
                 gen_err = _generic_error_message(page)
                 if gen_err:
-                    return False, gen_err, screenshot
+                    return False, _IP_BLOCK_MARK + gen_err, screenshot
                 return (
                     False,
                     "Loaded the Canva People page but the 'Invite people' button never appeared. "
