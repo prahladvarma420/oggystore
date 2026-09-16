@@ -247,7 +247,7 @@ def _generic_error_message(page):
 
 def _cloudflare_block_advice() -> str:
     """Guidance for an IP-level Cloudflare block, aware of whether CANVA_PROXY
-    is already configured (the advice differs: set a proxy vs rotate/Sticky)."""
+    is already configured (the advice differs: set a proxy vs rotate/sticky)."""
     if _proxy_config():
         return (
             "Cloudflare flagged THIS proxy IP with a 'Verify you are human' check. "
@@ -641,17 +641,20 @@ def _send_canva_invite_locked(email: str):
                 browser.close()
                 return False, _IP_BLOCK_MARK + gen_err, screenshot
 
-            # Poll until the 'Invite people' button or a login redirect appears.
+            # Poll until the 'Invite people' button appears, a redirect happens,
+            # or the per-attempt deadline hits. A Cloudflare SOFT challenge (the
+            # '__cf_chl' token / 'designing again soon' interstitial) often clears
+            # on its own after 10-30s — wait it out patiently instead of failing
+            # after a fixed 15s.
             invite_ui_found = False
-            for poll_i in range(10):
-                if time.monotonic() > _deadline:
-                    _log("poll aborted: internal deadline")
-                    break
+            poll_i = 0
+            while time.monotonic() < _deadline:
                 try:
                     cur_url = page.url
                 except Exception:
                     cur_url = ""
                 _log(f"poll {poll_i}: url={cur_url[:120]}")
+                poll_i += 1
                 if "troubleshoot-cloudflare-error" in cur_url:
                     _log("canva redirected to the cloudflare troubleshooting page — IP-level block")
                     browser.close()
@@ -670,6 +673,10 @@ def _send_canva_invite_locked(email: str):
                         continue
                 if invite_ui_found:
                     break
+                if "__cf_chl" in cur_url or _looks_like_cloudflare(page):
+                    _log("cloudflare challenge still running — waiting for it to clear")
+                    page.wait_for_timeout(4000)
+                    continue
                 page.wait_for_timeout(1500)
 
             _log(f"poll done: invite_ui_found={invite_ui_found}")
