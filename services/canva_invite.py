@@ -210,13 +210,24 @@ def _security_block_message(page):
     if "security reasons" in low and "invitation" in low:
         m = re.search(r"rrs-[0-9a-f-]+", low)
         code = " (Canva error " + m.group(0) + ")" if m else ""
+        if _proxy_config():
+            ip_advice = (
+                "Canva is risk-blocking the send from THIS proxy exit IP. The bot "
+                "auto-retried with fresh rotating IPs; if it still fails, use a Geonix "
+                "STICKY session, capture the Canva session through it "
+                "(CANVA_PROXY=... python tools/canva_login.py), upload, and retry."
+            )
+        else:
+            ip_advice = (
+                "Canva is risk-blocking the send from THIS server's IP. Set CANVA_PROXY "
+                "in Railway to a residential/ISP proxy (http://user:pass@host:port), "
+                "redeploy, and retry — a fresh session after a cooldown also helps."
+            )
         return (
-            "Canva refused to send the invitation for security reasons" + code + ". "
-            "The session and automation are working — Canva is blocking THIS "
-            "server's IP (Railway/datacenter IPs get flagged by their risk system). "
-            "Fix: set CANVA_PROXY in Railway variables to a residential/ISP proxy "
-            "(http://user:pass@host:port), redeploy, and retry. Retrying later with "
-            "a fresh session sometimes also passes."
+            _IP_BLOCK_MARK + "Canva refused to send the invitation for security reasons" + code + ". "
+            "The session and automation are working — " + ip_advice + " "
+            "Tip: test with a REAL email you control (e.g. your Gmail) — obviously-fake "
+            "addresses raise Canva's abuse score."
         )
     return None
 
@@ -753,7 +764,11 @@ def _send_canva_invite_locked(email: str):
                     box = page.locator(selector).first
                     if box.is_visible(timeout=2000):
                         box.click()
-                        box.fill(email)
+                        # Type like a human — instant .fill() is a behavioral bot tell.
+                        try:
+                            box.press_sequentially(email, delay=70)
+                        except Exception:
+                            box.fill(email)
                         filled = True
                         break
                 except Exception:
