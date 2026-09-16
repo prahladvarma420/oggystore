@@ -105,12 +105,20 @@ _CHROMIUM_ARGS = [
 ]
 
 
-def _proxy_config():
-    """Optional proxy for when Cloudflare blocks the server's datacenter IP.
+_PROXY_SCHEMES = ("http", "https", "socks5", "socks5h")
 
-    Set the CANVA_PROXY environment variable on the worker, e.g.:
-        http://user:pass@host:port    or    http://host:port
-    A residential/ISP proxy works best against Cloudflare.
+
+def _proxy_config():
+    """Optional proxy for when Cloudflare/Canva blocks the server's IP.
+
+    Set the CANVA_PROXY environment variable on the worker. Accepted forms:
+        user:pass@host:port            -> scheme-less, treated as http://
+        host:port                      -> scheme-less, treated as http://
+        http://user:pass@host:port     (explicit HTTP/HTTPS proxy)
+        socks5://user:pass@host:port   (SOCKS5 proxy — the socks5:// prefix is REQUIRED;
+                                        a SOCKS proxy written as http:// breaks the page)
+        socks5h://user:pass@host:port  (SOCKS5 with remote DNS — even better vs leaks)
+    A residential/ISP proxy works best against Canva's risk checks.
     """
     raw = os.environ.get("CANVA_PROXY", "").strip()
     if not raw:
@@ -118,11 +126,18 @@ def _proxy_config():
     try:
         from urllib.parse import urlparse
         u = urlparse(raw if "://" in raw else "http://" + raw)
-        cfg = {"server": f"{u.scheme}://{u.hostname}:{u.port}"}
+        scheme = (u.scheme or "http").lower()
+        if scheme not in _PROXY_SCHEMES:
+            _log(f"proxy scheme '{scheme}' not recognised — falling back to http")
+            scheme = "http"
+        cfg = {"server": f"{scheme}://{u.hostname}:{u.port}"}
         if u.username:
             cfg["username"] = u.username
         if u.password:
             cfg["password"] = u.password
+        # Prove in the deploy logs that the proxy is really being used
+        # (scheme + host only — credentials are never logged).
+        _log(f"proxy enabled: {scheme}://{u.hostname}:{u.port}")
         return cfg
     except Exception:
         return {"server": raw}
@@ -166,6 +181,30 @@ def _security_block_message(page):
             "Fix: set CANVA_PROXY in Railway variables to a residential/ISP proxy "
             "(http://user:pass@host:port), redeploy, and retry. Retrying later with "
             "a fresh session sometimes also passes."
+        )
+    return None
+
+
+def _generic_error_message(page):
+    """Detect Canva's generic failure page ('There was an issue on our end').
+
+    When this shows, the URL loaded but Canva served an error page instead of
+    the app — almost always the PROXY: wrong protocol (a SOCKS5 proxy written
+    as http://), a dead/flagged proxy IP, or the saved session being rejected
+    after the IP change. Returns an actionable message, or None when absent."""
+    try:
+        low = page.inner_text("body", timeout=3000).lower()
+    except Exception:
+        return None
+    if "there was an issue on our end" in low or "something went wrong on our end" in low:
+        return (
+            "Canva served its generic error page ('There was an issue on our end') — "
+            "the page address loaded but Canva refused to render the app. This is almost "
+            "always the proxy: 1) if your proxy is SOCKS5, CANVA_PROXY must be written "
+            "socks5://user:pass@host:port (the socks5:// prefix is REQUIRED); "
+            "2) the proxy IP may be dead or flagged — try another; "
+            "3) the IP change can invalidate the saved session — re-capture it with "
+            "tools/canva_login.py and upload again."
         )
     return None
 
@@ -455,6 +494,14 @@ def _send_canva_invite_locked(email: str):
                     return _LAST_SCREENSHOT
             screenshot = _snap()
 
+            # Canva's generic error page ('There was an issue on our end') means
+            # the proxy/session is being rejected outright — fail fast with the
+            # real cause instead of polling 15s for a button that never renders.
+            gen_err = _generic_error_message(page)
+            if gen_err:
+                browser.close()
+                return False, gen_err, screenshot
+
             # Poll until the 'Invite people' button or a login redirect appears.
             invite_ui_found = False
             for poll_i in range(10):
@@ -512,6 +559,9 @@ def _send_canva_invite_locked(email: str):
                         "(format: http://user:pass@host:port), redeploy, then Retry.",
                         screenshot,
                     )
+                gen_err = _generic_error_message(page)
+                if gen_err:
+                    return False, gen_err, screenshot
                 return (
                     False,
                     "Loaded the Canva People page but the 'Invite people' button never appeared. "
