@@ -31,6 +31,7 @@ import html
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -142,6 +143,31 @@ def _looks_like_cloudflare(page) -> bool:
     except Exception:
         return False
     return any(m in body for m in _CF_MARKERS)
+
+
+def _security_block_message(page):
+    """Detect Canva's risk-engine refusal: the pink "We can't send your
+    invitations for security reasons ... error code RRS-..." banner. When this
+    shows, Canva itself disables the Send button — the layout and the session
+    are fine; THIS SERVER's IP/browser fingerprint is being blocked. Returns an
+    actionable message for the admin, or None when the banner is absent."""
+    try:
+        body = page.inner_text("body", timeout=3000)
+    except Exception:
+        return None
+    low = body.lower()
+    if "security reasons" in low and "invitation" in low:
+        m = re.search(r"rrs-[0-9a-f-]+", low)
+        code = " (Canva error " + m.group(0) + ")" if m else ""
+        return (
+            "Canva refused to send the invitation for security reasons" + code + ". "
+            "The session and automation are working — Canva is blocking THIS "
+            "server's IP (Railway/datacenter IPs get flagged by their risk system). "
+            "Fix: set CANVA_PROXY in Railway variables to a residential/ISP proxy "
+            "(http://user:pass@host:port), redeploy, and retry. Retrying later with "
+            "a fresh session sometimes also passes."
+        )
+    return None
 
 
 def _try_cloudflare_challenge(page) -> bool:
@@ -546,6 +572,14 @@ def _send_canva_invite_locked(email: str):
                 pass
             page.wait_for_timeout(1200)
 
+            # Canva's risk engine can refuse the invite the moment the address
+            # is committed (pink security banner + Send button gets disabled).
+            sec_block = _security_block_message(page)
+            if sec_block:
+                screenshot = _snap()
+                browser.close()
+                return False, sec_block, screenshot
+
             # 3) Click 'Send invitations'.
             _LAST_PHASE = "clicking 'Send invitations'"
             _log("clicking Send invitations")
@@ -572,8 +606,11 @@ def _send_canva_invite_locked(email: str):
                     pass
 
             if not clicked:
+                sec_block = _security_block_message(page)
                 screenshot = _snap()
                 browser.close()
+                if sec_block:
+                    return False, sec_block, screenshot
                 return False, "Could not click 'Send invitations' in the Canva dialog (layout may have changed).", screenshot
 
             # 4) Wait for the 'Invitation sent to <email>' confirmation toast.
@@ -613,6 +650,9 @@ def _send_canva_invite_locked(email: str):
 
             if ok:
                 return True, "Invite sent successfully.", screenshot
+            sec_block = _security_block_message(page)
+            if sec_block:
+                return False, sec_block, screenshot
             return False, "Could not confirm the invite was sent (check the screenshot).", screenshot
 
     except Exception as exc:
