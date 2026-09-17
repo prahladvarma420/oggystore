@@ -114,6 +114,7 @@ async function render() {
     else if (v === "profit") await viewProfit();
     else if (v === "security") await viewSecurity();
     else if (v === "resellers") await viewResellers();
+    else if (v === "reseller_detail") await viewResellerDetail(currentResellerPub);
   } catch (e) {
     $("#content").innerHTML = empty("Failed to load: " + e.message, "\u26a0\ufe0f");
   }
@@ -1369,14 +1370,14 @@ async function viewResellers() {
     <td>${r.keys_count}</td>
     <td>${r.orders_count}</td>
     <td class="muted">${fmtDate(r.last_activity || r.created)}</td>
-    <td><button class="btn btn-sm btn-glow" onclick="resellerDetail(${r.id})"><span>Manage</span></button></td></tr>`).join("");
+    <td><button class="btn btn-sm btn-glow" onclick="openReseller('${r.public_id}')"><span>Manage</span></button></td></tr>`).join("");
   const pgBar = (d.pages || 1) > 1 ? `<div class="toolbar" style="margin-top:12px">
       <button class="btn btn-sm btn-ghost" onclick="resellersGo(-1)" ${d.page <= 1 ? "disabled" : ""}>◀ Prev</button>
       <span class="muted">Page ${d.page}/${d.pages} · ${d.total} resellers</span>
       <button class="btn btn-sm btn-ghost" onclick="resellersGo(1)" ${d.page >= d.pages ? "disabled" : ""}>Next ▶</button>
     </div>` : `<div class="muted" style="margin-top:10px">${d.total || 0} resellers</div>`;
-  const statusOpts = [`<option value="">All statuses</option>`].concat((d.statuses || []).map(s =>
-    `<option value="${s}" ${resellersStatus === s ? "selected" : ""}>${s[0].toUpperCase() + s.slice(1)}</option>`)).join("");
+  const statusOpts = [`<option value="">All statuses</option>`].concat((d.statuses || []).map(st =>
+    `<option value="${st}" ${resellersStatus === st ? "selected" : ""}>${st[0].toUpperCase() + st.slice(1)}</option>`)).join("");
   $("#content").innerHTML = `<div class="panel glass">
     <div class="toolbar">
       <input class="inp" id="resellersSearchBox" placeholder="🔎 Search public ID / name / username / TG id..." value="${esc(resellersSearchTerm)}" style="max-width:340px"
@@ -1390,36 +1391,82 @@ async function viewResellers() {
 }
 function resellersGo(delta) { resellersPage = Math.max(1, resellersPage + delta); render(); }
 
-async function resellerDetail(rid) {
-  const d = await api(`/api/resellers/${rid}`);
-  if (!d.ok) { toast(d.error || "Not found", "err"); return; }
+/* -------------------------------------------------- reseller detail page */
+let currentResellerPub = null, resellerActiveTab = "overview";
+function openReseller(pub) { currentResellerPub = pub; resellerActiveTab = "overview"; currentView = "reseller_detail"; render(); }
+
+const RESELLER_TABS = [
+  ["overview", "📋 Overview"], ["products", "📦 Products"], ["pricing", "🏷️ Pricing"],
+  ["keys", "🔑 API Keys"], ["wallet", "👛 Wallet"], ["orders", "🛒 Orders"],
+  ["apilogs", "🧾 API Logs"], ["secevents", "🛡️ Security Events"],
+  ["webhooks", "🪝 Webhooks"], ["limits", "⏱️ Limits"],
+];
+
+async function viewResellerDetail(pub) {
+  const d = await api(`/api/resellers/${encodeURIComponent(pub)}`);
+  if (!d.ok) { toast(d.error || "Not found", "err"); currentView = "resellers"; await render(); return; }
   const r = d.reseller || {};
+  const st = d.api_stats || {};
   const actionsByStatus = {
     pending: [["approve", "✅ Approve", "btn-green"], ["reject", "❌ Reject", "btn-red"]],
-    active: [["suspend", "⏸ Suspend", "btn-orange"], ["block", "⛔ Block", "btn-red"]],
+    active: [["suspend", "⏸️ Suspend", "btn-orange"], ["block", "⛔ Block", "btn-red"]],
     suspended: [["reactivate", "♻️ Reactivate", "btn-green"], ["block", "⛔ Block", "btn-red"]],
     closed: [["reactivate", "♻️ Reactivate", "btn-green"]],
   };
   const btns = (actionsByStatus[r.status] || []).map(([a, label, cls]) =>
-    `<button class="btn btn-sm ${cls}" onclick="resellerAction(${r.id},'${a}')"><span>${label}</span></button>`).join(" ");
-  const keys = (d.keys || []).map(k => `<div class="kv"><span class="mono">${esc(k.key_id)} <span class="muted">${esc(k.environment)}</span></span><b>${k.status === "active" ? '<span class="badge on">active</span>' : '<span class="badge off">revoked</span>'}</b></div>`).join("") || '<p class="muted">No API keys yet</p>';
-  const ledger = (d.ledger || []).map(t => `<div class="kv"><span>${fmtDate(t.created)} · ${esc(t.tx_type)}${t.reference ? ` · <span class="mono">${esc(t.reference)}</span>` : ""}</span><b>${t.amount_cents >= 0 ? "+" : ""}$${t.amount}</b></div>`).join("") || '<p class="muted">No wallet transactions</p>';
-  openModal("🤝 " + (r.name || r.public_id), `
-    <div class="kv"><span>Public ID</span><b class="mono">${esc(r.public_id)}</b></div>
-    <div class="kv"><span>Status</span><b>${resellerBadge(r.status)}</b></div>
-    <div class="kv"><span>Telegram user</span><b class="mono">${r.telegram_user_id || "-"}</b></div>
-    <div class="kv"><span>Username</span><b>${r.username ? "@" + esc(r.username) : "-"}</b></div>
-    <div class="kv"><span>Balance</span><b>$${d.balance}</b></div>
-    <div class="kv"><span>Orders (TG account)</span><b>${d.orders_count}</b></div>
-    <div class="kv"><span>Created</span><b>${fmtDate(r.created)}</b></div>
-    <div class="toolbar" style="margin:14px 0 4px">${btns}</div>
-    <h3 style="margin:16px 0 6px">API keys (${(d.keys || []).length})</h3>${keys}
-    <h3 style="margin:16px 0 6px">Recent wallet activity</h3>${ledger}`);
+    `<button class="btn btn-sm ${cls}" onclick="resellerAction('${esc(r.public_id)}','${a}')"><span>${label}</span></button>`).join(" ");
+  const tabs = RESELLER_TABS.map(([key, label]) =>
+    `<button class="pill-tab ${resellerActiveTab === key ? "active" : ""}" onclick="resellerTab('${key}')">${label}</button>`).join("");
+  const statCard = (label, val) => `<div class="kv"><span>${label}</span><b>${val}</b></div>`;
+  let body = "";
+  if (resellerActiveTab === "overview") {
+    body = `
+      <div class="kv"><span>Public ID</span><b class="mono">${esc(r.public_id)}</b></div>
+      <div class="kv"><span>Status</span><b>${resellerBadge(r.status)}</b></div>
+      <div class="kv"><span>Name</span><b>${esc(r.name || "-")}</b></div>
+      <div class="kv"><span>Username</span><b>${r.username ? "@" + esc(r.username) : "-"}</b></div>
+      <div class="kv"><span>Telegram user</span><b class="mono">${r.telegram_user_id || "-"}</b></div>
+      <div class="kv"><span>Created</span><b>${fmtDate(r.created)}</b></div>
+      <div class="kv"><span>Last status change</span><b>${fmtDate(r.updated)}</b></div>
+      <h3 style="margin:16px 0 6px">Actions</h3>
+      <div class="toolbar">${btns || '<span class="muted">No actions available for this status</span>'}</div>`;
+  } else if (resellerActiveTab === "wallet") {
+    body = `
+      <div class="kv"><span>Wallet balance</span><b style="font-size:20px">$${d.balance}</b></div>
+      <div class="kv"><span>Currency</span><b>USDT</b></div>
+      <p class="muted" style="margin-top:10px">Top-ups, adjustments and the full ledger arrive with wallet management in a later prompt — the balance above is live from the Phase-1 ledger wallet.</p>`;
+  } else {
+    const names = { products: "Product access", pricing: "Pricing rules", keys: "API key", orders: "Reseller orders", apilogs: "API logs", secevents: "Security events", webhooks: "Webhooks", limits: "API limits" };
+    body = empty(`${names[resellerActiveTab] || "This section"} management arrives in a later Phase-2 prompt.`, "🚧");
+  }
+  $("#content").innerHTML = `<div class="panel glass">
+    <div class="toolbar">
+      <button class="btn btn-sm btn-ghost" onclick="currentView='resellers';render()"><span>◀ Resellers</span></button>
+      <h2 style="margin:0">${esc(r.name || r.public_id)}</h2>${resellerBadge(r.status)}
+      <div class="grow"></div>
+    </div>
+    <div class="toolbar" style="flex-wrap:wrap;gap:14px;margin:10px 0 2px">
+      ${statCard("💰 Balance", "$" + d.balance)}
+      ${statCard("🛒 Orders", d.orders_count)}
+      ${statCard("🔑 API keys", d.keys_count)}
+      ${statCard("📦 Products", d.access_count)}
+      ${statCard("🧾 API requests", st.total ?? 0)}
+      ${statCard("⚠️ API errors", st.errors ?? 0)}
+      ${statCard("⏱️ Avg ms", st.avg_ms ?? 0)}
+    </div>
+    <div class="pill-tabs" style="margin:12px 0 14px">${tabs}</div>
+    <div id="resellerTabBody">${body}</div>
+  </div>`;
 }
+function resellerTab(key) { resellerActiveTab = key; render(); }
 
-async function resellerAction(rid, action) {
+async function resellerAction(pub, action) {
   const labels = { approve: "Approve", reject: "Reject", suspend: "Suspend", block: "Block", reactivate: "Reactivate" };
   if (["reject", "block", "suspend"].includes(action) && !confirm(`${labels[action]} this reseller?`)) return;
-  const r = await post(`/api/resellers/${rid}/status`, { action });
-  if (r.ok) { toast(r.message || "Updated"); closeModal(); render(); } else toast(r.error || "Failed", "err");
+  const r = await post(`/api/resellers/${encodeURIComponent(pub)}/status`, { action });
+  if (r.ok) { toast(r.message || "Updated"); render(); }
+  else {
+    toast(r.error || "Failed", "err");
+    if ((r.error || "").includes("not found")) { currentView = "resellers"; render(); }
+  }
 }
