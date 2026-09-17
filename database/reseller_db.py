@@ -771,3 +771,39 @@ def list_security_events(reseller_id: int = None, event_type: str = None,
         params.append(event_type)
     cur.execute(sql + " ORDER BY id DESC LIMIT ? OFFSET ?", (*params, limit, offset))
     return _ds(_SEC_EVENT_COLS, cur.fetchall())
+
+
+# ------------------------------------------------------------------ admin lifecycle actions
+
+# Allowed admin actions -> (allowed current statuses, resulting status).
+# This map is the SINGLE source of truth, validated server-side everywhere
+# (web admin today; the public API never gets these actions).
+RESELLER_ACTIONS = {
+    "approve":    (("pending",), "active"),
+    "reject":     (("pending",), "closed"),
+    "suspend":    (("active",), "suspended"),
+    "block":      (("active", "suspended"), "closed"),
+    "reactivate": (("suspended", "closed"), "active"),
+}
+
+
+def apply_reseller_action(reseller_id: int, action: str):
+    """Validate + apply an admin lifecycle action.
+
+    Returns (ok, message, new_status). Never raises on bad input — callers
+    map ok=False to a 400. The actual write goes through set_reseller_status
+    (whitelist + rowcount-verified).
+    """
+    action = (action or "").strip().lower()
+    spec = RESELLER_ACTIONS.get(action)
+    if not spec:
+        return False, f"Unknown action '{action}'.", None
+    row = get_reseller(reseller_id)
+    if not row:
+        return False, "Reseller not found.", None
+    allowed_from, target = spec
+    current = row["status"]
+    if current not in allowed_from:
+        return False, f"Cannot {action} a reseller whose status is '{current}'.", current
+    set_reseller_status(reseller_id, target)
+    return True, f"Reseller is now {target}.", target
