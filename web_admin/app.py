@@ -61,6 +61,7 @@ from utils.crypto import encrypt_text, decrypt_text
 from utils.timezone import now_text, now
 from utils.premium_emoji import premium_safe
 import database.db as botdb
+import database.reseller_db as rdb  # Phase-1 reseller foundation (tested helpers)
 
 # Ensure all tables / migrations exist (safe + idempotent)
 botdb.init_db()
@@ -2950,6 +2951,98 @@ def api_version():
                                  "2fa", "recovery-codes", "rate-limit", "ip-allowlist",
                                  "csp-hsts", "idle-logout", "encrypted-backups",
                                  "active-sessions", "custom-logo"]})
+
+
+
+# ============================ Resellers (Phase 2) ============================
+# Master control for the Phase-1 reseller foundation. Scope of THIS step:
+# view/search/filter + lifecycle (approve/reject/suspend/block/reactivate).
+# Pricing, API limits, key issuance and the public API land in later phases.
+# Every route is @login_required (server-side) — resellers have no web-admin
+# credentials at all, and status writes are validated again in
+# rdb.apply_reseller_action. Secrets/hashes are never returned.
+
+
+@app.route("/api/resellers")
+@login_required
+def api_resellers():
+    search = (request.args.get("search") or "").strip()
+    status = (request.args.get("status") or "").strip()
+    page = max(1, int(request.args.get("page", 1) or 1))
+    per_page = min(100, max(10, int(request.args.get("per_page", 25) or 25)))
+    where, params = "WHERE 1=1", []
+    if status in rdb.RESELLER_STATUSES:
+        where += " AND r.status=?"
+        params.append(status)
+    if search:
+        where += (" AND (r.public_id LIKE ? OR r.name LIKE ? OR r.username LIKE ?"
+                  " OR CAST(r.telegram_user_id AS TEXT) LIKE ?)")
+        params += ["%" + search + "%"] * 4
+    total = int((q("SELECT COUNT(*) c FROM resellers r " + where,
+                   tuple(params), one=True) or {}).get("c", 0))
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, pages)
+    rows = q(
+        "SELECT r.id, r.public_id, r.telegram_user_id, r.name, r.username, r.status,"
+        " r.created, r.updated, COALESCE(w.balance_cents, 0) AS balance_cents,"
+        " (SELECT COUNT(*) FROM reseller_api_keys k WHERE k.reseller_id=r.id AND k.status='active') AS keys_count,"
+        " (SELECT COUNT(*) FROM orders o WHERE o.user_id=r.telegram_user_id) AS orders_count,"
+        " (SELECT MAX(k2.last_used_at) FROM reseller_api_keys k2 WHERE k2.reseller_id=r.id) AS last_key_used"
+        " FROM resellers r LEFT JOIN reseller_wallet w ON w.reseller_id=r.id "
+        + where + " ORDER BY r.id DESC LIMIT ? OFFSET ?",
+        tuple(params) + (per_page, (page - 1) * per_page),
+    )
+    for r in rows:
+        r["balance"] = rdb.from_cents(r["balance_cents"])
+        r["last_activity"] = max(x for x in (r["updated"], r["last_key_used"], r["created"]) if x)
+    return jsonify({"ok": True, "resellers": rows, "total": total, "page": page,
+                    "pages": pages, "per_page": per_page,
+                    "statuses": list(rdb.RESELLER_STATUSES)})
+
+
+@app.route("/api/resellers/<int:rid>")
+@login_required
+def api_reseller_detail(rid):
+    res = rdb.get_reseller(rid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    keys = rdb.list_api_keys(rid, include_revoked=True)
+    for k in keys:
+        k.pop("secret_hash", None)  # NEVER expose secret hashes to the UI
+    ledger = rdb.list_wallet_transactions(rid, limit=10)
+    for t in ledger:
+        t["amount"] = rdb.from_cents(t["amount_cents"])
+        t["balance_after"] = rdb.from_cents(t["balance_after_cents"])
+    orders_count = 0
+    if res.get("telegram_user_id"):
+        orders_count = int((q("SELECT COUNT(*) c FROM orders WHERE user_id=?",
+                              (res["telegram_user_id"],), one=True) or {}).get("c", 0))
+    return jsonify({
+        "ok": True, "reseller": res,
+        "balance": rdb.from_cents(rdb.get_wallet_balance_cents(rid)),
+        "keys": keys, "ledger": ledger, "orders_count": orders_count,
+    })
+
+
+@app.route("/api/resellers/<int:rid>/status", methods=["POST"])
+@login_required
+def api_reseller_status(rid):
+    data = request.get_json(silent=True) or request.form
+    action = str(data.get("action") or "").strip().lower()
+    ok, msg, new_status = rdb.apply_reseller_action(rid, action)
+    if not ok:
+        return jsonify({"ok": False, "error": msg}), 400
+    res = rdb.get_reseller(rid) or {}
+    log_action("reseller_" + action,
+               f"reseller #{rid} ({res.get('public_id', '?')}) -> {new_status}")
+    try:
+        rdb.log_security_event(
+            rid, "admin_status_" + action, ip=_client_ip(),
+            user_agent=(request.headers.get("User-Agent") or "")[:200],
+            description=f"web admin '{session.get('username', '?')}' -> {new_status}")
+    except Exception:
+        pass
+    return jsonify({"ok": True, "status": new_status, "message": msg})
 
 
 if __name__ == "__main__":
