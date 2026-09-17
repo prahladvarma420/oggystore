@@ -41,6 +41,10 @@ ID_TABLES = {
     "tickets", "ticket_messages", "referrals", "withdrawal_requests", "product_price_tiers",
     "restock_notifications", "scheduled_broadcasts", "web_login_log",
     "web_admins", "m365_invites",
+    # Reseller system (Phase 1)
+    "resellers", "reseller_api_keys", "reseller_product_access",
+    "reseller_pricing_rules", "reseller_wallet_transactions",
+    "reseller_webhooks", "reseller_api_logs", "reseller_security_events",
 }
 
 # Conflict targets for INSERT OR REPLACE -> ON CONFLICT (...) DO UPDATE.
@@ -50,6 +54,10 @@ REPLACE_CONFLICT = {
     "user_coupons": ["user_id"],
     "product_price_tiers": ["product_id", "quantity"],
     "web_sessions": ["sid"],
+    # Reseller system (Phase 1) — upsert targets for INSERT OR REPLACE
+    "reseller_product_access": ["reseller_id", "product_id"],
+    "reseller_pricing_rules": ["reseller_id", "product_id"],
+    "reseller_webhooks": ["reseller_id", "url"],
 }
 
 
