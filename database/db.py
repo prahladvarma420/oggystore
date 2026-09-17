@@ -798,6 +798,12 @@ def init_db():
     _apply_gift_warranty_migrations()
     _apply_m365_migrations()
 
+    # Reseller system tables (Phase 1 — additive only; no existing table or
+    # flow is touched). Lives in database/reseller_db.py; imported lazily to
+    # keep module import order simple.
+    from database.reseller_db import ensure_reseller_tables
+    ensure_reseller_tables()
+
 
 
 _TEMPLATES_SEEDED = False
