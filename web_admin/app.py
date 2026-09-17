@@ -3286,6 +3286,83 @@ def api_reseller_pricing_delete(pubid):
                     "effective_unit": rdb.from_cents(unit), "source": source})
 
 
+@app.route("/api/resellers/<pubid>/keys")
+@login_required
+def api_reseller_keys(pubid):
+    """List a reseller's API keys with usage metadata.
+    SECURITY: secret_hash is stripped before it ever leaves the server — the
+    UI sees key_id / environment / status / dates / usage only. The secret
+    itself is never stored readably, so it can never be displayed."""
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    rid = res["id"]
+    keys = rdb.list_api_keys(rid, include_revoked=True)
+    for k in keys:
+        k.pop("secret_hash", None)   # never expose hashes
+        k.pop("id", None)            # internal id stays server-side
+        k.pop("reseller_id", None)
+    usage = q(
+        "SELECT api_key_id, COUNT(*) c,"
+        " SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) errors,"
+        " AVG(response_ms) avg_ms, MAX(created) last_at"
+        " FROM reseller_api_logs WHERE reseller_id=? AND api_key_id IS NOT NULL"
+        " GROUP BY api_key_id", (rid,))
+    # map usage by key_id via the internal id (keys list lost it above, so
+    # re-derive the mapping from the DB without exposing it in the payload)
+    key_rows = q("SELECT id, key_id FROM reseller_api_keys WHERE reseller_id=?", (rid,))
+    id_to_pub = {row["id"]: row["key_id"] for row in key_rows}
+    usage_by_key = {}
+    for u in usage:
+        pub = id_to_pub.get(u["api_key_id"])
+        if pub:
+            usage_by_key[pub] = {
+                "total": int(u["c"] or 0),
+                "errors": int(u["errors"] or 0),
+                "avg_ms": round(float(u["avg_ms"] or 0)),
+                "last_at": u["last_at"],
+            }
+    for k in keys:
+        k["usage"] = usage_by_key.get(k["key_id"],
+                                      {"total": 0, "errors": 0, "avg_ms": 0, "last_at": None})
+    return jsonify({"ok": True, "keys": keys, "total": len(keys)})
+
+
+@app.route("/api/resellers/<pubid>/keys/revoke", methods=["POST"])
+@login_required
+def api_reseller_key_revoke(pubid):
+    """Revoke a key (permanent disable — the Phase-1 schema's supported
+    disable mechanism). Server-side: reseller resolved by public ID, key must
+    belong to THIS reseller, double-revoke rejected by the rowcount guard."""
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    rid = res["id"]
+    data = request.get_json(silent=True) or request.form
+    key_id = str(data.get("key_id") or "").strip()
+    if not key_id:
+        return jsonify({"ok": False, "error": "key_id is required"}), 400
+    key = rdb.get_api_key(key_id)
+    if not key or key["reseller_id"] != rid:
+        return jsonify({"ok": False, "error": "Key not found"}), 404  # no cross-reseller oracle
+    if key["status"] == "revoked":
+        return jsonify({"ok": False, "error": "Key is already revoked"}), 400
+    if not rdb.revoke_api_key(key_id):
+        return jsonify({"ok": False, "error": "Key is already revoked"}), 400
+    log_action("reseller_key_revoke",
+               f"reseller {res.get('public_id', '?')} (#{rid}) -> key {key_id} revoked")
+    try:
+        rdb.log_security_event(
+            rid, "admin_key_revoke", ip=_client_ip(),
+            user_agent=(request.headers.get("User-Agent") or "")[:200],
+            description=f"web admin '{session.get('username', '?')}' revoked {key_id}")
+    except Exception:
+        pass
+    fresh = rdb.get_api_key(key_id)
+    return jsonify({"ok": True, "key_id": key_id, "status": "revoked",
+                    "revoked_at": fresh["revoked_at"] if fresh else None})
+
+
 if __name__ == "__main__":
     port = int(os.getenv("WEB_ADMIN_PORT", "5000"))
     print("=" * 60)
