@@ -9,6 +9,7 @@ Run from the project root:  python web_admin/app.py
 """
 
 import os
+import re
 import re as _re
 import sys
 import csv
@@ -2955,12 +2956,11 @@ def api_version():
 
 
 # ============================ Resellers (Phase 2) ============================
-# Master control for the Phase-1 reseller foundation. Scope of THIS step:
-# view/search/filter + lifecycle (approve/reject/suspend/block/reactivate).
-# Pricing, API limits, key issuance and the public API land in later phases.
-# Every route is @login_required (server-side) — resellers have no web-admin
-# credentials at all, and status writes are validated again in
-# rdb.apply_reseller_action. Secrets/hashes are never returned.
+# Master control for the Phase-1 reseller foundation. View/search/filter plus
+# the tabbed detail page (public-ID routed, IDOR-safe) with lifecycle actions.
+# Pricing, limits, key issuance and the public API land in later phases.
+# Every route is @login_required (server-side); resellers have no web-admin
+# credentials at all. Secrets/hashes are never returned.
 
 
 @app.route("/api/resellers")
@@ -3000,41 +3000,67 @@ def api_resellers():
                     "statuses": list(rdb.RESELLER_STATUSES)})
 
 
-@app.route("/api/resellers/<int:rid>")
+_RESELLER_PUBID_RE = re.compile(r"^RSR-[A-HJ-NP-Z2-9]{10}$")
+
+
+def _resolve_reseller(pubid):
+    """IDOR guard: detail/status routes resolve ONLY by the unguessable public
+    ID (never the sequential internal id); malformed and unknown ids both
+    return a plain 404 — no enumeration oracle."""
+    if not _RESELLER_PUBID_RE.match(pubid or ""):
+        return None
+    return rdb.get_reseller_by_public_id(pubid)
+
+
+@app.route("/api/resellers/<pubid>")
 @login_required
-def api_reseller_detail(rid):
-    res = rdb.get_reseller(rid)
+def api_reseller_detail(pubid):
+    res = _resolve_reseller(pubid)
     if not res:
         return jsonify({"ok": False, "error": "Reseller not found"}), 404
-    keys = rdb.list_api_keys(rid, include_revoked=True)
-    for k in keys:
-        k.pop("secret_hash", None)  # NEVER expose secret hashes to the UI
-    ledger = rdb.list_wallet_transactions(rid, limit=10)
-    for t in ledger:
-        t["amount"] = rdb.from_cents(t["amount_cents"])
-        t["balance_after"] = rdb.from_cents(t["balance_after_cents"])
+    rid = res["id"]
+    keys_count = int((q("SELECT COUNT(*) c FROM reseller_api_keys WHERE reseller_id=?",
+                        (rid,), one=True) or {}).get("c", 0))
+    access_count = int((q("SELECT COUNT(*) c FROM reseller_product_access WHERE reseller_id=? AND enabled=1",
+                          (rid,), one=True) or {}).get("c", 0))
     orders_count = 0
     if res.get("telegram_user_id"):
         orders_count = int((q("SELECT COUNT(*) c FROM orders WHERE user_id=?",
                               (res["telegram_user_id"],), one=True) or {}).get("c", 0))
+    api_stats = q(
+        "SELECT COUNT(*) c,"
+        " SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) errors,"
+        " AVG(response_ms) avg_ms, MAX(created) last_at"
+        " FROM reseller_api_logs WHERE reseller_id=?", (rid,), one=True) or {}
     return jsonify({
         "ok": True, "reseller": res,
         "balance": rdb.from_cents(rdb.get_wallet_balance_cents(rid)),
-        "keys": keys, "ledger": ledger, "orders_count": orders_count,
+        "orders_count": orders_count,
+        "keys_count": keys_count,
+        "access_count": access_count,
+        "api_stats": {
+            "total": int(api_stats.get("c") or 0),
+            "errors": int(api_stats.get("errors") or 0),
+            "avg_ms": round(float(api_stats.get("avg_ms") or 0)),
+            "last_at": api_stats.get("last_at"),
+        },
     })
 
 
-@app.route("/api/resellers/<int:rid>/status", methods=["POST"])
+@app.route("/api/resellers/<pubid>/status", methods=["POST"])
 @login_required
-def api_reseller_status(rid):
+def api_reseller_status(pubid):
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    rid = res["id"]
     data = request.get_json(silent=True) or request.form
     action = str(data.get("action") or "").strip().lower()
     ok, msg, new_status = rdb.apply_reseller_action(rid, action)
     if not ok:
         return jsonify({"ok": False, "error": msg}), 400
-    res = rdb.get_reseller(rid) or {}
     log_action("reseller_" + action,
-               f"reseller #{rid} ({res.get('public_id', '?')}) -> {new_status}")
+               f"reseller {res.get('public_id', '?')} (#{rid}) -> {new_status}")
     try:
         rdb.log_security_event(
             rid, "admin_status_" + action, ip=_client_ip(),
