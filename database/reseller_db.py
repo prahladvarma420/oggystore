@@ -38,7 +38,7 @@ import threading
 from decimal import Decimal, ROUND_HALF_UP
 
 from database import pgcompat as _pgcompat
-from database.db import get_conn, get_cursor  # thread-local, pg-aware
+from database.db import get_conn, get_cursor, _safe_add_column  # thread-local, pg-aware
 from utils.crypto import encrypt_text, decrypt_text
 from utils.timezone import now_text
 
@@ -255,6 +255,16 @@ def ensure_reseller_tables():
         "CREATE INDEX IF NOT EXISTS idx_reseller_security_type ON reseller_security_events(event_type, created)",
     ):
         cur.execute(stmt)
+
+    # Limits configuration columns (Phase 2) — additive, idempotent. These are
+    # CONFIG only: the enforcement engine arrives with the public API.
+    _safe_add_column("resellers", "rate_limit_per_min", "INTEGER NOT NULL DEFAULT 60")
+    _safe_add_column("resellers", "orders_per_min", "INTEGER NOT NULL DEFAULT 10")
+    _safe_add_column("resellers", "daily_request_limit", "INTEGER NOT NULL DEFAULT 10000")
+    _safe_add_column("resellers", "monthly_request_limit", "INTEGER NOT NULL DEFAULT 250000")
+    _safe_add_column("resellers", "daily_order_limit", "INTEGER NOT NULL DEFAULT 500")
+    _safe_add_column("resellers", "monthly_order_limit", "INTEGER NOT NULL DEFAULT 10000")
+    _safe_add_column("resellers", "api_enabled", "INTEGER NOT NULL DEFAULT 1")
 
     conn.commit()
 
@@ -884,3 +894,60 @@ def resolve_reseller_price_cents(reseller_id: int, product_id: int, quantity: in
     if rt == "discount_percent":
         return max(0, base - delta), "rule:discount_percent"
     return base + delta, "rule:markup_percent"
+
+
+# ------------------------------------------------------------------ API limits configuration
+
+# Phase-2 configuration ONLY — the enforcement engine ships with the public
+# API. Field -> (min, max). A limit of 0 means "none allowed"; api_enabled is
+# the master on/off switch for the reseller's future API access.
+LIMIT_FIELDS = {
+    "api_enabled":           (0, 1),
+    "rate_limit_per_min":    (0, 100000),
+    "orders_per_min":        (0, 10000),
+    "daily_request_limit":   (0, 10000000),
+    "monthly_request_limit": (0, 100000000),
+    "daily_order_limit":     (0, 1000000),
+    "monthly_order_limit":   (0, 10000000),
+}
+
+
+def get_reseller_limits(reseller_id: int):
+    """All limit fields for one reseller as a plain dict, or None."""
+    cur = get_cursor()
+    cols = ", ".join(LIMIT_FIELDS)
+    cur.execute(f"SELECT {cols} FROM resellers WHERE id=?", (reseller_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    return {k: int(v) for k, v in zip(LIMIT_FIELDS.keys(), list(row))}
+
+
+def set_reseller_limits(reseller_id: int, **updates) -> dict:
+    """Validate + persist limit fields. Only whitelisted keys, integer values
+    inside their configured ranges; rowcount-verified. Returns the full
+    updated limits dict."""
+    if not updates:
+        raise ValueError("no limit fields provided")
+    clean = {}
+    for k, v in updates.items():
+        if k not in LIMIT_FIELDS:
+            raise ValueError(f"unknown limit field: {k}")
+        if isinstance(v, bool):
+            v = int(v)
+        try:
+            v = int(str(v).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"{k} must be an integer")
+        lo, hi = LIMIT_FIELDS[k]
+        if not (lo <= v <= hi):
+            raise ValueError(f"{k} must be between {lo} and {hi}")
+        clean[k] = v
+    conn, cur = get_conn(), get_cursor()
+    sets = ", ".join(f"{k}=?" for k in clean)   # keys come from the constant only
+    cur.execute(f"UPDATE resellers SET {sets}, updated=? WHERE id=?",
+                (*clean.values(), now_text(), reseller_id))
+    if cur.rowcount == 0:
+        raise ValueError("reseller not found")
+    conn.commit()
+    return get_reseller_limits(reseller_id)
