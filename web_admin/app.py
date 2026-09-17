@@ -3071,6 +3071,93 @@ def api_reseller_status(pubid):
     return jsonify({"ok": True, "status": new_status, "message": msg})
 
 
+@app.route("/api/resellers/<pubid>/products")
+@login_required
+def api_reseller_products(pubid):
+    """Master product catalog with THIS reseller's access flags (read-only).
+    Products stay the single master source — this only joins the Phase-1
+    reseller_product_access permission rows."""
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    rid = res["id"]
+    search = (request.args.get("search") or "").strip()
+    flt = (request.args.get("filter") or "").strip().lower()
+    where, params = "WHERE 1=1", []
+    if search:
+        where += " AND p.name LIKE ?"
+        params.append("%" + search + "%")
+    if flt == "enabled":
+        where += " AND COALESCE(a.enabled, 0) = 1"
+    elif flt == "disabled":
+        where += " AND COALESCE(a.enabled, 0) = 0"
+    total = int((q(
+        "SELECT COUNT(*) c FROM products p"
+        " LEFT JOIN reseller_product_access a ON a.product_id=p.id AND a.reseller_id=? "
+        + where, (rid, *params), one=True) or {}).get("c", 0))
+    rows = q(
+        "SELECT p.id, p.name, p.price, p.stock, p.active,"
+        " COALESCE(a.enabled, 0) AS access_enabled, a.updated AS access_updated"
+        " FROM products p"
+        " LEFT JOIN reseller_product_access a ON a.product_id=p.id AND a.reseller_id=? "
+        + where +
+        " ORDER BY access_enabled DESC, p.active DESC, p.name ASC LIMIT 200",
+        (rid, *params),
+    )
+    enabled_count = int((q(
+        "SELECT COUNT(*) c FROM reseller_product_access WHERE reseller_id=? AND enabled=1",
+        (rid,), one=True) or {}).get("c", 0))
+    return jsonify({"ok": True, "products": rows, "total": total,
+                    "enabled_count": enabled_count, "capped": total > 200})
+
+
+@app.route("/api/resellers/<pubid>/products/access", methods=["POST"])
+@login_required
+def api_reseller_product_access(pubid):
+    """Enable/disable a reseller's access to an EXISTING master product.
+    Server-side validation: reseller (public-id), product exists, product is
+    active for enabling. Duplicates impossible: UNIQUE(reseller_id, product_id)
+    + upsert helper from Phase 1."""
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    rid = res["id"]
+    data = request.get_json(silent=True) or request.form
+    try:
+        product_id = int(data.get("product_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Invalid product_id"}), 400
+    enabled = bool(data.get("enabled"))
+    prod = q("SELECT id, name, active FROM products WHERE id=?", (product_id,), one=True)
+    if not prod:
+        return jsonify({"ok": False, "error": "Product not found"}), 404
+    if enabled and not prod.get("active"):
+        return jsonify({"ok": False,
+                        "error": "That product is disabled/hidden in the catalog — activate it in Products first."}), 400
+    if not enabled:
+        existing = q("SELECT id, enabled FROM reseller_product_access WHERE reseller_id=? AND product_id=?",
+                     (rid, product_id), one=True)
+        if not existing or not existing.get("enabled"):
+            count = int((q("SELECT COUNT(*) c FROM reseller_product_access WHERE reseller_id=? AND enabled=1",
+                           (rid,), one=True) or {}).get("c", 0))
+            return jsonify({"ok": True, "product_id": product_id, "enabled": False,
+                            "access_count": count, "note": "already disabled"})
+    rdb.set_product_access(rid, product_id, enabled)
+    count = int((q("SELECT COUNT(*) c FROM reseller_product_access WHERE reseller_id=? AND enabled=1",
+                   (rid,), one=True) or {}).get("c", 0))
+    log_action("reseller_access_" + ("enable" if enabled else "disable"),
+               f"reseller {res.get('public_id', '?')} (#{rid}) -> product #{product_id} ({prod.get('name', '?')})")
+    try:
+        rdb.log_security_event(
+            rid, "admin_access_" + ("enable" if enabled else "disable"), ip=_client_ip(),
+            user_agent=(request.headers.get("User-Agent") or "")[:200],
+            description=f"web admin '{session.get('username', '?')}' product #{product_id}")
+    except Exception:
+        pass
+    return jsonify({"ok": True, "product_id": product_id, "enabled": enabled,
+                    "access_count": count})
+
+
 if __name__ == "__main__":
     port = int(os.getenv("WEB_ADMIN_PORT", "5000"))
     print("=" * 60)
