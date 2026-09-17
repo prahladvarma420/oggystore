@@ -1439,8 +1439,10 @@ async function viewResellerDetail(pub) {
     body = `<div id="resProdWrap"><div class="muted">Loading products…</div></div>`;
   } else if (resellerActiveTab === "pricing") {
     body = `<div id="resPriceWrap"><div class="muted">Loading pricing…</div></div>`;
+  } else if (resellerActiveTab === "keys") {
+    body = `<div id="resKeysWrap"><div class="muted">Loading API keys…</div></div>`;
   } else {
-    const names = { keys: "API key", orders: "Reseller orders", apilogs: "API logs", secevents: "Security events", webhooks: "Webhooks", limits: "API limits" };
+    const names = { orders: "Reseller orders", apilogs: "API logs", secevents: "Security events", webhooks: "Webhooks", limits: "API limits" };
     body = empty(`${names[resellerActiveTab] || "This section"} management arrives in a later Phase-2 prompt.`, "🚧");
   }
   $("#content").innerHTML = `<div class="panel glass">
@@ -1463,6 +1465,7 @@ async function viewResellerDetail(pub) {
   </div>`;
   if (resellerActiveTab === "products") loadResellerProducts(pub);
   if (resellerActiveTab === "pricing") loadResellerPricing(pub);
+  if (resellerActiveTab === "keys") loadResellerKeys(pub);
 }
 function resellerTab(key) { resellerActiveTab = key; render(); }
 
@@ -1586,4 +1589,36 @@ async function resellerPriceDelete(pub, pid, name) {
   const r = await post(`/api/resellers/${encodeURIComponent(pub)}/pricing/delete`, { product_id: pid });
   if (r.ok) { toast(r.deleted ? "Rule removed — master price applies" : "No rule existed"); render(); }
   else toast(r.error || "Failed", "err");
+}
+
+/* ------------------------------------------- reseller API key management - */
+async function loadResellerKeys(pub) {
+  const wrap = document.getElementById("resKeysWrap");
+  if (!wrap) return;
+  const d = await api(`/api/resellers/${encodeURIComponent(pub)}/keys`);
+  if (!d.ok) { wrap.innerHTML = empty(d.error || "Failed to load keys", "⚠️"); return; }
+  const rows = (d.keys || []).map(k => {
+    const u = k.usage || {};
+    return `<tr>
+    <td class="mono"><b>${esc(k.key_id)}</b></td>
+    <td>${k.environment === "production" ? '<span class="badge on">production</span>' : '<span class="badge">test</span>'}</td>
+    <td>${k.status === "active" ? '<span class="badge on">active</span>' : '<span class="badge off">revoked</span>'}</td>
+    <td class="muted">${fmtDate(k.created)}</td>
+    <td class="muted">${k.last_used_at ? fmtDate(k.last_used_at) : "—"}</td>
+    <td class="muted">${k.revoked_at ? fmtDate(k.revoked_at) : "—"}</td>
+    <td class="muted">${u.total || 0} req · ${u.errors || 0} err · ${u.avg_ms || 0} ms</td>
+    <td>${k.status === "active"
+      ? `<button class="btn btn-sm btn-red" onclick="resellerRevokeKey('${esc(pub)}','${esc(k.key_id)}')"><span>Revoke</span></button>`
+      : ""}</td>
+  </tr>`;
+  }).join("");
+  wrap.innerHTML = `
+    <p class="muted" style="margin:0 0 10px">Secrets are shown once at creation and never stored readably — only the public key identifier is visible here. Key issuance arrives with reseller onboarding.</p>
+    ${(d.keys || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>Key ID</th><th>Env</th><th>Status</th><th>Created</th><th>Last used</th><th>Revoked</th><th>Usage</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No API keys yet", "🔑")}`;
+}
+
+async function resellerRevokeKey(pub, keyId) {
+  if (!confirm(`Revoke ${keyId}? This is permanent — integrations using it stop immediately.`)) return;
+  const r = await post(`/api/resellers/${encodeURIComponent(pub)}/keys/revoke`, { key_id: keyId });
+  if (r.ok) { toast("Key revoked"); render(); } else toast(r.error || "Failed", "err");
 }
