@@ -99,7 +99,11 @@ def to_cents(amount) -> int:
     how money bugs start (0.1 + 0.2 != 0.3)."""
     if isinstance(amount, float):
         raise TypeError("float money is not allowed — pass str/int/Decimal")
-    return int((Decimal(str(amount)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    try:
+        parsed = (Decimal(str(amount)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    except Exception:
+        raise ValueError(f"invalid money amount: {amount!r}")
+    return int(parsed)
 
 
 def from_cents(cents: int) -> str:
@@ -807,3 +811,76 @@ def apply_reseller_action(reseller_id: int, action: str):
         return False, f"Cannot {action} a reseller whose status is '{current}'.", current
     set_reseller_status(reseller_id, target)
     return True, f"Reseller is now {target}.", target
+
+
+# ------------------------------------------------------------------ price resolution
+
+def percent_to_bps(value) -> int:
+    """'15' / '12.5' -> 1500 / 1250 basis points. Decimal-exact; strings/ints
+    only, floats rejected (same no-float rule as money)."""
+    if isinstance(value, float):
+        raise TypeError("float percents are not allowed — pass str/int")
+    try:
+        pct = Decimal(str(value).strip())
+    except Exception:
+        raise ValueError(f"invalid percent value: {value!r}")
+    if not (0 <= pct <= 100):
+        raise ValueError("percent must be between 0 and 100")
+    return int((pct * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def get_master_unit_price_cents(product_id: int, quantity: int = 1):
+    """Master-catalog unit price in integer cents. Returns (cents, used_tier).
+
+    Reuses the project's existing quantity-tier architecture
+    (product_price_tiers): a tier's price is the TOTAL for that many units
+    (unit = tier_total / tier_qty), the cheapest tier with qty <= requested
+    quantity wins, and products.price is the fallback — the same math the
+    customer shop uses. Float master prices are converted via Decimal(str())
+    and integer-divided — no float arithmetic on money. Flash-sale pricing is
+    intentionally NOT applied here (promotions are customer-facing; reseller
+    pricing is contractual). (None, False) when the product does not exist.
+    """
+    quantity = max(1, int(quantity or 1))
+    cur = get_cursor()
+    cur.execute("SELECT price FROM products WHERE id=?", (product_id,))
+    row = cur.fetchone()
+    if not row:
+        return None, False
+    base_cents = to_cents(str(row[0]))
+    if quantity <= 1:
+        return base_cents, False
+    cur.execute("SELECT quantity, price FROM product_price_tiers WHERE product_id=?",
+                (product_id,))
+    best, used = base_cents, False
+    for tq, tp in cur.fetchall():
+        tq = int(tq)
+        if tq > 1 and tq <= quantity:
+            tier_unit = to_cents(str(tp)) // tq
+            if 0 < tier_unit < best:
+                best, used = tier_unit, True
+    return best, used
+
+
+def resolve_reseller_price_cents(reseller_id: int, product_id: int, quantity: int = 1):
+    """THE server-side price source for the future reseller API.
+
+    Returns (unit_price_cents, source). Never accepts a client-supplied price.
+    Fallback order: enabled reseller rule -> master quantity tier -> master
+    product price. Percent rules use integer basis-point math with half-up
+    rounding: delta = (cents * bps + 5000) // 10000.
+    """
+    base, used_tier = get_master_unit_price_cents(product_id, quantity)
+    if base is None:
+        return None, None
+    rule = get_pricing_rule(reseller_id, product_id)  # enabled rules only
+    if not rule:
+        return base, ("master_tier" if used_tier else "master")
+    rt = rule["rule_type"]
+    if rt == "fixed_price":
+        return int(rule["value_cents"]), "rule:fixed_price"
+    bps = int(rule["value_bps"])
+    delta = (base * bps + 5000) // 10000
+    if rt == "discount_percent":
+        return max(0, base - delta), "rule:discount_percent"
+    return base + delta, "rule:markup_percent"
