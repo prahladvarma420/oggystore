@@ -34,8 +34,10 @@ row stores the running balance_after_cents so the ledger is self-auditing.
 
 import hashlib
 import secrets
+import threading
 from decimal import Decimal, ROUND_HALF_UP
 
+from database import pgcompat as _pgcompat
 from database.db import get_conn, get_cursor  # thread-local, pg-aware
 from utils.crypto import encrypt_text, decrypt_text
 from utils.timezone import now_text
@@ -55,6 +57,11 @@ TX_TYPES = (
 )
 
 _PUBLIC_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # gift-code convention
+
+# Serializes only the legacy fallback path (ancient SQLite builds without
+# UPDATE ... RETURNING). The RETURNING path needs no lock: the balance read
+# happens inside the same atomic statement as the update.
+_WALLET_LOCK = threading.Lock()
 
 # Column orders (match the CREATE TABLE definitions / SELECT lists below).
 _RESELLER_COLS = ("id", "public_id", "telegram_user_id", "name", "username",
@@ -565,18 +572,36 @@ def post_wallet_transaction(reseller_id: int, tx_type: str, amount_cents: int,
 
     stamp = now_text()
     # Conditional atomic balance move — the same discipline as the customer
-    # wallet deduction in products/product_handlers.py.
-    cur.execute(
-        "UPDATE reseller_wallet SET balance_cents = balance_cents + ?, updated=? "
-        "WHERE reseller_id=? AND balance_cents + ? >= 0",
-        (amount_cents, stamp, reseller_id, amount_cents),
-    )
-    if cur.rowcount == 0:
-        conn.rollback()
-        return "insufficient_funds", get_wallet_balance_cents(reseller_id)
-
-    cur.execute("SELECT balance_cents FROM reseller_wallet WHERE reseller_id=?", (reseller_id,))
-    balance_after = int(cur.fetchone()[0])
+    # wallet deduction in products/product_handlers.py — but the new balance is
+    # read in the SAME statement via RETURNING, so the ledger's balance_after
+    # snapshot is race-free even under Postgres autocommit (a separate SELECT
+    # could observe another connection's commit and store a wrong snapshot).
+    try:
+        cur.execute(
+            "UPDATE reseller_wallet SET balance_cents = balance_cents + ?, updated=? "
+            "WHERE reseller_id=? AND balance_cents + ? >= 0 RETURNING balance_cents",
+            (amount_cents, stamp, reseller_id, amount_cents),
+        )
+        rows = cur.fetchall()
+    except Exception:
+        rows = None  # ancient SQLite without RETURNING — legacy fallback below
+    if rows is not None:
+        if not rows:
+            conn.rollback()
+            return "insufficient_funds", get_wallet_balance_cents(reseller_id)
+        balance_after = int(rows[0][0])
+    else:
+        with _WALLET_LOCK:
+            cur.execute(
+                "UPDATE reseller_wallet SET balance_cents = balance_cents + ?, updated=? "
+                "WHERE reseller_id=? AND balance_cents + ? >= 0",
+                (amount_cents, stamp, reseller_id, amount_cents),
+            )
+            if cur.rowcount == 0:
+                conn.rollback()
+                return "insufficient_funds", get_wallet_balance_cents(reseller_id)
+            cur.execute("SELECT balance_cents FROM reseller_wallet WHERE reseller_id=?", (reseller_id,))
+            balance_after = int(cur.fetchone()[0])
     try:
         cur.execute(
             "INSERT INTO reseller_wallet_transactions"
@@ -585,16 +610,22 @@ def post_wallet_transaction(reseller_id: int, tx_type: str, amount_cents: int,
             (reseller_id, tx_type, amount_cents, balance_after, reference, description or "", stamp),
         )
     except Exception as exc:
-        # Lost an idempotency race: another thread posted the same reference
-        # first. Undo our balance move and report the duplicate.
-        conn.rollback()
+        # Lost an idempotency race: another connection posted the same
+        # reference first. Undo our balance move and report the duplicate.
         if reference is not None and "unique" in str(exc).lower():
-            cur.execute(
-                "UPDATE reseller_wallet SET balance_cents = balance_cents - ?, updated=? "
-                "WHERE reseller_id=?",
-                (amount_cents, now_text(), reseller_id),
-            )
-            conn.commit()
+            # sqlite (legacy mode): the balance UPDATE is still uncommitted in
+            # this connection's transaction -> rollback() alone undoes it.
+            # Postgres (autocommit): the UPDATE is already durable -> compensate
+            # with a reverse move. Doing BOTH (the old code) double-undid the
+            # balance on sqlite — caught by the P15 threaded race test.
+            conn.rollback()
+            if _pgcompat.use_postgres():
+                cur.execute(
+                    "UPDATE reseller_wallet SET balance_cents = balance_cents - ?, updated=? "
+                    "WHERE reseller_id=?",
+                    (amount_cents, now_text(), reseller_id),
+                )
+                conn.commit()
             cur.execute(
                 "SELECT id FROM reseller_wallet_transactions "
                 "WHERE reseller_id=? AND tx_type=? AND reference=?",
@@ -602,6 +633,7 @@ def post_wallet_transaction(reseller_id: int, tx_type: str, amount_cents: int,
             )
             row = cur.fetchone()
             return "duplicate", (row[0] if row else None)
+        conn.rollback()
         raise
     conn.commit()
     return "posted", cur.lastrowid
