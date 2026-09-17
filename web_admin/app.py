@@ -3363,6 +3363,51 @@ def api_reseller_key_revoke(pubid):
                     "revoked_at": fresh["revoked_at"] if fresh else None})
 
 
+@app.route("/api/resellers/<pubid>/limits")
+@login_required
+def api_reseller_limits(pubid):
+    """Read the reseller's API limit configuration."""
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    return jsonify({"ok": True, "limits": rdb.get_reseller_limits(res["id"]),
+                    "fields": list(rdb.LIMIT_FIELDS.keys())})
+
+
+@app.route("/api/resellers/<pubid>/limits", methods=["POST"])
+@login_required
+def api_reseller_limits_update(pubid):
+    """Update API limit configuration. Every field validated server-side
+    against rdb.LIMIT_FIELDS (unknown keys rejected, integer ranges enforced).
+    Configuration only — no enforcement engine exists yet."""
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    rid = res["id"]
+    data = request.get_json(silent=True) or request.form
+    updates = {k: v for k, v in data.items() if k in rdb.LIMIT_FIELDS}
+    unknown = [k for k in data.keys() if k not in rdb.LIMIT_FIELDS]
+    if unknown:
+        return jsonify({"ok": False,
+                        "error": f"unknown limit field(s): {', '.join(unknown)}. Valid: {', '.join(rdb.LIMIT_FIELDS)}"}), 400
+    if not updates:
+        return jsonify({"ok": False, "error": "no limit fields provided"}), 400
+    try:
+        limits = rdb.set_reseller_limits(rid, **updates)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    changed = ", ".join(f"{k}={limits[k]}" for k in updates)
+    log_action("reseller_limits", f"reseller {res.get('public_id', '?')} (#{rid}) -> {changed}")
+    try:
+        rdb.log_security_event(
+            rid, "admin_limits_update", ip=_client_ip(),
+            user_agent=(request.headers.get("User-Agent") or "")[:200],
+            description=f"web admin '{session.get('username', '?')}' set {changed}")
+    except Exception:
+        pass
+    return jsonify({"ok": True, "limits": limits})
+
+
 if __name__ == "__main__":
     port = int(os.getenv("WEB_ADMIN_PORT", "5000"))
     print("=" * 60)
