@@ -1441,8 +1441,10 @@ async function viewResellerDetail(pub) {
     body = `<div id="resPriceWrap"><div class="muted">Loading pricing…</div></div>`;
   } else if (resellerActiveTab === "keys") {
     body = `<div id="resKeysWrap"><div class="muted">Loading API keys…</div></div>`;
+  } else if (resellerActiveTab === "limits") {
+    body = `<div id="resLimitsWrap"><div class="muted">Loading limits…</div></div>`;
   } else {
-    const names = { orders: "Reseller orders", apilogs: "API logs", secevents: "Security events", webhooks: "Webhooks", limits: "API limits" };
+    const names = { orders: "Reseller orders", apilogs: "API logs", secevents: "Security events", webhooks: "Webhooks" };
     body = empty(`${names[resellerActiveTab] || "This section"} management arrives in a later Phase-2 prompt.`, "🚧");
   }
   $("#content").innerHTML = `<div class="panel glass">
@@ -1466,6 +1468,7 @@ async function viewResellerDetail(pub) {
   if (resellerActiveTab === "products") loadResellerProducts(pub);
   if (resellerActiveTab === "pricing") loadResellerPricing(pub);
   if (resellerActiveTab === "keys") loadResellerKeys(pub);
+  if (resellerActiveTab === "limits") loadResellerLimits(pub);
 }
 function resellerTab(key) { resellerActiveTab = key; render(); }
 
@@ -1621,4 +1624,48 @@ async function resellerRevokeKey(pub, keyId) {
   if (!confirm(`Revoke ${keyId}? This is permanent — integrations using it stop immediately.`)) return;
   const r = await post(`/api/resellers/${encodeURIComponent(pub)}/keys/revoke`, { key_id: keyId });
   if (r.ok) { toast("Key revoked"); render(); } else toast(r.error || "Failed", "err");
+}
+
+/* --------------------------------------------------- reseller API limits - */
+const RESELLER_LIMIT_FIELDS = [
+  ["api_enabled", "API access enabled"],
+  ["rate_limit_per_min", "Requests per minute"],
+  ["orders_per_min", "Orders per minute"],
+  ["daily_request_limit", "Daily request limit"],
+  ["monthly_request_limit", "Monthly request limit"],
+  ["daily_order_limit", "Daily order limit"],
+  ["monthly_order_limit", "Monthly order limit"],
+];
+
+async function loadResellerLimits(pub) {
+  const wrap = document.getElementById("resLimitsWrap");
+  if (!wrap) return;
+  const d = await api(`/api/resellers/${encodeURIComponent(pub)}/limits`);
+  if (!d.ok) { wrap.innerHTML = empty(d.error || "Failed to load limits", "⚠️"); return; }
+  const lim = d.limits || {};
+  const fields = RESELLER_LIMIT_FIELDS.map(([key, label]) => {
+    if (key === "api_enabled") {
+      return `<label class="field" style="flex-direction:row;align-items:center;gap:10px;margin-top:6px">
+        <input type="checkbox" id="lim_api_enabled" style="width:auto" ${lim.api_enabled ? "checked" : ""}>
+        <span>${label}</span></label>`;
+    }
+    return `<label class="field"><span>${label}</span>
+      <input class="inp lim-field" id="lim_${key}" type="number" min="0" step="1" value="${lim[key] ?? 0}"></label>`;
+  }).join("");
+  wrap.innerHTML = `
+    <p class="muted" style="margin:0 0 10px">Configuration only — enforcement ships with the public API. A limit of 0 means none allowed.</p>
+    ${fields}
+    <div class="toolbar" style="margin-top:16px"><div class="grow"></div>
+      <button class="btn btn-glow" onclick="resellerSaveLimits('${esc(pub)}')"><span>Save limits</span></button></div>`;
+}
+
+async function resellerSaveLimits(pub) {
+  const body = { api_enabled: checked("lim_api_enabled") ? 1 : 0 };
+  for (const [key] of RESELLER_LIMIT_FIELDS) {
+    if (key === "api_enabled") continue;
+    const el = document.getElementById("lim_" + key);
+    if (el) body[key] = el.value;
+  }
+  const r = await post(`/api/resellers/${encodeURIComponent(pub)}/limits`, body);
+  if (r.ok) { toast("Limits saved"); render(); } else toast(r.error || "Failed", "err");
 }
