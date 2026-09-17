@@ -3158,6 +3158,134 @@ def api_reseller_product_access(pubid):
                     "access_count": count})
 
 
+@app.route("/api/resellers/<pubid>/pricing")
+@login_required
+def api_reseller_pricing(pubid):
+    """Master catalog with this reseller's pricing rules + the effective
+    server-computed price for each product (rule -> tier -> master fallback)."""
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    rid = res["id"]
+    search = (request.args.get("search") or "").strip()
+    where, params = "WHERE 1=1", []
+    if search:
+        where += " AND p.name LIKE ?"
+        params.append("%" + search + "%")
+    total = int((q(
+        "SELECT COUNT(*) c FROM products p "
+        "LEFT JOIN reseller_pricing_rules r ON r.product_id=p.id AND r.reseller_id=? "
+        + where, (rid, *params), one=True) or {}).get("c", 0))
+    rows = q(
+        "SELECT p.id, p.name, p.price, p.active,"
+        " r.rule_type, r.value_cents, r.value_bps, r.enabled AS rule_enabled, r.updated AS rule_updated"
+        " FROM products p"
+        " LEFT JOIN reseller_pricing_rules r ON r.product_id=p.id AND r.reseller_id=? "
+        + where +
+        " ORDER BY COALESCE(r.enabled, 0) DESC, p.active DESC, p.name ASC LIMIT 200",
+        (rid, *params),
+    )
+    for row in rows:
+        master_cents, _tier = rdb.get_master_unit_price_cents(row["id"], 1)
+        unit, source = rdb.resolve_reseller_price_cents(rid, row["id"], 1)
+        row["master_unit"] = rdb.from_cents(master_cents)
+        row["effective_unit"] = rdb.from_cents(unit)
+        row["source"] = source
+        row["rule_label"] = ""
+        if row.get("rule_type"):
+            if row["rule_type"] == "fixed_price":
+                row["rule_label"] = "$" + rdb.from_cents(row["value_cents"]) + " fixed"
+            else:
+                bps = int(row["value_bps"])
+                pct = f"{bps // 100}.{bps % 100:02d}".rstrip("0").rstrip(".")
+                sign = "-" if row["rule_type"] == "discount_percent" else "+"
+                row["rule_label"] = f"{sign}{pct}% vs master"
+    return jsonify({"ok": True, "products": rows, "total": total, "capped": total > 200,
+                    "rule_types": list(rdb.RULE_TYPES)})
+
+
+@app.route("/api/resellers/<pubid>/pricing/set", methods=["POST"])
+@login_required
+def api_reseller_pricing_set(pubid):
+    """Create/update/enable/disable a reseller pricing rule.
+    Money arrives as a STRING (JSON numbers/floats are rejected) and is parsed
+    with Decimal into integer cents/bps. The rule value is validated here AND
+    in rdb.set_pricing_rule AND by the table's CHECK constraint. The customer
+    price is never touched."""
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    rid = res["id"]
+    data = request.get_json(silent=True) or request.form
+    try:
+        product_id = int(data.get("product_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Invalid product_id"}), 400
+    prod = q("SELECT id, name, price, active FROM products WHERE id=?", (product_id,), one=True)
+    if not prod:
+        return jsonify({"ok": False, "error": "Product not found"}), 404
+    rule_type = str(data.get("rule_type") or "").strip()
+    if rule_type not in rdb.RULE_TYPES:
+        return jsonify({"ok": False, "error": f"rule_type must be one of {', '.join(rdb.RULE_TYPES)}"}), 400
+    enabled = bool(data.get("enabled", True))
+    raw = data.get("value")
+    if not isinstance(raw, str):
+        return jsonify({"ok": False, "error": 'value must be a string, e.g. "8.50" or "15" (JSON numbers are rejected on purpose)'}), 400
+    try:
+        if rule_type == "fixed_price":
+            value = rdb.to_cents(raw)          # "8.50" -> 850
+        else:
+            value = rdb.percent_to_bps(raw)    # "15" -> 1500
+        rdb.set_pricing_rule(rid, product_id, rule_type, value, enabled)
+    except (ValueError, TypeError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    unit, source = rdb.resolve_reseller_price_cents(rid, product_id, 1)
+    log_action("reseller_price_set",
+               f"reseller {res.get('public_id', '?')} (#{rid}) product #{product_id} "
+               f"({prod.get('name', '?')}) -> {rule_type}={raw} enabled={enabled}")
+    try:
+        rdb.log_security_event(
+            rid, "admin_price_set", ip=_client_ip(),
+            user_agent=(request.headers.get("User-Agent") or "")[:200],
+            description=f"web admin '{session.get('username', '?')}' product #{product_id} {rule_type}={raw} enabled={enabled}")
+    except Exception:
+        pass
+    return jsonify({"ok": True, "product_id": product_id,
+                    "effective_unit": rdb.from_cents(unit), "source": source})
+
+
+@app.route("/api/resellers/<pubid>/pricing/delete", methods=["POST"])
+@login_required
+def api_reseller_pricing_delete(pubid):
+    """Remove a reseller pricing rule -> pricing falls back to master/tier."""
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    rid = res["id"]
+    data = request.get_json(silent=True) or request.form
+    try:
+        product_id = int(data.get("product_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Invalid product_id"}), 400
+    prod = q("SELECT id, name FROM products WHERE id=?", (product_id,), one=True)
+    if not prod:
+        return jsonify({"ok": False, "error": "Product not found"}), 404
+    deleted = rdb.delete_pricing_rule(rid, product_id)
+    if deleted:
+        log_action("reseller_price_delete",
+                   f"reseller {res.get('public_id', '?')} (#{rid}) product #{product_id} ({prod.get('name', '?')})")
+        try:
+            rdb.log_security_event(
+                rid, "admin_price_delete", ip=_client_ip(),
+                user_agent=(request.headers.get("User-Agent") or "")[:200],
+                description=f"web admin '{session.get('username', '?')}' product #{product_id}")
+        except Exception:
+            pass
+    unit, source = rdb.resolve_reseller_price_cents(rid, product_id, 1)
+    return jsonify({"ok": True, "product_id": product_id, "deleted": bool(deleted),
+                    "effective_unit": rdb.from_cents(unit), "source": source})
+
+
 if __name__ == "__main__":
     port = int(os.getenv("WEB_ADMIN_PORT", "5000"))
     print("=" * 60)
