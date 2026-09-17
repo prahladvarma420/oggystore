@@ -1435,8 +1435,10 @@ async function viewResellerDetail(pub) {
       <div class="kv"><span>Wallet balance</span><b style="font-size:20px">$${d.balance}</b></div>
       <div class="kv"><span>Currency</span><b>USDT</b></div>
       <p class="muted" style="margin-top:10px">Top-ups, adjustments and the full ledger arrive with wallet management in a later prompt — the balance above is live from the Phase-1 ledger wallet.</p>`;
+  } else if (resellerActiveTab === "products") {
+    body = `<div id="resProdWrap"><div class="muted">Loading products…</div></div>`;
   } else {
-    const names = { products: "Product access", pricing: "Pricing rules", keys: "API key", orders: "Reseller orders", apilogs: "API logs", secevents: "Security events", webhooks: "Webhooks", limits: "API limits" };
+    const names = { pricing: "Pricing rules", keys: "API key", orders: "Reseller orders", apilogs: "API logs", secevents: "Security events", webhooks: "Webhooks", limits: "API limits" };
     body = empty(`${names[resellerActiveTab] || "This section"} management arrives in a later Phase-2 prompt.`, "🚧");
   }
   $("#content").innerHTML = `<div class="panel glass">
@@ -1457,6 +1459,7 @@ async function viewResellerDetail(pub) {
     <div class="pill-tabs" style="margin:12px 0 14px">${tabs}</div>
     <div id="resellerTabBody">${body}</div>
   </div>`;
+  if (resellerActiveTab === "products") loadResellerProducts(pub);
 }
 function resellerTab(key) { resellerActiveTab = key; render(); }
 
@@ -1469,4 +1472,45 @@ async function resellerAction(pub, action) {
     toast(r.error || "Failed", "err");
     if ((r.error || "").includes("not found")) { currentView = "resellers"; render(); }
   }
+}
+
+/* ------------------------------------------- reseller product access ---- */
+let resProdSearch = "", resProdFilter = "", resProdTimer = null, resProdFocused = false;
+
+async function loadResellerProducts(pub) {
+  const wrap = document.getElementById("resProdWrap");
+  if (!wrap) return;
+  const d = await api(`/api/resellers/${encodeURIComponent(pub)}/products?search=${encodeURIComponent(resProdSearch)}&filter=${encodeURIComponent(resProdFilter)}`);
+  if (!d.ok) { wrap.innerHTML = empty(d.error || "Failed to load products", "⚠️"); return; }
+  const rows = (d.products || []).map(p => `<tr>
+    <td>${esc(p.name)}</td>
+    <td>${money(p.price)}</td>
+    <td>${p.stock}</td>
+    <td>${p.active ? '<span class="badge on">active</span>' : '<span class="badge off">hidden</span>'}</td>
+    <td>${p.access_enabled ? '<span class="badge on">🔓 enabled</span>' : '<span class="muted">—</span>'}</td>
+    <td>${p.access_enabled
+      ? `<button class="btn btn-sm btn-red" onclick="resellerToggleAccess('${esc(pub)}',${p.id},0)"><span>Disable</span></button>`
+      : `<button class="btn btn-sm btn-green" onclick="resellerToggleAccess('${esc(pub)}',${p.id},1)" ${p.active ? "" : "disabled"}><span>Enable</span></button>`}</td>
+  </tr>`).join("");
+  wrap.innerHTML = `
+    <div class="toolbar">
+      <input class="inp" id="resProdBox" placeholder="🔎 Search products..." value="${esc(resProdSearch)}" style="max-width:280px"
+        oninput="clearTimeout(resProdTimer);resProdSearch=this.value;resProdTimer=setTimeout(()=>loadResellerProducts('${esc(pub)}'),300)"
+        onfocus="resProdFocused=true" onblur="resProdFocused=false">
+      <select class="inp" style="max-width:150px" onchange="resProdFilter=this.value;loadResellerProducts('${esc(pub)}')">
+        <option value="" ${resProdFilter === "" ? "selected" : ""}>All products</option>
+        <option value="enabled" ${resProdFilter === "enabled" ? "selected" : ""}>Enabled only</option>
+        <option value="disabled" ${resProdFilter === "disabled" ? "selected" : ""}>Disabled only</option>
+      </select>
+      <div class="grow"></div>
+      <span class="muted">🔓 ${d.enabled_count} enabled</span>
+    </div>
+    ${(d.products || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>Product</th><th>Price</th><th>Stock</th><th>Catalog</th><th>Access</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : empty(resProdSearch ? "No products match" : "No products in catalog", "📦")}
+    ${d.capped ? '<p class="muted" style="margin-top:8px">Showing first 200 — narrow with search.</p>' : ""}`;
+  if (resProdFocused) { const sb = document.getElementById("resProdBox"); if (sb) { sb.focus(); sb.setSelectionRange(sb.value.length, sb.value.length); } }
+}
+
+async function resellerToggleAccess(pub, pid, enable) {
+  const r = await post(`/api/resellers/${encodeURIComponent(pub)}/products/access`, { product_id: pid, enabled: !!enable });
+  if (r.ok) { toast(enable ? "Access enabled" : "Access disabled"); render(); } else toast(r.error || "Failed", "err");
 }
