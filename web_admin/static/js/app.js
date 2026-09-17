@@ -113,6 +113,7 @@ async function render() {
     else if (v === "restock") await viewRestock();
     else if (v === "profit") await viewProfit();
     else if (v === "security") await viewSecurity();
+    else if (v === "resellers") await viewResellers();
   } catch (e) {
     $("#content").innerHTML = empty("Failed to load: " + e.message, "\u26a0\ufe0f");
   }
@@ -1346,3 +1347,79 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeMod
 
 /* boot */
 setView(location.hash.slice(1) || "dashboard");
+
+/* =====================================================  RESELLERS  ======== */
+let resellersSearchTerm = "", resellersPage = 1, resellersStatus = "", resellersSearchTimer = null, resellersBoxFocused = false;
+const RESELLER_BADGE = {
+  active: '<span class="badge on">Active</span>',
+  pending: '<span class="badge">Pending</span>',
+  suspended: '<span class="badge off">Suspended</span>',
+  closed: '<span class="badge off">Closed</span>',
+};
+function resellerBadge(s) { return RESELLER_BADGE[s] || `<span class="badge">${esc(s || "?")}</span>`; }
+
+async function viewResellers() {
+  const d = await api(`/api/resellers?search=${encodeURIComponent(resellersSearchTerm)}&status=${encodeURIComponent(resellersStatus)}&page=${resellersPage}&per_page=25`);
+  const rows = (d.resellers || []).map(r => `<tr>
+    <td class="mono"><b>${esc(r.public_id)}</b></td>
+    <td>${esc(r.name || "-")}${r.username ? ` <span class="muted">@${esc(r.username)}</span>` : ""}</td>
+    <td class="mono">${r.telegram_user_id || '<span class="muted">-</span>'}</td>
+    <td>${resellerBadge(r.status)}</td>
+    <td>$${r.balance}</td>
+    <td>${r.keys_count}</td>
+    <td>${r.orders_count}</td>
+    <td class="muted">${fmtDate(r.last_activity || r.created)}</td>
+    <td><button class="btn btn-sm btn-glow" onclick="resellerDetail(${r.id})"><span>Manage</span></button></td></tr>`).join("");
+  const pgBar = (d.pages || 1) > 1 ? `<div class="toolbar" style="margin-top:12px">
+      <button class="btn btn-sm btn-ghost" onclick="resellersGo(-1)" ${d.page <= 1 ? "disabled" : ""}>◀ Prev</button>
+      <span class="muted">Page ${d.page}/${d.pages} · ${d.total} resellers</span>
+      <button class="btn btn-sm btn-ghost" onclick="resellersGo(1)" ${d.page >= d.pages ? "disabled" : ""}>Next ▶</button>
+    </div>` : `<div class="muted" style="margin-top:10px">${d.total || 0} resellers</div>`;
+  const statusOpts = [`<option value="">All statuses</option>`].concat((d.statuses || []).map(s =>
+    `<option value="${s}" ${resellersStatus === s ? "selected" : ""}>${s[0].toUpperCase() + s.slice(1)}</option>`)).join("");
+  $("#content").innerHTML = `<div class="panel glass">
+    <div class="toolbar">
+      <input class="inp" id="resellersSearchBox" placeholder="🔎 Search public ID / name / username / TG id..." value="${esc(resellersSearchTerm)}" style="max-width:340px"
+        oninput="clearTimeout(resellersSearchTimer);resellersSearchTerm=this.value;resellersPage=1;resellersSearchTimer=setTimeout(viewResellers,300)"
+        onfocus="resellersBoxFocused=true" onblur="resellersBoxFocused=false">
+      <select class="inp" style="max-width:160px" onchange="resellersStatus=this.value;resellersPage=1;viewResellers()">${statusOpts}</select>
+      <div class="grow"></div>
+    </div>
+    ${(d.resellers || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>Public ID</th><th>Name</th><th>Telegram</th><th>Status</th><th>Balance</th><th>Keys</th><th>Orders</th><th>Last activity</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>${pgBar}` : empty(resellersSearchTerm || resellersStatus ? "No resellers match" : "No resellers yet", "🤝")}</div>`;
+  if (resellersBoxFocused) { const sb = $("#resellersSearchBox"); if (sb) { sb.focus(); sb.setSelectionRange(sb.value.length, sb.value.length); } }
+}
+function resellersGo(delta) { resellersPage = Math.max(1, resellersPage + delta); render(); }
+
+async function resellerDetail(rid) {
+  const d = await api(`/api/resellers/${rid}`);
+  if (!d.ok) { toast(d.error || "Not found", "err"); return; }
+  const r = d.reseller || {};
+  const actionsByStatus = {
+    pending: [["approve", "✅ Approve", "btn-green"], ["reject", "❌ Reject", "btn-red"]],
+    active: [["suspend", "⏸ Suspend", "btn-orange"], ["block", "⛔ Block", "btn-red"]],
+    suspended: [["reactivate", "♻️ Reactivate", "btn-green"], ["block", "⛔ Block", "btn-red"]],
+    closed: [["reactivate", "♻️ Reactivate", "btn-green"]],
+  };
+  const btns = (actionsByStatus[r.status] || []).map(([a, label, cls]) =>
+    `<button class="btn btn-sm ${cls}" onclick="resellerAction(${r.id},'${a}')"><span>${label}</span></button>`).join(" ");
+  const keys = (d.keys || []).map(k => `<div class="kv"><span class="mono">${esc(k.key_id)} <span class="muted">${esc(k.environment)}</span></span><b>${k.status === "active" ? '<span class="badge on">active</span>' : '<span class="badge off">revoked</span>'}</b></div>`).join("") || '<p class="muted">No API keys yet</p>';
+  const ledger = (d.ledger || []).map(t => `<div class="kv"><span>${fmtDate(t.created)} · ${esc(t.tx_type)}${t.reference ? ` · <span class="mono">${esc(t.reference)}</span>` : ""}</span><b>${t.amount_cents >= 0 ? "+" : ""}$${t.amount}</b></div>`).join("") || '<p class="muted">No wallet transactions</p>';
+  openModal("🤝 " + (r.name || r.public_id), `
+    <div class="kv"><span>Public ID</span><b class="mono">${esc(r.public_id)}</b></div>
+    <div class="kv"><span>Status</span><b>${resellerBadge(r.status)}</b></div>
+    <div class="kv"><span>Telegram user</span><b class="mono">${r.telegram_user_id || "-"}</b></div>
+    <div class="kv"><span>Username</span><b>${r.username ? "@" + esc(r.username) : "-"}</b></div>
+    <div class="kv"><span>Balance</span><b>$${d.balance}</b></div>
+    <div class="kv"><span>Orders (TG account)</span><b>${d.orders_count}</b></div>
+    <div class="kv"><span>Created</span><b>${fmtDate(r.created)}</b></div>
+    <div class="toolbar" style="margin:14px 0 4px">${btns}</div>
+    <h3 style="margin:16px 0 6px">API keys (${(d.keys || []).length})</h3>${keys}
+    <h3 style="margin:16px 0 6px">Recent wallet activity</h3>${ledger}`);
+}
+
+async function resellerAction(rid, action) {
+  const labels = { approve: "Approve", reject: "Reject", suspend: "Suspend", block: "Block", reactivate: "Reactivate" };
+  if (["reject", "block", "suspend"].includes(action) && !confirm(`${labels[action]} this reseller?`)) return;
+  const r = await post(`/api/resellers/${rid}/status`, { action });
+  if (r.ok) { toast(r.message || "Updated"); closeModal(); render(); } else toast(r.error || "Failed", "err");
+}
