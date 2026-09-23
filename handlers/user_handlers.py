@@ -1340,6 +1340,11 @@ Example:
         )
         return
 
+    if data.startswith("res_"):
+        from handlers.reseller_handlers import handle_reseller_callback
+        if await handle_reseller_callback(q, uid, data, context):
+            return
+
     if data == "admin_panel":
         await show_admin_panel(q, uid)
         return
@@ -1439,6 +1444,11 @@ async def message_handler(update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     state = user_state.get(uid)
+
+    if state and state.startswith("res_"):
+        from handlers.reseller_handlers import handle_reseller_message
+        if await handle_reseller_message(update, uid, text, state):
+            return
 
     if state and state.startswith("m365_email:"):
         _m365_parts = state.split(":")
