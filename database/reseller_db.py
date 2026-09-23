@@ -80,7 +80,8 @@ _LEDGER_COLS = ("id", "reseller_id", "tx_type", "amount_cents",
                 "balance_after_cents", "reference", "description", "created")
 _WEBHOOK_COLS = ("id", "reseller_id", "url", "enabled", "created", "updated")
 _API_LOG_COLS = ("id", "reseller_id", "api_key_id", "endpoint", "method",
-                 "status_code", "request_id", "response_ms", "created")
+                 "status_code", "request_id", "response_ms", "created",
+                 "reseller_public_id", "key_id", "ip", "user_agent")
 _SEC_EVENT_COLS = ("id", "reseller_id", "event_type", "ip", "user_agent",
                    "description", "created")
 
@@ -232,7 +233,11 @@ def ensure_reseller_tables():
         status_code INTEGER,
         request_id TEXT,
         response_ms INTEGER,
-        created TEXT DEFAULT CURRENT_TIMESTAMP
+        created TEXT DEFAULT CURRENT_TIMESTAMP,
+        reseller_public_id TEXT,
+        key_id TEXT,
+        ip TEXT,
+        user_agent TEXT
     )""")
 
     cur.execute("""CREATE TABLE IF NOT EXISTS reseller_security_events(
@@ -271,6 +276,10 @@ def ensure_reseller_tables():
     _safe_add_column("resellers", "monthly_order_limit", "INTEGER NOT NULL DEFAULT 10000")
     _safe_add_column("resellers", "api_enabled", "INTEGER NOT NULL DEFAULT 1")
     _safe_add_column("reseller_api_keys", "enabled", "INTEGER NOT NULL DEFAULT 1")
+    _safe_add_column("reseller_api_logs", "reseller_public_id", "TEXT")
+    _safe_add_column("reseller_api_logs", "key_id", "TEXT")
+    _safe_add_column("reseller_api_logs", "ip", "TEXT")
+    _safe_add_column("reseller_api_logs", "user_agent", "TEXT")
 
     conn.commit()
 
@@ -996,18 +1005,38 @@ def delete_webhook(webhook_id: int) -> bool:
 # ------------------------------------------------------------------ logs + security events
 
 def log_api_request(reseller_id, api_key_id, endpoint: str, method: str,
-                    status_code: int, request_id: str = None, response_ms: int = None):
+                    status_code: int, request_id: str = None, response_ms: int = None,
+                    reseller_public_id: str = None, key_id: str = None,
+                    ip: str = None, user_agent: str = None):
     """Append-only API request log (no update/delete by design)."""
     conn, cur = get_conn(), get_cursor()
+    try:
+        cur.execute(
+            "INSERT INTO reseller_api_logs"
+            "(reseller_id, api_key_id, endpoint, method, status_code, request_id, "
+            "response_ms, created, reseller_public_id, key_id, ip, user_agent) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (reseller_id, api_key_id, endpoint, method, status_code,
+             request_id, response_ms, now_text(), reseller_public_id, key_id,
+             ip, user_agent),
+        )
+        conn.commit()
+        return cur.lastrowid
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+
+
+def get_api_log_by_request_id(request_id: str):
+    cur = get_cursor()
     cur.execute(
-        "INSERT INTO reseller_api_logs"
-        "(reseller_id, api_key_id, endpoint, method, status_code, request_id, response_ms, created) "
-        "VALUES(?,?,?,?,?,?,?,?)",
-        (reseller_id, api_key_id, endpoint, method, status_code,
-         request_id, response_ms, now_text()),
+        "SELECT * FROM reseller_api_logs WHERE request_id=? ORDER BY id DESC LIMIT 1",
+        (request_id,),
     )
-    conn.commit()
-    return cur.lastrowid
+    return _d(_API_LOG_COLS, cur.fetchone())
 
 
 def list_api_logs(reseller_id: int = None, limit: int = 50, offset: int = 0):
