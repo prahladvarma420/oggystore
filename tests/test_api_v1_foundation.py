@@ -26,6 +26,11 @@ class ApiV1FoundationTests(unittest.TestCase):
             ),
         )
         cls.auth_patcher.start()
+        cls.audit_patcher = patch(
+            "reseller_api.middleware.request_context.persist_audit_record",
+            return_value=True,
+        )
+        cls.audit_writer = cls.audit_patcher.start()
         cls.app = create_app({
             "TESTING": True,
             "MAX_CONTENT_LENGTH": 1024,
@@ -46,6 +51,7 @@ class ApiV1FoundationTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.audit_patcher.stop()
         cls.auth_patcher.stop()
 
     def assert_envelope(self, response, expected_ok):
@@ -147,6 +153,48 @@ class ApiV1FoundationTests(unittest.TestCase):
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertNotIn("Access-Control-Allow-Origin", response.headers)
+
+    def test_successful_request_audit_record_has_safe_metadata(self):
+        self.audit_writer.reset_mock()
+        response = self.client.get(
+            "/api/v1/",
+            headers={
+                **self.auth_headers,
+                "User-Agent": "Foundation Audit Test/1.0",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.audit_writer.assert_called_once()
+        record = self.audit_writer.call_args.args[0]
+        self.assertEqual(record.request_id, response.get_json()["request_id"])
+        self.assertEqual(record.reseller_public_id, "RSR-ABCDEFGH23")
+        self.assertEqual(record.key_id, "rk_test_ABCDEFGH")
+        self.assertEqual(record.method, "GET")
+        self.assertEqual(record.endpoint, "/api/v1/")
+        self.assertEqual(record.status_code, 200)
+        self.assertGreaterEqual(record.response_ms, 0)
+        self.assertEqual(record.user_agent, "Foundation Audit Test/1.0")
+        self.assertNotIn("x" * 43, repr(record))
+
+    def test_failed_authentication_request_is_audited_anonymously(self):
+        self.audit_writer.reset_mock()
+        response = self.client.get("/api/v1/")
+        self.assertEqual(response.status_code, 401)
+        self.audit_writer.assert_called_once()
+        record = self.audit_writer.call_args.args[0]
+        self.assertEqual(record.request_id, response.get_json()["request_id"])
+        self.assertEqual(record.status_code, 401)
+        self.assertIsNone(record.reseller_id)
+        self.assertIsNone(record.api_key_id)
+
+    def test_audit_writer_failure_does_not_change_response(self):
+        with patch(
+            "reseller_api.middleware.request_context.persist_audit_record",
+            side_effect=RuntimeError("temporary audit outage"),
+        ):
+            response = self.client.get("/api/v1/", headers=self.auth_headers)
+        self.assertEqual(response.status_code, 200)
+        self.assert_envelope(response, True)
 
     def test_missing_and_malformed_credentials_share_safe_error(self):
         missing = self.client.get("/api/v1/")
