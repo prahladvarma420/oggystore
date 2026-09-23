@@ -33,8 +33,11 @@ row stores the running balance_after_cents so the ledger is self-auditing.
 """
 
 import hashlib
+import ipaddress
+import re
 import secrets
 import threading
+from urllib.parse import urlsplit, urlunsplit
 from decimal import Decimal, ROUND_HALF_UP
 
 from database import pgcompat as _pgcompat
@@ -356,8 +359,9 @@ def create_api_key(reseller_id: int, environment: str = "test"):
     """
     if environment not in KEY_ENVIRONMENTS:
         raise ValueError(f"invalid environment: {environment}")
-    if not get_reseller(reseller_id):
-        raise ValueError(f"reseller {reseller_id} does not exist")
+    reseller = get_reseller(reseller_id)
+    if not reseller or reseller["status"] != "active":
+        raise PermissionError("an active reseller account is required")
     conn, cur = get_conn(), get_cursor()
     prefix = "rk_live_" if environment == "production" else "rk_test_"
     for _attempt in range(5):
@@ -427,6 +431,18 @@ def revoke_api_key(key_id: str) -> bool:
         "UPDATE reseller_api_keys SET status='revoked', revoked_at=? "
         "WHERE key_id=? AND status='active'",
         (now_text(), key_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def revoke_api_key_for_reseller(reseller_id: int, key_id: str) -> bool:
+    """Ownership-scoped, permanent revocation for reseller-facing surfaces."""
+    conn, cur = get_conn(), get_cursor()
+    cur.execute(
+        "UPDATE reseller_api_keys SET status='revoked', revoked_at=? "
+        "WHERE key_id=? AND reseller_id=? AND status='active'",
+        (now_text(), key_id, reseller_id),
     )
     conn.commit()
     return cur.rowcount > 0
@@ -675,15 +691,157 @@ def get_wallet_transaction_by_reference(reseller_id: int, tx_type: str, referenc
 
 # ------------------------------------------------------------------ webhooks
 
+_WEBHOOK_HOST_RE = re.compile(
+    r"^(?=.{1,253}\.?$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.?$",
+    re.IGNORECASE,
+)
+
+
+def _encrypt_webhook_secret(secret: str) -> str:
+    """Webhook signing secrets fail closed when encryption is unavailable."""
+    encrypted = encrypt_text(secret)
+    if not encrypted or encrypted == secret or not encrypted.startswith("enc:"):
+        raise RuntimeError("secure webhook secret storage is unavailable")
+    return encrypted
+
+
+def validate_webhook_url(url: str) -> str:
+    """Validate and normalize a reseller webhook URL without making a request.
+
+    Production webhooks are HTTPS-only. Localhost, IP-literal private/internal
+    destinations, credentials and fragments are rejected. Delivery code must
+    still resolve and re-check the destination IP immediately before every
+    request to prevent DNS rebinding; delivery is intentionally not part of
+    Phase 3.
+    """
+    raw = (url or "").strip()
+    if not raw or len(raw) > 2048 or any(ord(ch) < 32 for ch in raw):
+        raise ValueError("webhook URL is empty, too long, or contains control characters")
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port  # also validates malformed/non-numeric ports
+    except ValueError:
+        raise ValueError("webhook URL is malformed")
+    if parsed.scheme.lower() != "https":
+        raise ValueError("webhook URL must use HTTPS")
+    if not parsed.hostname or parsed.username is not None or parsed.password is not None:
+        raise ValueError("webhook URL must have a host and cannot contain credentials")
+    if parsed.fragment:
+        raise ValueError("webhook URL cannot contain a fragment")
+    if port is not None and not (1 <= port <= 65535):
+        raise ValueError("webhook URL contains an invalid port")
+
+    host = parsed.hostname.rstrip(".").lower()
+    if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+        raise ValueError("local webhook destinations are not allowed")
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        try:
+            ascii_host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            raise ValueError("webhook host is invalid")
+        if not _WEBHOOK_HOST_RE.fullmatch(ascii_host):
+            raise ValueError("webhook host is invalid")
+        host = ascii_host
+    else:
+        if not ip.is_global:
+            raise ValueError("private or internal webhook destinations are not allowed")
+        host = "[{}]".format(ip.compressed) if ip.version == 6 else ip.compressed
+
+    netloc = host + (f":{port}" if port is not None else "")
+    path = parsed.path or "/"
+    return urlunsplit(("https", netloc, path, parsed.query, ""))
+
+
+def create_webhook(reseller_id: int, url: str, enabled: bool = True):
+    """Create one endpoint and return (public row, one-time signing secret).
+
+    The secret is encrypted at rest and never included in list/get results.
+    """
+    normalized = validate_webhook_url(url)
+    reseller = get_reseller(reseller_id)
+    if not reseller or reseller["status"] != "active":
+        raise PermissionError("an active reseller account is required")
+    secret = secrets.token_urlsafe(32)
+    conn, cur = get_conn(), get_cursor()
+    cur.execute(
+        "INSERT INTO reseller_webhooks(reseller_id, url, secret_encrypted, enabled, created, updated) "
+        "VALUES(?,?,?,?,?,?)",
+        (reseller_id, normalized, _encrypt_webhook_secret(secret), 1 if enabled else 0,
+         now_text(), now_text()),
+    )
+    conn.commit()
+    cur.execute(
+        "SELECT id, reseller_id, url, enabled, created, updated FROM reseller_webhooks "
+        "WHERE reseller_id=? AND url=?",
+        (reseller_id, normalized),
+    )
+    return _d(_WEBHOOK_COLS, cur.fetchone()), secret
+
+
+def get_webhook_for_reseller(reseller_id: int, webhook_id: int):
+    cur = get_cursor()
+    cur.execute(
+        "SELECT id, reseller_id, url, enabled, created, updated FROM reseller_webhooks "
+        "WHERE id=? AND reseller_id=?",
+        (webhook_id, reseller_id),
+    )
+    return _d(_WEBHOOK_COLS, cur.fetchone())
+
+
+def update_webhook_url(reseller_id: int, webhook_id: int, url: str) -> bool:
+    normalized = validate_webhook_url(url)
+    reseller = get_reseller(reseller_id)
+    if not reseller or reseller["status"] != "active":
+        return False
+    conn, cur = get_conn(), get_cursor()
+    cur.execute(
+        "UPDATE reseller_webhooks SET url=?, updated=? WHERE id=? AND reseller_id=?",
+        (normalized, now_text(), webhook_id, reseller_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def set_webhook_enabled_for_reseller(reseller_id: int, webhook_id: int,
+                                     enabled: bool) -> bool:
+    reseller = get_reseller(reseller_id)
+    if not reseller or reseller["status"] != "active":
+        return False
+    conn, cur = get_conn(), get_cursor()
+    cur.execute(
+        "UPDATE reseller_webhooks SET enabled=?, updated=? WHERE id=? AND reseller_id=?",
+        (1 if enabled else 0, now_text(), webhook_id, reseller_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def delete_webhook_for_reseller(reseller_id: int, webhook_id: int) -> bool:
+    reseller = get_reseller(reseller_id)
+    if not reseller or reseller["status"] != "active":
+        return False
+    conn, cur = get_conn(), get_cursor()
+    cur.execute(
+        "DELETE FROM reseller_webhooks WHERE id=? AND reseller_id=?",
+        (webhook_id, reseller_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
 def upsert_webhook(reseller_id: int, url: str, secret: str, enabled: bool = True):
     """Register/replace a webhook endpoint. The signing secret is stored
     ENCRYPTED (same convention as sessions/delivery content)."""
+    normalized = validate_webhook_url(url)
     conn, cur = get_conn(), get_cursor()
     cur.execute(
         "INSERT OR REPLACE INTO reseller_webhooks(reseller_id, url, secret_encrypted, enabled, created, updated) "
         "VALUES(?,?,?,?,COALESCE((SELECT created FROM reseller_webhooks WHERE reseller_id=? AND url=?), ?), ?)",
-        (reseller_id, url, encrypt_text(secret), 1 if enabled else 0,
-         reseller_id, url, now_text(), now_text()),
+        (reseller_id, normalized, _encrypt_webhook_secret(secret),
+         1 if enabled else 0,
+         reseller_id, normalized, now_text(), now_text()),
     )
     conn.commit()
 
