@@ -26,6 +26,7 @@ class ApiConfig:
     PROPAGATE_EXCEPTIONS = False
     INIT_DATABASE = True
     RESELLER_API_HSTS = _env_bool("RESELLER_API_HSTS", False)
+    RESELLER_API_TRUST_PROXY = _env_bool("RESELLER_API_TRUST_PROXY", False)
     API_ENVIRONMENT = (
         os.getenv("RESELLER_API_ENVIRONMENT", "test").strip().lower()
     )
