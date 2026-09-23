@@ -16,6 +16,7 @@ from admin.backup_handler import backup_command
 from admin.admin_handlers import block_command, unblock_command, add_admin_command, remove_admin_command, admins_command, reply_ticket_command, close_ticket_command
 from utils.backup import scheduled_backup
 from utils.error_logger import error_logs_command, global_error_handler
+from handlers.reseller_handlers import reseller_command
 
 
 def main():
@@ -32,6 +33,7 @@ def main():
         app.job_queue.run_repeating(run_m365_maintenance, interval=3600, first=60)
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("reseller", reseller_command))
     app.add_handler(CommandHandler("admin", admin))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("block", block_command))
