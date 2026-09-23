@@ -24,4 +24,12 @@ class ApiConfig:
     MAX_CONTENT_LENGTH = _body_limit()
     JSON_SORT_KEYS = False
     PROPAGATE_EXCEPTIONS = False
+    INIT_DATABASE = True
     RESELLER_API_HSTS = _env_bool("RESELLER_API_HSTS", False)
+    API_ENVIRONMENT = (
+        os.getenv("RESELLER_API_ENVIRONMENT", "test").strip().lower()
+    )
+    if API_ENVIRONMENT not in ("test", "production"):
+        raise RuntimeError(
+            "RESELLER_API_ENVIRONMENT must be 'test' or 'production'"
+        )
