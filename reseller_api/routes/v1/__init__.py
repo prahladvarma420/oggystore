@@ -3,6 +3,7 @@
 from flask import Blueprint
 
 from reseller_api.controllers.v1.foundation import api_v1_index
+from reseller_api.middleware.authentication import authenticate_request
 
 
 blueprint = Blueprint(
@@ -10,6 +11,9 @@ blueprint = Blueprint(
     __name__,
     url_prefix="/api/v1",
 )
+
+# Authentication is deny-by-default for every current and future v1 route.
+blueprint.before_request(authenticate_request)
 
 # Support the canonical trailing-slash namespace and a JSON no-slash alias.
 blueprint.add_url_rule("", "index_no_slash", api_v1_index, methods=["GET"])
