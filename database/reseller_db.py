@@ -37,13 +37,14 @@ import ipaddress
 import re
 import secrets
 import threading
+from datetime import timedelta
 from urllib.parse import urlsplit, urlunsplit
 from decimal import Decimal, ROUND_HALF_UP
 
 from database import pgcompat as _pgcompat
 from database.db import get_conn, get_cursor, _safe_add_column  # thread-local, pg-aware
 from utils.crypto import encrypt_text, decrypt_text
-from utils.timezone import now_text
+from utils.timezone import now, now_text
 
 # ------------------------------------------------------------------ constants
 
@@ -70,7 +71,7 @@ _WALLET_LOCK = threading.Lock()
 _RESELLER_COLS = ("id", "public_id", "telegram_user_id", "name", "username",
                   "status", "created", "updated")
 _API_KEY_COLS = ("id", "key_id", "secret_hash", "reseller_id", "environment",
-                 "status", "created", "last_used_at", "revoked_at")
+                 "status", "created", "last_used_at", "revoked_at", "enabled")
 _ACCESS_COLS = ("id", "reseller_id", "product_id", "enabled", "created", "updated")
 _PRICING_COLS = ("id", "reseller_id", "product_id", "rule_type", "value_cents",
                  "value_bps", "enabled", "created", "updated")
@@ -155,7 +156,8 @@ def ensure_reseller_tables():
             CHECK (status IN ('active','revoked')),
         created TEXT DEFAULT CURRENT_TIMESTAMP,
         last_used_at TEXT,
-        revoked_at TEXT
+        revoked_at TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1
     )""")
 
     cur.execute("""CREATE TABLE IF NOT EXISTS reseller_product_access(
@@ -268,6 +270,7 @@ def ensure_reseller_tables():
     _safe_add_column("resellers", "daily_order_limit", "INTEGER NOT NULL DEFAULT 500")
     _safe_add_column("resellers", "monthly_order_limit", "INTEGER NOT NULL DEFAULT 10000")
     _safe_add_column("resellers", "api_enabled", "INTEGER NOT NULL DEFAULT 1")
+    _safe_add_column("reseller_api_keys", "enabled", "INTEGER NOT NULL DEFAULT 1")
 
     conn.commit()
 
@@ -443,6 +446,69 @@ def revoke_api_key_for_reseller(reseller_id: int, key_id: str) -> bool:
         "UPDATE reseller_api_keys SET status='revoked', revoked_at=? "
         "WHERE key_id=? AND reseller_id=? AND status='active'",
         (now_text(), key_id, reseller_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def set_api_key_enabled_for_reseller(reseller_id: int, key_id: str,
+                                     enabled: bool) -> bool:
+    """Temporarily enable/disable an active key without ever reviving a
+    revoked key. This helper is ownership-scoped for future management UIs."""
+    conn, cur = get_conn(), get_cursor()
+    cur.execute(
+        "UPDATE reseller_api_keys SET enabled=? "
+        "WHERE key_id=? AND reseller_id=? AND status='active'",
+        (1 if enabled else 0, key_id, reseller_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def get_api_auth_record(key_id: str):
+    """Load the exact server-side fields needed for API authentication.
+
+    The returned hash is internal-only. Callers must never serialize or log
+    this record. No plaintext API secret exists in the database.
+    """
+    cur = get_cursor()
+    cur.execute(
+        "SELECT k.id, k.key_id, k.secret_hash, k.reseller_id, k.environment, "
+        "k.status, k.enabled, k.last_used_at, "
+        "r.public_id, r.status, r.api_enabled, r.telegram_user_id, "
+        "COALESCE(u.blocked, 0) "
+        "FROM reseller_api_keys k "
+        "JOIN resellers r ON r.id=k.reseller_id "
+        "LEFT JOIN users u ON u.user_id=r.telegram_user_id "
+        "WHERE k.key_id=?",
+        (key_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    cols = (
+        "api_key_id", "key_id", "secret_hash", "reseller_id", "environment",
+        "key_status", "key_enabled", "last_used_at", "reseller_public_id",
+        "reseller_status", "api_enabled", "telegram_user_id", "user_blocked",
+    )
+    return _d(cols, row)
+
+
+def touch_api_key_used_throttled(api_key_id: int, min_interval_seconds: int = 60) -> bool:
+    """Atomically update last_used_at at most once per interval.
+
+    The conditional UPDATE avoids a write on every request and is safe when
+    concurrent workers authenticate the same key.
+    """
+    interval = max(1, min(int(min_interval_seconds), 3600))
+    stamp = now_text()
+    cutoff = (now() - timedelta(seconds=interval)).strftime("%Y-%m-%d %H:%M:%S")
+    conn, cur = get_conn(), get_cursor()
+    cur.execute(
+        "UPDATE reseller_api_keys SET last_used_at=? "
+        "WHERE id=? AND status='active' AND enabled=1 "
+        "AND (last_used_at IS NULL OR last_used_at < ?)",
+        (stamp, api_key_id, cutoff),
     )
     conn.commit()
     return cur.rowcount > 0
