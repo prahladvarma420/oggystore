@@ -494,6 +494,50 @@ def get_api_auth_record(key_id: str):
     return _d(cols, row)
 
 
+def get_api_authorization_snapshot(reseller_id: int, api_key_id: int):
+    """Current key/reseller policy state scoped by BOTH authenticated IDs.
+
+    A mismatched key/reseller pair returns no row, which is the database-level
+    IDOR backstop for authorization decisions.
+    """
+    cur = get_cursor()
+    cur.execute(
+        "SELECT k.id, k.key_id, k.reseller_id, k.environment, k.status, k.enabled, "
+        "r.public_id, r.status, r.api_enabled, r.rate_limit_per_min, "
+        "r.orders_per_min, r.daily_request_limit, r.monthly_request_limit, "
+        "r.daily_order_limit, r.monthly_order_limit, "
+        "COALESCE(u.blocked, 0) "
+        "FROM reseller_api_keys k "
+        "JOIN resellers r ON r.id=k.reseller_id "
+        "LEFT JOIN users u ON u.user_id=r.telegram_user_id "
+        "WHERE k.id=? AND k.reseller_id=?",
+        (api_key_id, reseller_id),
+    )
+    cols = (
+        "api_key_id", "key_id", "reseller_id", "key_environment",
+        "key_status", "key_enabled", "reseller_public_id", "reseller_status",
+        "api_enabled", "rate_limit_per_min", "orders_per_min",
+        "daily_request_limit", "monthly_request_limit", "daily_order_limit",
+        "monthly_order_limit", "user_blocked",
+    )
+    return _d(cols, cur.fetchone())
+
+
+def get_reseller_product_access_state(reseller_id: int, product_id: int):
+    """Return master-product and reseller grant state without trusting a
+    client ownership claim. Missing access rows are deny-by-default."""
+    cur = get_cursor()
+    cur.execute(
+        "SELECT p.id, p.active, COALESCE(a.enabled, 0) "
+        "FROM products p "
+        "LEFT JOIN reseller_product_access a "
+        "ON a.product_id=p.id AND a.reseller_id=? "
+        "WHERE p.id=?",
+        (reseller_id, product_id),
+    )
+    return _d(("product_id", "product_active", "access_enabled"), cur.fetchone())
+
+
 def touch_api_key_used_throttled(api_key_id: int, min_interval_seconds: int = 60) -> bool:
     """Atomically update last_used_at at most once per interval.
 
