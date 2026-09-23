@@ -17,6 +17,7 @@ MAIN_MENU_BUTTONS = [
     ("btn_search", "🔍 Search", "search"),
     ("btn_clear_chat", "🧹 Clear Chat", "clear_chat"),
     ("btn_admin_panel", "🛡 Admin Panel", "admin_panel"),
+    ("btn_reseller_center", "🤝 Reseller Center", "res_center"),
 ]
 
 # Buttons reused across dozens of different screens with different callback
@@ -71,11 +72,24 @@ def main_menu(uid=None):
         [b["btn_search"], b["btn_clear_chat"]],
     ]
 
+    _admin_row = False
     try:
         # Show the Admin Panel button for the owner AND any admin promoted
         # via the bot or the web admin panel (admins table).
         if uid is not None and is_admin(uid):
             rows.insert(0, [b["btn_admin_panel"]])
+            _admin_row = True
+    except Exception:
+        pass
+
+    try:
+        # Reseller Center appears ONLY for users who already have a reseller
+        # record — regular customers see zero menu change. The application
+        # entry point for everyone else is /reseller and the Profile row.
+        if uid is not None:
+            from database.reseller_db import get_reseller_by_telegram
+            if get_reseller_by_telegram(uid):
+                rows.insert(1 if _admin_row else 0, [b["btn_reseller_center"]])
     except Exception:
         pass
 
@@ -128,6 +142,7 @@ def profile_menu():
         [InlineKeyboardButton("💰 Deposit", callback_data="deposit"), deposit_history_button("deposit_history")],
         [InlineKeyboardButton("🔔 Notifications ON/OFF", callback_data="toggle_notifications")],
         [InlineKeyboardButton("📦 My Orders", callback_data="orders")],
+        [InlineKeyboardButton("🤝 Become a Reseller", callback_data="res_center")],
         [InlineKeyboardButton("🎁 Gift Codes", callback_data="gift_codes"), InlineKeyboardButton("🛡 Warranty", callback_data="warranty_menu")],
         [InlineKeyboardButton("🎁 Referrals", callback_data="referrals"), InlineKeyboardButton("💸 Withdraw Earnings", callback_data="withdraw_referral")],
         [InlineKeyboardButton("📂 Withdrawal History", callback_data="withdraw_history")],
