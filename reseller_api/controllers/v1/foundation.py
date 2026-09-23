@@ -1,1 +1,15 @@
+"""Controller for the API v1 namespace discovery response."""
 
+from flask import current_app
+
+from reseller_api.responses import success_response
+
+
+def api_v1_index():
+    return success_response({
+        "name": current_app.config["API_NAME"],
+        "version": current_app.config["API_VERSION"],
+        "status": "foundation",
+        "available_resources": [],
+        "message": "Product and order endpoints are not available yet.",
+    })
