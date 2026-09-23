@@ -1,19 +1,37 @@
 import re
 import unittest
+from unittest.mock import patch
 
 from flask import request
 
 from reseller_api import create_app
+from reseller_api.context import AuthenticatedPrincipal
 from reseller_api.responses import success_response
 
 
 class ApiV1FoundationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.auth_headers = {
+            "Authorization": "Bearer rk_test_ABCDEFGH." + ("x" * 43)
+        }
+        cls.auth_patcher = patch(
+            "reseller_api.middleware.authentication.authenticate_credentials",
+            return_value=AuthenticatedPrincipal(
+                environment="test",
+                reseller_id=1,
+                reseller_public_id="RSR-ABCDEFGH23",
+                api_key_id=1,
+                api_key_public_id="rk_test_ABCDEFGH",
+            ),
+        )
+        cls.auth_patcher.start()
         cls.app = create_app({
             "TESTING": True,
             "MAX_CONTENT_LENGTH": 1024,
             "RESELLER_API_HSTS": False,
+            "API_ENVIRONMENT": "test",
+            "INIT_DATABASE": False,
         })
 
         @cls.app.get("/api/v1/_test_failure")
@@ -26,6 +44,10 @@ class ApiV1FoundationTests(unittest.TestCase):
 
         cls.client = cls.app.test_client()
 
+    @classmethod
+    def tearDownClass(cls):
+        cls.auth_patcher.stop()
+
     def assert_envelope(self, response, expected_ok):
         self.assertEqual(response.content_type, "application/json")
         body = response.get_json()
@@ -35,7 +57,7 @@ class ApiV1FoundationTests(unittest.TestCase):
         return body
 
     def test_canonical_namespace_success(self):
-        response = self.client.get("/api/v1/")
+        response = self.client.get("/api/v1/", headers=self.auth_headers)
         self.assertEqual(response.status_code, 200)
         body = self.assert_envelope(response, True)
         self.assertEqual(body["data"]["version"], "v1")
@@ -44,7 +66,7 @@ class ApiV1FoundationTests(unittest.TestCase):
         self.assertIn("not available", body["data"]["message"])
 
     def test_no_slash_alias_is_json_not_redirect(self):
-        response = self.client.get("/api/v1")
+        response = self.client.get("/api/v1", headers=self.auth_headers)
         self.assertEqual(response.status_code, 200)
         self.assert_envelope(response, True)
 
@@ -61,7 +83,7 @@ class ApiV1FoundationTests(unittest.TestCase):
             self.assertEqual(body["error"]["code"], "not_found")
 
     def test_structured_method_error(self):
-        response = self.client.post("/api/v1/")
+        response = self.client.post("/api/v1/", headers=self.auth_headers)
         self.assertEqual(response.status_code, 405)
         body = self.assert_envelope(response, False)
         self.assertEqual(body["error"]["code"], "method_not_allowed")
@@ -107,22 +129,39 @@ class ApiV1FoundationTests(unittest.TestCase):
         self.assertEqual(body["error"]["code"], "payload_too_large")
 
     def test_request_ids_are_server_generated_and_unique(self):
+        first_headers = dict(self.auth_headers)
+        first_headers["X-Request-ID"] = "attacker-controlled"
         first = self.client.get(
-            "/api/v1/", headers={"X-Request-ID": "attacker-controlled"}
+            "/api/v1/", headers=first_headers
         )
-        second = self.client.get("/api/v1/")
+        second = self.client.get("/api/v1/", headers=self.auth_headers)
         first_id = first.get_json()["request_id"]
         second_id = second.get_json()["request_id"]
         self.assertNotEqual(first_id, "attacker-controlled")
         self.assertNotEqual(first_id, second_id)
 
     def test_security_headers_and_no_cors(self):
-        response = self.client.get("/api/v1/")
+        response = self.client.get("/api/v1/", headers=self.auth_headers)
         self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(response.headers["X-Frame-Options"], "DENY")
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertNotIn("Access-Control-Allow-Origin", response.headers)
+
+    def test_missing_and_malformed_credentials_share_safe_error(self):
+        missing = self.client.get("/api/v1/")
+        malformed = self.client.get(
+            "/api/v1/", headers={"Authorization": "Bearer malformed"}
+        )
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(malformed.status_code, 401)
+        missing_body = self.assert_envelope(missing, False)
+        malformed_body = self.assert_envelope(malformed, False)
+        self.assertEqual(missing_body["error"], malformed_body["error"])
+        self.assertEqual(missing_body["error"], {
+            "code": "authentication_failed",
+            "message": "Authentication credentials are missing or invalid.",
+        })
 
     def test_only_foundation_routes_are_registered(self):
         public_rules = {
