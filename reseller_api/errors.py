@@ -7,17 +7,21 @@ from reseller_api.responses import error_response
 
 
 class ApiError(Exception):
-    def __init__(self, code, message, status=400):
+    def __init__(self, code, message, status=400, headers=None):
         super().__init__(str(code))
         self.code = str(code)
         self.message = str(message)
         self.status = int(status)
+        self.headers = dict(headers or {})
 
 
 def register_error_handlers(app):
     @app.errorhandler(ApiError)
     def _api_error(exc):
-        return error_response(exc.code, exc.message, exc.status)
+        response, status = error_response(exc.code, exc.message, exc.status)
+        for name, value in exc.headers.items():
+            response.headers[name] = value
+        return response, status
 
     @app.errorhandler(HTTPException)
     def _http_error(exc):
