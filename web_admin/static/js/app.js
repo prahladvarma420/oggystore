@@ -69,6 +69,7 @@ const VIEW_TITLES = {
   logs: "Activity Logs", backups: "Backups",
   deposits: "Deposits & Payments", restock: "Restock Requests",
   profit: "Profit & Cost", security: "Security",
+  resellers: "Resellers",
 };
 const SEARCH_VIEWS = { products: "Search products...", orders: "Search orders / user id..." };  // users: has its own in-panel search box
 
@@ -1354,9 +1355,6 @@ $$('.owner-only').forEach(el => { el.hidden = ADMIN_ROLE !== 'owner'; });
 window.addEventListener("popstate", () => setView(location.hash.slice(1) || "dashboard"));
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeModal(); document.body.classList.remove("nav-open"); } });
 
-/* boot */
-setView(location.hash.slice(1) || "dashboard");
-
 /* =====================================================  RESELLERS  ======== */
 let resellersSearchTerm = "", resellersPage = 1, resellersStatus = "", resellersSearchTimer = null, resellersBoxFocused = false;
 const RESELLER_BADGE = {
@@ -1407,7 +1405,7 @@ const RESELLER_TABS = [
   ["overview", "📋 Overview"], ["products", "📦 Products"], ["pricing", "🏷️ Pricing"],
   ["keys", "🔑 API Keys"], ["wallet", "👛 Wallet"], ["orders", "🛒 Orders"],
   ["apilogs", "🧾 API Logs"], ["secevents", "🛡️ Security Events"],
-  ["webhooks", "🪝 Webhooks"], ["limits", "⏱️ Limits"],
+  ["webhooks", "��� Webhooks"], ["limits", "⏱️ Limits"],
 ];
 
 async function viewResellerDetail(pub) {
@@ -1677,3 +1675,7 @@ async function resellerSaveLimits(pub) {
   const r = await post(`/api/resellers/${encodeURIComponent(pub)}/limits`, body);
   if (r.ok) { toast("Limits saved"); render(); } else toast(r.error || "Failed", "err");
 }
+
+/* Boot only after every view's state and handlers are initialized. This makes
+   direct hash navigation, refresh, and browser history safe for #resellers. */
+setView(location.hash.slice(1) || "dashboard");
