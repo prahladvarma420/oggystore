@@ -17,7 +17,7 @@ MAIN_MENU_BUTTONS = [
     ("btn_search", "🔍 Search", "search"),
     ("btn_clear_chat", "🧹 Clear Chat", "clear_chat"),
     ("btn_admin_panel", "🛡 Admin Panel", "admin_panel"),
-    #("btn_reseller_center", "🤝 Reseller Center", "res_center"),
+    ("btn_reseller_center", "🤝 Reseller Center", "res_center"),
 ]
 
 # Buttons reused across dozens of different screens with different callback
