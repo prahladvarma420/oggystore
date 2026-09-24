@@ -2398,7 +2398,7 @@ SETTING_KEYS = [
     "referral_percent", "low_stock_alert_threshold", "low_stock_alert_levels",
     "min_withdrawal", "loyalty_percent", "first_purchase_discount_percent",
     "buy_x_qty", "buy_x_free", "auto_welcome_coupon", "inactive_days",
-    "inactive_coupon",
+    "inactive_coupon", "reseller_api_global_enabled",
 ]
 
 
@@ -2416,6 +2416,11 @@ def api_settings_update():
     changed = []
     for k, v in d.items():
         if k in SETTING_KEYS:
+            if k == "reseller_api_global_enabled":
+                normalized = str(v).strip().lower()
+                if normalized not in ("0", "1", "false", "true", "off", "on"):
+                    return jsonify({"ok": False, "error": "Invalid API enabled value"}), 400
+                v = "1" if normalized in ("1", "true", "on") else "0"
             botdb.set_setting(k, v)
             changed.append(k)
     log_action("update_settings", ",".join(changed))
