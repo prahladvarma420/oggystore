@@ -982,6 +982,13 @@ async function viewSettings() {
     `<label><span>${SETTING_LABELS[k]}</span><input id="set_${k}" class="inp" value="${esc(s[k] ?? "")}"></label>`).join("");
   $("#content").innerHTML = `<div class="panel glass">
     <h3>\u2699\ufe0f Store Settings</h3>
+    <div class="callout" style="margin-bottom:16px">
+      <label style="display:flex;align-items:center;gap:10px">
+        <input type="checkbox" id="set_reseller_api_global_enabled" style="width:auto" ${String(s.reseller_api_global_enabled ?? "1") === "1" ? "checked" : ""}>
+        <b>Global reseller API enabled</b>
+      </label>
+      <p class="muted" style="margin:8px 0 0">Emergency kill switch for every protected reseller API request. Individual reseller controls still apply.</p>
+    </div>
     <div class="form-grid">${fields}</div>
     <div class="toolbar" style="margin-top:18px"><div class="grow"></div><button class="btn btn-glow" id="setSave"><span>Save Settings</span></button></div>
   </div>
@@ -999,6 +1006,7 @@ async function viewSettings() {
   $("#setSave").onclick = async () => {
     const body = {};
     Object.keys(SETTING_LABELS).forEach(k => body[k] = val("set_" + k));
+    body.reseller_api_global_enabled = document.getElementById("set_reseller_api_global_enabled").checked ? "1" : "0";
     const r = await post("/api/settings/update", body);
     if (r.ok) toast("Settings saved"); else toast("Failed", "err");
   };
@@ -1653,7 +1661,7 @@ async function loadResellerLimits(pub) {
       <input class="inp lim-field" id="lim_${key}" type="number" min="0" step="1" value="${lim[key] ?? 0}"></label>`;
   }).join("");
   wrap.innerHTML = `
-    <p class="muted" style="margin:0 0 10px">Configuration only — enforcement ships with the public API. A limit of 0 means none allowed.</p>
+    <p class="muted" style="margin:0 0 10px">Enforced server-side by the reseller API. A limit of 0 means none allowed.</p>
     ${fields}
     <div class="toolbar" style="margin-top:16px"><div class="grow"></div>
       <button class="btn btn-glow" onclick="resellerSaveLimits('${esc(pub)}')"><span>Save limits</span></button></div>`;
