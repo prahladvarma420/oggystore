@@ -240,6 +240,46 @@ def ensure_reseller_tables():
         user_agent TEXT
     )""")
 
+    # Atomic aggregate counters. Request fields are enforced in Phase 4;
+    # order fields are reserved for the later order-quota implementation.
+    cur.execute("""CREATE TABLE IF NOT EXISTS reseller_api_quota_counters(
+        reseller_id INTEGER PRIMARY KEY REFERENCES resellers(id) ON DELETE CASCADE,
+        request_minute_bucket TEXT,
+        request_minute_count INTEGER NOT NULL DEFAULT 0,
+        request_day_bucket TEXT,
+        request_day_count INTEGER NOT NULL DEFAULT 0,
+        request_month_bucket TEXT,
+        request_month_count INTEGER NOT NULL DEFAULT 0,
+        order_minute_bucket TEXT,
+        order_minute_count INTEGER NOT NULL DEFAULT 0,
+        order_day_bucket TEXT,
+        order_day_count INTEGER NOT NULL DEFAULT 0,
+        order_month_bucket TEXT,
+        order_month_count INTEGER NOT NULL DEFAULT 0,
+        last_api_key_id INTEGER REFERENCES reseller_api_keys(id) ON DELETE SET NULL,
+        updated TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+
+    # Per-key counters provide key-level identity/visibility while the actual
+    # configured request limits remain reseller-wide to prevent key hopping.
+    cur.execute("""CREATE TABLE IF NOT EXISTS reseller_api_key_usage_counters(
+        api_key_id INTEGER PRIMARY KEY REFERENCES reseller_api_keys(id) ON DELETE CASCADE,
+        reseller_id INTEGER NOT NULL REFERENCES resellers(id) ON DELETE CASCADE,
+        request_minute_bucket TEXT,
+        request_minute_count INTEGER NOT NULL DEFAULT 0,
+        request_day_bucket TEXT,
+        request_day_count INTEGER NOT NULL DEFAULT 0,
+        request_month_bucket TEXT,
+        request_month_count INTEGER NOT NULL DEFAULT 0,
+        order_minute_bucket TEXT,
+        order_minute_count INTEGER NOT NULL DEFAULT 0,
+        order_day_bucket TEXT,
+        order_day_count INTEGER NOT NULL DEFAULT 0,
+        order_month_bucket TEXT,
+        order_month_count INTEGER NOT NULL DEFAULT 0,
+        updated TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+
     cur.execute("""CREATE TABLE IF NOT EXISTS reseller_security_events(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         reseller_id INTEGER REFERENCES resellers(id) ON DELETE SET NULL,
@@ -261,6 +301,7 @@ def ensure_reseller_tables():
         "CREATE INDEX IF NOT EXISTS idx_reseller_api_logs_reseller ON reseller_api_logs(reseller_id, id)",
         "CREATE INDEX IF NOT EXISTS idx_reseller_api_logs_request ON reseller_api_logs(request_id)",
         "CREATE INDEX IF NOT EXISTS idx_reseller_api_logs_created ON reseller_api_logs(created)",
+        "CREATE INDEX IF NOT EXISTS idx_reseller_key_usage_reseller ON reseller_api_key_usage_counters(reseller_id)",
         "CREATE INDEX IF NOT EXISTS idx_reseller_security_reseller ON reseller_security_events(reseller_id, id)",
         "CREATE INDEX IF NOT EXISTS idx_reseller_security_type ON reseller_security_events(event_type, created)",
     ):
@@ -1037,6 +1078,148 @@ def get_api_log_by_request_id(request_id: str):
         (request_id,),
     )
     return _d(_API_LOG_COLS, cur.fetchone())
+
+
+def _counter_values(row):
+    if not row:
+        return None
+    cols = (
+        "request_minute_bucket", "request_minute_count",
+        "request_day_bucket", "request_day_count",
+        "request_month_bucket", "request_month_count",
+    )
+    return _d(cols, row)
+
+
+def consume_api_request_quota(reseller_id: int, api_key_id: int,
+                              minute_bucket: str, day_bucket: str,
+                              month_bucket: str, minute_limit: int,
+                              daily_limit: int, monthly_limit: int):
+    """Atomically consume one reseller-wide request quota unit.
+
+    The conditional UPSERT is one database statement, so concurrent workers
+    cannot all pass a read-then-write race. Multiple keys intentionally share
+    the reseller aggregate limit; key hopping cannot increase the allowance.
+    """
+    minute_limit = max(0, int(minute_limit))
+    daily_limit = max(0, int(daily_limit))
+    monthly_limit = max(0, int(monthly_limit))
+    stamp = now_text()
+    conn, cur = get_conn(), get_cursor()
+    sql = """
+        INSERT INTO reseller_api_quota_counters(
+            reseller_id, request_minute_bucket, request_minute_count,
+            request_day_bucket, request_day_count,
+            request_month_bucket, request_month_count,
+            last_api_key_id, updated
+        )
+        SELECT ?, ?, 1, ?, 1, ?, 1, ?, ?
+        WHERE ? >= 1 AND ? >= 1 AND ? >= 1
+        ON CONFLICT(reseller_id) DO UPDATE SET
+            request_minute_count=CASE
+                WHEN reseller_api_quota_counters.request_minute_bucket=?
+                THEN reseller_api_quota_counters.request_minute_count+1 ELSE 1 END,
+            request_minute_bucket=?,
+            request_day_count=CASE
+                WHEN reseller_api_quota_counters.request_day_bucket=?
+                THEN reseller_api_quota_counters.request_day_count+1 ELSE 1 END,
+            request_day_bucket=?,
+            request_month_count=CASE
+                WHEN reseller_api_quota_counters.request_month_bucket=?
+                THEN reseller_api_quota_counters.request_month_count+1 ELSE 1 END,
+            request_month_bucket=?,
+            last_api_key_id=?, updated=?
+        WHERE
+            (CASE WHEN reseller_api_quota_counters.request_minute_bucket=?
+                THEN reseller_api_quota_counters.request_minute_count+1 ELSE 1 END) <= ?
+            AND (CASE WHEN reseller_api_quota_counters.request_day_bucket=?
+                THEN reseller_api_quota_counters.request_day_count+1 ELSE 1 END) <= ?
+            AND (CASE WHEN reseller_api_quota_counters.request_month_bucket=?
+                THEN reseller_api_quota_counters.request_month_count+1 ELSE 1 END) <= ?
+    """
+    params = (
+        reseller_id, minute_bucket, day_bucket, month_bucket, api_key_id, stamp,
+        minute_limit, daily_limit, monthly_limit,
+        minute_bucket, minute_bucket,
+        day_bucket, day_bucket,
+        month_bucket, month_bucket,
+        api_key_id, stamp,
+        minute_bucket, minute_limit,
+        day_bucket, daily_limit,
+        month_bucket, monthly_limit,
+    )
+    try:
+        cur.execute(sql, params)
+        allowed = cur.rowcount > 0
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+
+    cur.execute(
+        "SELECT request_minute_bucket, request_minute_count, "
+        "request_day_bucket, request_day_count, "
+        "request_month_bucket, request_month_count "
+        "FROM reseller_api_quota_counters WHERE reseller_id=?",
+        (reseller_id,),
+    )
+    return allowed, _counter_values(cur.fetchone())
+
+
+def record_api_key_request_usage(api_key_id: int, reseller_id: int,
+                                 minute_bucket: str, day_bucket: str,
+                                 month_bucket: str):
+    """Atomically record allowed per-key usage for visibility only."""
+    conn, cur = get_conn(), get_cursor()
+    stamp = now_text()
+    try:
+        cur.execute("""
+            INSERT INTO reseller_api_key_usage_counters(
+                api_key_id, reseller_id,
+                request_minute_bucket, request_minute_count,
+                request_day_bucket, request_day_count,
+                request_month_bucket, request_month_count, updated
+            ) VALUES(?,?,?,1,?,1,?,1,?)
+            ON CONFLICT(api_key_id) DO UPDATE SET
+                reseller_id=excluded.reseller_id,
+                request_minute_count=CASE
+                    WHEN reseller_api_key_usage_counters.request_minute_bucket=excluded.request_minute_bucket
+                    THEN reseller_api_key_usage_counters.request_minute_count+1 ELSE 1 END,
+                request_minute_bucket=excluded.request_minute_bucket,
+                request_day_count=CASE
+                    WHEN reseller_api_key_usage_counters.request_day_bucket=excluded.request_day_bucket
+                    THEN reseller_api_key_usage_counters.request_day_count+1 ELSE 1 END,
+                request_day_bucket=excluded.request_day_bucket,
+                request_month_count=CASE
+                    WHEN reseller_api_key_usage_counters.request_month_bucket=excluded.request_month_bucket
+                    THEN reseller_api_key_usage_counters.request_month_count+1 ELSE 1 END,
+                request_month_bucket=excluded.request_month_bucket,
+                updated=excluded.updated
+        """, (api_key_id, reseller_id, minute_bucket, day_bucket,
+               month_bucket, stamp))
+        conn.commit()
+        return True
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def get_api_key_request_usage(api_key_id: int):
+    cur = get_cursor()
+    cur.execute(
+        "SELECT request_minute_bucket, request_minute_count, "
+        "request_day_bucket, request_day_count, request_month_bucket, "
+        "request_month_count FROM reseller_api_key_usage_counters "
+        "WHERE api_key_id=?",
+        (api_key_id,),
+    )
+    return _counter_values(cur.fetchone())
 
 
 def list_api_logs(reseller_id: int = None, limit: int = 50, offset: int = 0):
