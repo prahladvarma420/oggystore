@@ -7,6 +7,7 @@ from flask import request
 from reseller_api import create_app
 from reseller_api.context import AuthenticatedPrincipal
 from reseller_api.responses import success_response
+from reseller_api.services.rate_limit import RequestRateDecision
 
 
 class ApiV1FoundationTests(unittest.TestCase):
@@ -31,6 +32,13 @@ class ApiV1FoundationTests(unittest.TestCase):
             return_value=True,
         )
         cls.audit_writer = cls.audit_patcher.start()
+        cls.rate_patcher = patch(
+            "reseller_api.middleware.rate_limit.evaluate_request_rate",
+            return_value=RequestRateDecision(
+                True, "allowed", limit=60, remaining=59, reset_after=45
+            ),
+        )
+        cls.rate_evaluator = cls.rate_patcher.start()
         cls.app = create_app({
             "TESTING": True,
             "MAX_CONTENT_LENGTH": 1024,
@@ -51,6 +59,7 @@ class ApiV1FoundationTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.rate_patcher.stop()
         cls.audit_patcher.stop()
         cls.auth_patcher.stop()
 
@@ -153,6 +162,33 @@ class ApiV1FoundationTests(unittest.TestCase):
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertNotIn("Access-Control-Allow-Origin", response.headers)
+        self.assertEqual(response.headers["RateLimit-Limit"], "60")
+        self.assertEqual(response.headers["RateLimit-Remaining"], "59")
+        self.assertEqual(response.headers["RateLimit-Reset"], "45")
+
+    def test_rate_limit_exceeded_is_structured_and_has_metadata(self):
+        denied = RequestRateDecision(
+            False,
+            "rate_limit_exceeded",
+            limit=2,
+            remaining=0,
+            reset_after=30,
+        )
+        with patch(
+            "reseller_api.middleware.rate_limit.evaluate_request_rate",
+            return_value=denied,
+        ):
+            response = self.client.get("/api/v1/", headers=self.auth_headers)
+        self.assertEqual(response.status_code, 429)
+        body = self.assert_envelope(response, False)
+        self.assertEqual(body["error"], {
+            "code": "rate_limit_exceeded",
+            "message": "Too many requests.",
+        })
+        self.assertEqual(response.headers["RateLimit-Limit"], "2")
+        self.assertEqual(response.headers["RateLimit-Remaining"], "0")
+        self.assertEqual(response.headers["RateLimit-Reset"], "30")
+        self.assertEqual(response.headers["Retry-After"], "30")
 
     def test_successful_request_audit_record_has_safe_metadata(self):
         self.audit_writer.reset_mock()
