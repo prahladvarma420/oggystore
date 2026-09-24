@@ -39,6 +39,11 @@ class ApiV1FoundationTests(unittest.TestCase):
             ),
         )
         cls.rate_evaluator = cls.rate_patcher.start()
+        cls.global_control_patcher = patch(
+            "reseller_api.middleware.security_controls.is_global_api_enabled",
+            return_value=True,
+        )
+        cls.global_control = cls.global_control_patcher.start()
         cls.app = create_app({
             "TESTING": True,
             "MAX_CONTENT_LENGTH": 1024,
@@ -59,6 +64,7 @@ class ApiV1FoundationTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.global_control_patcher.stop()
         cls.rate_patcher.stop()
         cls.audit_patcher.stop()
         cls.auth_patcher.stop()
@@ -189,6 +195,42 @@ class ApiV1FoundationTests(unittest.TestCase):
         self.assertEqual(response.headers["RateLimit-Remaining"], "0")
         self.assertEqual(response.headers["RateLimit-Reset"], "30")
         self.assertEqual(response.headers["Retry-After"], "30")
+
+    def test_global_api_disable_rejects_before_authentication(self):
+        with patch(
+            "reseller_api.middleware.security_controls.is_global_api_enabled",
+            return_value=False,
+        ):
+            response = self.client.get("/api/v1/", headers=self.auth_headers)
+        self.assertEqual(response.status_code, 503)
+        body = self.assert_envelope(response, False)
+        self.assertEqual(body["error"], {
+            "code": "api_unavailable",
+            "message": "The reseller API is currently unavailable.",
+        })
+        self.assertEqual(response.headers["Retry-After"], "60")
+
+    def test_method_override_and_ambiguous_framing_are_rejected(self):
+        overridden = self.client.get(
+            "/api/v1/",
+            headers={**self.auth_headers, "X-HTTP-Method-Override": "DELETE"},
+        )
+        self.assertEqual(overridden.status_code, 400)
+        body = self.assert_envelope(overridden, False)
+        self.assertEqual(body["error"]["code"], "invalid_request")
+
+        ambiguous = self.client.open(
+            "/api/v1/",
+            method="POST",
+            headers={
+                **self.auth_headers,
+                "Transfer-Encoding": "chunked",
+                "Content-Length": "10",
+            },
+        )
+        self.assertEqual(ambiguous.status_code, 400)
+        body = self.assert_envelope(ambiguous, False)
+        self.assertEqual(body["error"]["code"], "invalid_request")
 
     def test_successful_request_audit_record_has_safe_metadata(self):
         self.audit_writer.reset_mock()
