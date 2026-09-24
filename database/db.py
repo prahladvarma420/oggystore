@@ -674,6 +674,9 @@ def init_db():
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('auto_welcome_coupon', '')")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('inactive_days', '7')")
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('inactive_coupon', '')")
+    # Master kill switch for all protected reseller API routes. Read from the
+    # database on every request; no process-local cache is used.
+    cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('reseller_api_global_enabled', '1')")
 
     # One-time upgrade: old deposit_success default -> full detailed version
     try:
