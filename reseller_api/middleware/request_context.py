@@ -71,7 +71,11 @@ def register_request_context(app):
                 ip=_client_ip(),
                 user_agent=request.user_agent.string,
             )
-            persisted = persist_audit_record(record)
+            # Railway polls /health frequently. Keep liveness/readiness cheap
+            # and independent of database availability; health requests are
+            # still emitted to structured stdout logs, but are not persisted.
+            is_health_probe = request.path in ("/health", "/health/db")
+            persisted = False if is_health_probe else persist_audit_record(record)
             fields = record.structured_fields()
             fields["audit_persisted"] = persisted
             _access_logger.info(json.dumps(
