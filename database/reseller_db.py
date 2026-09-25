@@ -42,7 +42,12 @@ from urllib.parse import urlsplit, urlunsplit
 from decimal import Decimal, ROUND_HALF_UP
 
 from database import pgcompat as _pgcompat
-from database.db import get_conn, get_cursor, _safe_add_column  # thread-local, pg-aware
+from database.db import (  # thread-local, pg-aware
+    get_conn,
+    get_cursor,
+    _escape_like,
+    _safe_add_column,
+)
 from utils.crypto import encrypt_text, decrypt_text
 from utils.timezone import now, now_text
 
@@ -641,6 +646,218 @@ def list_product_access(reseller_id: int, enabled_only: bool = False):
         sql += " AND a.enabled=1"
     cur.execute(sql + " ORDER BY a.id DESC", (reseller_id,))
     return _ds(_ACCESS_COLS + ("name", "price"), cur.fetchall())
+
+
+def ensure_product_public_id(product_id: int) -> str:
+    """Return one immutable opaque public id for an existing master product.
+
+    Product creation is spread across legacy Telegram and Web Admin surfaces,
+    so assigning on first API exposure is the only additive approach that
+    covers every existing insert path without changing customer behavior.
+    The conditional UPDATE and unique index make concurrent assignment safe.
+    """
+    product_id = int(product_id)
+    conn, cur = get_conn(), get_cursor()
+    cur.execute("SELECT public_id FROM products WHERE id=?", (product_id,))
+    row = cur.fetchone()
+    if not row:
+        raise ValueError("product does not exist")
+    if row[0]:
+        return str(row[0])
+
+    for _attempt in range(12):
+        candidate = "PRD-" + "".join(
+            secrets.choice(_PUBLIC_ID_ALPHABET) for _ in range(12)
+        )
+        try:
+            cur.execute(
+                "UPDATE products SET public_id=? "
+                "WHERE id=? AND (public_id IS NULL OR public_id='')",
+                (candidate, product_id),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            continue
+        cur.execute("SELECT public_id FROM products WHERE id=?", (product_id,))
+        row = cur.fetchone()
+        if row and row[0]:
+            return str(row[0])
+    raise RuntimeError("could not allocate product public id")
+
+
+def backfill_product_public_ids(batch_size: int = 500) -> int:
+    """Assign opaque ids outside request handling in bounded startup batches.
+
+    Existing products created before Phase 5 may have NULL public ids. Doing
+    this during the idempotent database initialization prevents the first
+    paginated API request from performing one write per returned product.
+    Products created later by legacy admin surfaces still use the safe lazy
+    fallback in ``ensure_product_public_id``.
+    """
+    batch_size = max(1, min(int(batch_size), 2000))
+    conn, cur = get_conn(), get_cursor()
+    updated = 0
+    while True:
+        cur.execute(
+            "SELECT id FROM products "
+            "WHERE public_id IS NULL OR public_id='' ORDER BY id ASC LIMIT ?",
+            (batch_size,),
+        )
+        ids = [int(row[0]) for row in cur.fetchall()]
+        if not ids:
+            return updated
+        try:
+            for product_id in ids:
+                candidate = "PRD-" + "".join(
+                    secrets.choice(_PUBLIC_ID_ALPHABET) for _ in range(12)
+                )
+                cur.execute(
+                    "UPDATE products SET public_id=? "
+                    "WHERE id=? AND (public_id IS NULL OR public_id='')",
+                    (candidate, product_id),
+                )
+                if cur.rowcount > 0:
+                    updated += 1
+            conn.commit()
+        except Exception:
+            # An extraordinarily unlikely random collision rolls back only one
+            # bounded batch; the single-row helper then retries each id safely.
+            conn.rollback()
+            for product_id in ids:
+                ensure_product_public_id(product_id)
+                updated += 1
+
+
+def list_reseller_api_products(reseller_id: int, *, page: int, limit: int,
+                               search: str = "", category: str = ""):
+    """Paginated, deny-by-default view over the existing master catalog.
+
+    This is a reseller-scoped repository query, not a second catalog. Only an
+    enabled access row can produce a result. Product activity follows the
+    existing customer rule (products.active=1). Inactive categories are not
+    exposed as metadata, while the active product remains searchable exactly
+    as it is in the customer search flow.
+    """
+    reseller_id = int(reseller_id)
+    page, limit = int(page), int(limit)
+    where = ["a.reseller_id=?", "a.enabled=1", "p.active=1"]
+    params = [reseller_id]
+
+    term = str(search or "").strip()
+    if term:
+        pattern = f"%{_escape_like(term.lower())}%"
+        where.append(
+            "(LOWER(p.name) LIKE ? ESCAPE '!' OR "
+            "LOWER(COALESCE(p.description, '')) LIKE ? ESCAPE '!')"
+        )
+        params.extend((pattern, pattern))
+
+    category_name = str(category or "").strip()
+    if category_name:
+        if category_name.lower() == "uncategorized":
+            where.append("p.category_id IS NULL")
+        else:
+            where.extend(("c.active=1", "LOWER(c.name)=?"))
+            params.append(category_name.lower())
+
+    joins = (
+        " FROM products p "
+        "JOIN reseller_product_access a ON a.product_id=p.id "
+        "LEFT JOIN categories c ON c.id=p.category_id "
+    )
+    predicate = " WHERE " + " AND ".join(where)
+    cur = get_cursor()
+    cur.execute("SELECT COUNT(*)" + joins + predicate, tuple(params))
+    count_row = cur.fetchone()
+    total = int(count_row[0] or 0) if count_row else 0
+
+    # Pagination happens in the inner query before stock rows are joined. This
+    # keeps stock aggregation bounded to at most ``limit`` products instead of
+    # grouping the entire product_stock table for every request.
+    inner_sql = (
+        "SELECT p.id AS product_id, p.public_id, p.name, "
+        "COALESCE(p.description, '') AS description, "
+        "COALESCE(p.validity, '') AS validity, "
+        "COALESCE(p.warranty, '') AS warranty, "
+        "COALESCE(p.max_per_order, 1) AS max_per_order, "
+        "COALESCE(p.featured, 0) AS featured, "
+        "CASE WHEN c.active=1 THEN c.name ELSE NULL END AS category_name, "
+        "COALESCE(p.stock, 0) AS fallback_stock, p.price AS master_price, "
+        "pr.rule_type, pr.value_cents, pr.value_bps "
+        + joins
+        + "LEFT JOIN reseller_pricing_rules pr ON pr.product_id=p.id "
+          "AND pr.reseller_id=a.reseller_id AND pr.enabled=1 "
+        + predicate
+        + " ORDER BY COALESCE(p.featured, 0) DESC, p.id DESC LIMIT ? OFFSET ?"
+    )
+    grouped = (
+        "q.product_id, q.public_id, q.name, q.description, q.validity, "
+        "q.warranty, q.max_per_order, q.featured, q.category_name, "
+        "q.fallback_stock, q.master_price, q.rule_type, q.value_cents, q.value_bps"
+    )
+    select_sql = (
+        "SELECT " + grouped + ", "
+        "CASE WHEN COUNT(ps.id)>0 THEN COUNT(ps.id) ELSE q.fallback_stock END "
+        "FROM (" + inner_sql + ") q "
+        "LEFT JOIN product_stock ps ON ps.product_id=q.product_id AND ps.sold=0 "
+        "GROUP BY " + grouped + " "
+        "ORDER BY q.featured DESC, q.product_id DESC"
+    )
+    offset = (page - 1) * limit
+    cur.execute(select_sql, tuple(params + [limit, offset]))
+    cols = (
+        "product_id", "public_id", "name", "description", "validity",
+        "warranty", "max_per_order", "featured", "category_name",
+        "fallback_stock", "master_price", "rule_type", "value_cents",
+        "value_bps", "available_quantity",
+    )
+    rows = _ds(cols, cur.fetchall())
+    for item in rows:
+        if not item["public_id"]:
+            item["public_id"] = ensure_product_public_id(item["product_id"])
+    return rows, total
+
+
+def get_reseller_api_product(reseller_id: int, public_id: str):
+    """Return one accessible active master product by opaque public id.
+
+    The reseller predicate and enabled access grant are part of the lookup so
+    callers cannot distinguish a missing product from another reseller's or
+    an inactive product. Only explicitly selected API-safe catalog columns
+    are returned; the internal id is included solely for server-side policy
+    and pricing resolution and must never be serialized.
+    """
+    cur = get_cursor()
+    cur.execute(
+        "SELECT p.id, p.public_id, p.name, COALESCE(p.description, ''), "
+        "COALESCE(p.validity, ''), COALESCE(p.warranty, ''), "
+        "COALESCE(p.max_per_order, 1), COALESCE(p.featured, 0), "
+        "CASE WHEN c.active=1 THEN c.name ELSE NULL END, "
+        "CASE WHEN COUNT(ps.id)>0 THEN COUNT(ps.id) "
+        "ELSE COALESCE(p.stock, 0) END, "
+        "p.price, pr.rule_type, pr.value_cents, pr.value_bps "
+        "FROM products p "
+        "JOIN reseller_product_access a ON a.product_id=p.id "
+        "LEFT JOIN categories c ON c.id=p.category_id "
+        "LEFT JOIN reseller_pricing_rules pr ON pr.product_id=p.id "
+        "AND pr.reseller_id=a.reseller_id AND pr.enabled=1 "
+        "LEFT JOIN product_stock ps ON ps.product_id=p.id AND ps.sold=0 "
+        "WHERE p.public_id=? AND p.active=1 "
+        "AND a.reseller_id=? AND a.enabled=1 "
+        "GROUP BY p.id, p.public_id, p.name, p.description, p.validity, "
+        "p.warranty, p.max_per_order, p.featured, c.active, c.name, p.stock, "
+        "p.price, pr.rule_type, pr.value_cents, pr.value_bps "
+        "LIMIT 1",
+        (str(public_id), int(reseller_id)),
+    )
+    cols = (
+        "product_id", "public_id", "name", "description", "validity",
+        "warranty", "max_per_order", "featured", "category_name",
+        "available_quantity", "master_price", "rule_type", "value_cents",
+        "value_bps",
+    )
+    return _d(cols, cur.fetchone())
 
 
 # ------------------------------------------------------------------ pricing rules
@@ -1364,12 +1581,33 @@ def resolve_reseller_price_cents(reseller_id: int, product_id: int, quantity: in
     if base is None:
         return None, None
     rule = get_pricing_rule(reseller_id, product_id)  # enabled rules only
-    if not rule:
-        return base, ("master_tier" if used_tier else "master")
-    rt = rule["rule_type"]
+    return resolve_reseller_price_from_values(
+        base,
+        rule["rule_type"] if rule else None,
+        rule["value_cents"] if rule else None,
+        rule["value_bps"] if rule else None,
+        master_source=("master_tier" if used_tier else "master"),
+        base_is_cents=True,
+    )
+
+
+def resolve_reseller_price_from_values(base_price, rule_type=None,
+                                       value_cents=None, value_bps=None,
+                                       *, master_source="master",
+                                       base_is_cents=False):
+    """Apply the existing reseller price policy to already-loaded values.
+
+    Catalog queries use this to avoid two SQL statements per returned row.
+    The arithmetic and fallback behavior remain centralized here and exactly
+    match ``resolve_reseller_price_cents``.
+    """
+    base = int(base_price) if base_is_cents else to_cents(str(base_price))
+    if not rule_type:
+        return base, master_source
+    rt = str(rule_type)
     if rt == "fixed_price":
-        return int(rule["value_cents"]), "rule:fixed_price"
-    bps = int(rule["value_bps"])
+        return int(value_cents), "rule:fixed_price"
+    bps = int(value_bps)
     delta = (base * bps + 5000) // 10000
     if rt == "discount_percent":
         return max(0, base - delta), "rule:discount_percent"
