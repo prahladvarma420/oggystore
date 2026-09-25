@@ -82,9 +82,9 @@ class ApiV1FoundationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = self.assert_envelope(response, True)
         self.assertEqual(body["data"]["version"], "v1")
-        self.assertEqual(body["data"]["status"], "foundation")
-        self.assertEqual(body["data"]["available_resources"], [])
-        self.assertIn("not available", body["data"]["message"])
+        self.assertEqual(body["data"]["status"], "available")
+        self.assertEqual(body["data"]["available_resources"], ["products"])
+        self.assertIn("available", body["data"]["message"])
 
     def test_no_slash_alias_is_json_not_redirect(self):
         response = self.client.get("/api/v1", headers=self.auth_headers)
@@ -93,7 +93,6 @@ class ApiV1FoundationTests(unittest.TestCase):
 
     def test_future_resource_routes_do_not_exist(self):
         for path in (
-            "/api/v1/products",
             "/api/v1/orders",
             "/api/v1/balance",
             "/api/v1/webhooks",
@@ -289,12 +288,18 @@ class ApiV1FoundationTests(unittest.TestCase):
             "message": "Authentication credentials are missing or invalid.",
         })
 
-    def test_only_foundation_routes_are_registered(self):
+    def test_expected_v1_routes_are_registered(self):
         public_rules = {
             rule.rule for rule in self.app.url_map.iter_rules()
             if rule.rule.startswith("/api/v1") and "_test_" not in rule.rule
         }
-        self.assertEqual(public_rules, {"/api/v1", "/api/v1/"})
+        self.assertEqual(
+            public_rules,
+            {
+                "/api/v1", "/api/v1/", "/api/v1/products",
+                "/api/v1/products/<string:product_id>",
+            },
+        )
 
 
 if __name__ == "__main__":
