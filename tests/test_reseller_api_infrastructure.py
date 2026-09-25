@@ -26,12 +26,14 @@ class ResellerApiInfrastructureStaticTests(unittest.TestCase):
         self.assertIn('"/health"', route_source)
         self.assertIn('"/health/db"', route_source)
 
-    def test_no_phase5_routes_were_added(self):
+    def test_phase5_product_routes_and_no_phase6_routes(self):
         route_sources = "\n".join(
             path.read_text()
             for path in (PROJECT_ROOT / "reseller_api/routes").rglob("*.py")
         )
-        for route in ("/products", "/orders", "/balance", "/webhooks"):
+        self.assertIn('"/products"', route_sources)
+        self.assertIn('"/products/<string:product_id>"', route_sources)
+        for route in ("/orders", "/balance", "/webhooks"):
             self.assertNotIn(route, route_sources)
 
     def test_existing_procfile_commands_are_unchanged(self):
@@ -85,10 +87,11 @@ class ResellerApiInfrastructureRuntimeTests(unittest.TestCase):
         self.assertNotIn("secret", body)
         self.assertNotIn("postgresql", body)
 
-    def test_v1_route_is_initialized_but_still_protected(self):
+    def test_v1_routes_are_initialized_but_still_protected(self):
         rules = {rule.rule for rule in self.app.url_map.iter_rules()}
         self.assertIn("/api/v1/", rules)
-        self.assertNotIn("/api/v1/products", rules)
+        self.assertIn("/api/v1/products", rules)
+        self.assertIn("/api/v1/products/<string:product_id>", rules)
         self.assertNotIn("/api/v1/orders", rules)
         with patch(
             "reseller_api.middleware.security_controls.is_global_api_enabled",
