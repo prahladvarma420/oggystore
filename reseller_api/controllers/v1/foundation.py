@@ -9,7 +9,7 @@ def api_v1_index():
     return success_response({
         "name": current_app.config["API_NAME"],
         "version": current_app.config["API_VERSION"],
-        "status": "foundation",
-        "available_resources": [],
-        "message": "Product and order endpoints are not available yet.",
+        "status": "available",
+        "available_resources": ["products"],
+        "message": "The products resource is available.",
     })
