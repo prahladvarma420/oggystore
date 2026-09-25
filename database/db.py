@@ -463,6 +463,12 @@ def init_db():
     _safe_add_column("products", "flash_price", "REAL")
     _safe_add_column("products", "flash_ends_at", "TEXT")
     _safe_add_column("products", "low_stock_notified", "INTEGER DEFAULT 0")
+    # Opaque identifier used by public APIs. The existing integer id remains
+    # the internal primary/foreign key for every legacy flow. Values are
+    # assigned lazily and atomically by database.reseller_db so products
+    # created by any existing admin surface also receive an id before they are
+    # exposed through the reseller API.
+    _safe_add_column("products", "public_id", "TEXT")
     # Product category for the shop menu. NULL = Uncategorized ("📦 Other") --
     # existing products keep working with no manual editing.
     _safe_add_column("products", "category_id", "INTEGER")
@@ -479,6 +485,7 @@ def init_db():
     try:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_products_active_name ON products(active, name)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id)")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_public_id ON products(public_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_categories_active_name ON categories(active, name)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_product_sold ON product_stock(product_id, sold)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created)")
@@ -804,8 +811,9 @@ def init_db():
     # Reseller system tables (Phase 1 — additive only; no existing table or
     # flow is touched). Lives in database/reseller_db.py; imported lazily to
     # keep module import order simple.
-    from database.reseller_db import ensure_reseller_tables
+    from database.reseller_db import ensure_reseller_tables, backfill_product_public_ids
     ensure_reseller_tables()
+    backfill_product_public_ids()
 
 
 
