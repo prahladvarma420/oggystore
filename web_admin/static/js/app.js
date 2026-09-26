@@ -1399,6 +1399,7 @@ function resellersGo(delta) { resellersPage = Math.max(1, resellersPage + delta)
 
 /* -------------------------------------------------- reseller detail page */
 let currentResellerPub = null, resellerActiveTab = "overview";
+let resWalletSearch = "", resWalletType = "", resWalletPage = 1, resWalletTimer = null;
 function openReseller(pub) { currentResellerPub = pub; resellerActiveTab = "overview"; currentView = "reseller_detail"; render(); }
 
 const RESELLER_TABS = [
@@ -1437,10 +1438,7 @@ async function viewResellerDetail(pub) {
       <h3 style="margin:16px 0 6px">Actions</h3>
       <div class="toolbar">${btns || '<span class="muted">No actions available for this status</span>'}</div>`;
   } else if (resellerActiveTab === "wallet") {
-    body = `
-      <div class="kv"><span>Wallet balance</span><b style="font-size:20px">$${d.balance}</b></div>
-      <div class="kv"><span>Currency</span><b>USDT</b></div>
-      <p class="muted" style="margin-top:10px">Top-ups, adjustments and the full ledger arrive with wallet management in a later prompt — the balance above is live from the Phase-1 ledger wallet.</p>`;
+    body = `<div id="resWalletWrap"><div class="muted">Loading wallet…</div></div>`;
   } else if (resellerActiveTab === "products") {
     body = `<div id="resProdWrap"><div class="muted">Loading products…</div></div>`;
   } else if (resellerActiveTab === "pricing") {
@@ -1475,8 +1473,38 @@ async function viewResellerDetail(pub) {
   if (resellerActiveTab === "pricing") loadResellerPricing(pub);
   if (resellerActiveTab === "keys") loadResellerKeys(pub);
   if (resellerActiveTab === "limits") loadResellerLimits(pub);
+  if (resellerActiveTab === "wallet") loadResellerWallet(pub);
 }
 function resellerTab(key) { resellerActiveTab = key; render(); }
+
+async function loadResellerWallet(pub) {
+  const d = await api(`/api/resellers/${encodeURIComponent(pub)}/wallet?search=${encodeURIComponent(resWalletSearch)}&type=${encodeURIComponent(resWalletType)}&page=${resWalletPage}&per_page=25`);
+  const typeOptions = ["", ...(d.types || [])].map(t => `<option value="${esc(t)}" ${t === resWalletType ? "selected" : ""}>${t ? esc(t.replaceAll("_", " ")) : "All transaction types"}</option>`).join("");
+  const rows = (d.transactions || []).map(t => `<tr>
+    <td class="mono">#${t.id}</td><td>${esc(t.tx_type.replaceAll("_", " "))}</td>
+    <td style="color:${Number(t.amount_cents) >= 0 ? 'var(--green)' : 'var(--red)'}"><b>${Number(t.amount_cents) >= 0 ? '+' : '-'}$${(Math.abs(Number(t.amount_cents)) / 100).toFixed(2)}</b></td>
+    <td>$${(Number(t.balance_after_cents) / 100).toFixed(2)}</td>
+    <td class="mono">${esc(t.reference || "-")}</td><td class="mono">${esc(t.related_order_reference || "-")}</td>
+    <td>${esc(t.description || "-")}</td><td>${fmtDate(t.created)}</td></tr>`).join("");
+  $("#resWalletWrap").innerHTML = `
+    <div class="toolbar"><div class="kv"><span>Balance</span><b style="font-size:20px">$${esc(d.balance.balance)}</b></div><div class="grow"></div>
+      ${ADMIN_ROLE === "owner" ? `<button class="btn btn-green" onclick="resellerCreditModal('${esc(pub)}')"><span>➕ Credit wallet</span></button>` : ""}</div>
+    <div class="toolbar" style="margin:12px 0"><input class="inp" placeholder="Search reference, order or reason…" value="${esc(resWalletSearch)}" oninput="clearTimeout(resWalletTimer);resWalletSearch=this.value;resWalletPage=1;resWalletTimer=setTimeout(()=>loadResellerWallet('${esc(pub)}'),300)">
+      <select class="inp" onchange="resWalletType=this.value;resWalletPage=1;loadResellerWallet('${esc(pub)}')">${typeOptions}</select></div>
+    ${rows ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Type</th><th>Amount</th><th>Balance after</th><th>Reference</th><th>Related order</th><th>Reason</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No wallet transactions", "👛")}
+    <div class="toolbar" style="margin-top:10px"><button class="btn btn-sm btn-ghost" ${d.page <= 1 ? "disabled" : ""} onclick="resWalletPage--;loadResellerWallet('${esc(pub)}')">◀ Prev</button><span class="muted">Page ${d.page}/${d.pages} · ${d.total} transactions</span><button class="btn btn-sm btn-ghost" ${d.page >= d.pages ? "disabled" : ""} onclick="resWalletPage++;loadResellerWallet('${esc(pub)}')">Next ▶</button></div>`;
+}
+
+function resellerCreditModal(pub) {
+  if (ADMIN_ROLE !== "owner") return toast("Owner permission required", "err");
+  openModal("Credit reseller wallet", `<div class="form-grid"><label>Amount (USDT)<input class="inp" id="rw_amount" inputmode="decimal" placeholder="20.00"></label><label>Unique reference<input class="inp" id="rw_reference" maxlength="128" placeholder="manual-credit-2026-001"></label><label class="full">Reason<textarea class="inp" id="rw_reason" maxlength="500" placeholder="Required audit reason"></textarea></label></div><div class="toolbar" style="margin-top:14px"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-green" onclick="resellerCreditSubmit('${esc(pub)}')">Confirm credit</button></div>`);
+}
+async function resellerCreditSubmit(pub) {
+  try {
+    const r = await post(`/api/resellers/${encodeURIComponent(pub)}/wallet/credit`, {amount: val("rw_amount"), reference: val("rw_reference"), reason: val("rw_reason")});
+    toast(r.duplicate ? "Duplicate reference — original transaction reused" : "Wallet credited"); closeModal(); await loadResellerWallet(pub);
+  } catch (e) { toast(e.message || "Credit failed", "err"); }
+}
 
 async function resellerAction(pub, action) {
   const labels = { approve: "Approve", reject: "Reject", suspend: "Suspend", block: "Block", reactivate: "Reactivate" };
