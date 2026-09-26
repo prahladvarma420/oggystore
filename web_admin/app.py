@@ -63,6 +63,7 @@ from utils.timezone import now_text, now
 from utils.premium_emoji import premium_safe
 import database.db as botdb
 import database.reseller_db as rdb  # Phase-1 reseller foundation (tested helpers)
+from web_admin.wallet_admin_service import AdminWalletError, credit_as_admin, wallet_history
 
 # Ensure all tables / migrations exist (safe + idempotent)
 botdb.init_db()
@@ -3049,6 +3050,59 @@ def api_reseller_detail(pubid):
             "avg_ms": round(float(api_stats.get("avg_ms") or 0)),
             "last_at": api_stats.get("last_at"),
         },
+    })
+
+
+@app.route("/api/resellers/<pubid>/wallet")
+@login_required
+def api_reseller_wallet(pubid):
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    try:
+        data = wallet_history(
+            res["id"], request.args.get("search", ""),
+            request.args.get("type") or None,
+            request.args.get("page", 1), request.args.get("per_page", 25),
+        )
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "Invalid wallet filter"}), 400
+    return jsonify({"ok": True, **data, "types": list(rdb.TX_TYPES)})
+
+
+@app.route("/api/resellers/<pubid>/wallet/credit", methods=["POST"])
+@login_required
+@owner_required
+def api_reseller_wallet_credit(pubid):
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        result = credit_as_admin(
+            session.get("web_role"), res["id"], data.get("amount"),
+            data.get("reference"), data.get("reason"),
+        )
+    except AdminWalletError as exc:
+        return jsonify({"ok": False, "error": exc.message, "code": exc.code}), exc.http_status
+    action = "reseller_wallet_credit_duplicate" if result.status == "duplicate" else "reseller_wallet_credit"
+    safe_reason = str(data.get("reason") or "").strip()[:200]
+    credited = rdb.from_cents(rdb.to_cents(data.get("amount")))
+    log_action(action, f"reseller {res['public_id']} | tx #{result.transaction_id} | amount {credited} USDT | reference {data.get('reference')} | reason {safe_reason}")
+    try:
+        rdb.log_security_event(
+            res["id"], "admin_wallet_credit", ip=_client_ip(),
+            user_agent=(request.headers.get("User-Agent") or "")[:200],
+            description=f"admin {session.get('username', '?')} | tx #{result.transaction_id} | reference {data.get('reference')} | status {result.status}",
+        )
+    except Exception:
+        pass
+    return jsonify({
+        "ok": True, "status": result.status,
+        "duplicate": result.status == "duplicate",
+        "transaction_id": result.transaction_id,
+        "balance_cents": result.balance_cents,
+        "balance": result.balance, "currency": result.currency,
     })
 
 
