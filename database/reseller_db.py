@@ -36,7 +36,6 @@ import hashlib
 import ipaddress
 import re
 import secrets
-import threading
 from datetime import timedelta
 from urllib.parse import urlsplit, urlunsplit
 from decimal import Decimal, ROUND_HALF_UP
@@ -64,13 +63,10 @@ TX_TYPES = (
     "adjustment_credit",  # manual admin correction (+)
     "adjustment_debit",   # manual admin correction (-)
 )
+MAX_WALLET_BALANCE_CENTS = 9223372036854775807
+_WALLET_REFERENCE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_.-]{0,127}$")
 
 _PUBLIC_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # gift-code convention
-
-# Serializes only the legacy fallback path (ancient SQLite builds without
-# UPDATE ... RETURNING). The RETURNING path needs no lock: the balance read
-# happens inside the same atomic statement as the update.
-_WALLET_LOCK = threading.Lock()
 
 # Column orders (match the CREATE TABLE definitions / SELECT lists below).
 _RESELLER_COLS = ("id", "public_id", "telegram_user_id", "name", "username",
@@ -82,7 +78,8 @@ _PRICING_COLS = ("id", "reseller_id", "product_id", "rule_type", "value_cents",
                  "value_bps", "enabled", "created", "updated")
 _WALLET_COLS = ("reseller_id", "balance_cents", "currency", "created", "updated")
 _LEDGER_COLS = ("id", "reseller_id", "tx_type", "amount_cents",
-                "balance_after_cents", "reference", "description", "created")
+                "balance_after_cents", "reference", "description", "created",
+                "currency", "related_order_reference")
 _WEBHOOK_COLS = ("id", "reseller_id", "url", "enabled", "created", "updated")
 _API_LOG_COLS = ("id", "reseller_id", "api_key_id", "endpoint", "method",
                  "status_code", "request_id", "response_ms", "created",
@@ -215,6 +212,8 @@ def ensure_reseller_tables():
         reference TEXT,
         description TEXT DEFAULT '',
         created TEXT DEFAULT CURRENT_TIMESTAMP,
+        currency TEXT NOT NULL DEFAULT 'USDT',
+        related_order_reference TEXT,
         UNIQUE(reseller_id, tx_type, reference)
     )""")
 
@@ -326,6 +325,15 @@ def ensure_reseller_tables():
     _safe_add_column("reseller_api_logs", "key_id", "TEXT")
     _safe_add_column("reseller_api_logs", "ip", "TEXT")
     _safe_add_column("reseller_api_logs", "user_agent", "TEXT")
+    _safe_add_column("reseller_wallet_transactions", "currency", "TEXT NOT NULL DEFAULT 'USDT'")
+    _safe_add_column("reseller_wallet_transactions", "related_order_reference", "TEXT")
+    if _pgcompat.use_postgres():
+        cur.execute("CREATE OR REPLACE FUNCTION oggy_protect_reseller_ledger() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'reseller wallet ledger is immutable'; END; $$ LANGUAGE plpgsql")
+        cur.execute("DROP TRIGGER IF EXISTS protect_reseller_ledger ON reseller_wallet_transactions")
+        cur.execute("CREATE TRIGGER protect_reseller_ledger BEFORE UPDATE OR DELETE ON reseller_wallet_transactions FOR EACH ROW EXECUTE FUNCTION oggy_protect_reseller_ledger()")
+    else:
+        cur.execute("CREATE TRIGGER IF NOT EXISTS protect_reseller_ledger_update BEFORE UPDATE ON reseller_wallet_transactions BEGIN SELECT RAISE(ABORT, 'reseller wallet ledger is immutable'); END")
+        cur.execute("CREATE TRIGGER IF NOT EXISTS protect_reseller_ledger_delete BEFORE DELETE ON reseller_wallet_transactions BEGIN SELECT RAISE(ABORT, 'reseller wallet ledger is immutable'); END")
 
     conn.commit()
 
@@ -938,112 +946,83 @@ def get_wallet_balance_cents(reseller_id: int) -> int:
 
 
 def post_wallet_transaction(reseller_id: int, tx_type: str, amount_cents: int,
-                            reference: str = None, description: str = ""):
-    """Post ONE immutable ledger entry and update the balance atomically.
-
-    Returns (status, data):
-      ('posted',    transaction_id)
-      ('duplicate', existing_transaction_id)  — same (reseller, type, reference)
-      ('insufficient_funds', current_balance_cents)
-
-    amount_cents is SIGNED: credits positive, debits negative. The balance
-    update is a conditional single-statement UPDATE (the project's FIX43/44
-    pattern): balance can never go negative and concurrent posts can't
-    double-spend. The UNIQUE(reseller_id, tx_type, reference) constraint is
-    the idempotency backstop — a retried API call with the same reference
-    can never post twice. reference may be NULL (manual adjustments); NULL
-    references are never deduplicated (standard SQL semantics).
-
-    There is intentionally NO update/delete for this table — the ledger is
-    append-only. Corrections are new adjustment entries.
-    """
+                            reference: str = None, description: str = "",
+                            currency: str = "USDT", related_order_reference: str = None):
+    """Atomically move balance and append exactly one immutable ledger row."""
     if tx_type not in TX_TYPES:
-        raise ValueError(f"invalid tx_type: {tx_type}")
-    amount_cents = int(amount_cents)
+        raise ValueError("invalid tx_type")
+    if isinstance(reseller_id, bool) or not isinstance(reseller_id, int) or reseller_id <= 0:
+        raise ValueError("invalid reseller_id")
+    if isinstance(amount_cents, bool) or not isinstance(amount_cents, int):
+        raise TypeError("amount_cents must be an integer")
+    if abs(amount_cents) > MAX_WALLET_BALANCE_CENTS:
+        raise ValueError("amount_cents exceeds wallet limit")
     if amount_cents == 0:
         raise ValueError("amount_cents must be non-zero")
-
+    if tx_type in {"topup_credit", "refund_credit", "adjustment_credit"} and amount_cents < 0:
+        raise ValueError("credit amount must be positive")
+    if tx_type in {"purchase_debit", "adjustment_debit"} and amount_cents > 0:
+        raise ValueError("debit amount must be negative")
+    if not isinstance(reference, str) or not _WALLET_REFERENCE_RE.fullmatch(reference):
+        raise ValueError("valid idempotency reference required")
+    if related_order_reference is not None and (
+        not isinstance(related_order_reference, str)
+        or not _WALLET_REFERENCE_RE.fullmatch(related_order_reference)
+    ):
+        raise ValueError("invalid related order reference")
+    if not isinstance(description, str) or len(description) > 500:
+        raise ValueError("invalid description")
+    if currency != "USDT":
+        raise ValueError("unsupported currency")
     conn, cur = get_conn(), get_cursor()
-    get_or_create_wallet(reseller_id)
-
-    # Idempotency short-circuit (fast path; the UNIQUE constraint is the guard).
-    if reference is not None:
-        cur.execute(
-            "SELECT id FROM reseller_wallet_transactions "
-            "WHERE reseller_id=? AND tx_type=? AND reference=?",
-            (reseller_id, tx_type, reference),
-        )
-        row = cur.fetchone()
-        if row:
-            return "duplicate", row[0]
-
     stamp = now_text()
-    # Conditional atomic balance move — the same discipline as the customer
-    # wallet deduction in products/product_handlers.py — but the new balance is
-    # read in the SAME statement via RETURNING, so the ledger's balance_after
-    # snapshot is race-free even under Postgres autocommit (a separate SELECT
-    # could observe another connection's commit and store a wrong snapshot).
-    try:
-        cur.execute(
-            "UPDATE reseller_wallet SET balance_cents = balance_cents + ?, updated=? "
-            "WHERE reseller_id=? AND balance_cents + ? >= 0 RETURNING balance_cents",
-            (amount_cents, stamp, reseller_id, amount_cents),
+
+    def classify_existing(row):
+        """Return duplicate only when the stored request is exactly equivalent."""
+        existing = _d(_LEDGER_COLS, row)
+        same_request = (
+            int(existing["amount_cents"]) == amount_cents
+            and existing["currency"] == currency
+            and (existing["related_order_reference"] or None)
+                == (related_order_reference or None)
+            and (existing["description"] or "") == (description or "")
         )
-        rows = cur.fetchall()
-    except Exception:
-        rows = None  # ancient SQLite without RETURNING — legacy fallback below
-    if rows is not None:
-        if not rows:
-            conn.rollback()
-            return "insufficient_funds", get_wallet_balance_cents(reseller_id)
-        balance_after = int(rows[0][0])
-    else:
-        with _WALLET_LOCK:
-            cur.execute(
-                "UPDATE reseller_wallet SET balance_cents = balance_cents + ?, updated=? "
-                "WHERE reseller_id=? AND balance_cents + ? >= 0",
-                (amount_cents, stamp, reseller_id, amount_cents),
-            )
+        return ("duplicate" if same_request else "idempotency_conflict",
+                int(existing["id"]))
+
+    try:
+        with _pgcompat.atomic(conn):
+            cur.execute("SELECT id FROM resellers WHERE id=?", (reseller_id,))
+            if not cur.fetchone():
+                raise ValueError("reseller does not exist")
+            cur.execute("INSERT OR IGNORE INTO reseller_wallet(reseller_id) VALUES(?)", (reseller_id,))
+            if reference is not None:
+                # Fetch the complete immutable request so a reused key with a
+                # different payload is rejected rather than silently accepted.
+                cur.execute("SELECT * FROM reseller_wallet_transactions WHERE reseller_id=? AND tx_type=? AND reference=?", (reseller_id, tx_type, reference))
+                row = cur.fetchone()
+                if row:
+                    return classify_existing(row)
+            if amount_cents > 0:
+                cur.execute("UPDATE reseller_wallet SET balance_cents=balance_cents+?, updated=? WHERE reseller_id=? AND balance_cents<=?", (amount_cents, stamp, reseller_id, MAX_WALLET_BALANCE_CENTS - amount_cents))
+            else:
+                cur.execute("UPDATE reseller_wallet SET balance_cents=balance_cents+?, updated=? WHERE reseller_id=? AND balance_cents+?>=0", (amount_cents, stamp, reseller_id, amount_cents))
             if cur.rowcount == 0:
-                conn.rollback()
-                return "insufficient_funds", get_wallet_balance_cents(reseller_id)
+                cur.execute("SELECT balance_cents FROM reseller_wallet WHERE reseller_id=?", (reseller_id,))
+                row = cur.fetchone()
+                return ("balance_limit_exceeded" if amount_cents > 0 else "insufficient_funds"), int(row[0] if row else 0)
             cur.execute("SELECT balance_cents FROM reseller_wallet WHERE reseller_id=?", (reseller_id,))
             balance_after = int(cur.fetchone()[0])
-    try:
-        cur.execute(
-            "INSERT INTO reseller_wallet_transactions"
-            "(reseller_id, tx_type, amount_cents, balance_after_cents, reference, description, created) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (reseller_id, tx_type, amount_cents, balance_after, reference, description or "", stamp),
-        )
+            cur.execute("INSERT INTO reseller_wallet_transactions(reseller_id,tx_type,amount_cents,balance_after_cents,reference,description,created,currency,related_order_reference) VALUES(?,?,?,?,?,?,?,?,?)", (reseller_id, tx_type, amount_cents, balance_after, reference, description, stamp, currency, related_order_reference))
+            txid = cur.lastrowid
     except Exception as exc:
-        # Lost an idempotency race: another connection posted the same
-        # reference first. Undo our balance move and report the duplicate.
-        if reference is not None and "unique" in str(exc).lower():
-            # sqlite (legacy mode): the balance UPDATE is still uncommitted in
-            # this connection's transaction -> rollback() alone undoes it.
-            # Postgres (autocommit): the UPDATE is already durable -> compensate
-            # with a reverse move. Doing BOTH (the old code) double-undid the
-            # balance on sqlite — caught by the P15 threaded race test.
-            conn.rollback()
-            if _pgcompat.use_postgres():
-                cur.execute(
-                    "UPDATE reseller_wallet SET balance_cents = balance_cents - ?, updated=? "
-                    "WHERE reseller_id=?",
-                    (amount_cents, now_text(), reseller_id),
-                )
-                conn.commit()
-            cur.execute(
-                "SELECT id FROM reseller_wallet_transactions "
-                "WHERE reseller_id=? AND tx_type=? AND reference=?",
-                (reseller_id, tx_type, reference),
-            )
+        if reference is not None and _pgcompat.is_unique_violation(exc):
+            cur.execute("SELECT * FROM reseller_wallet_transactions WHERE reseller_id=? AND tx_type=? AND reference=?", (reseller_id, tx_type, reference))
             row = cur.fetchone()
-            return "duplicate", (row[0] if row else None)
-        conn.rollback()
+            if row:
+                return classify_existing(row)
         raise
-    conn.commit()
-    return "posted", cur.lastrowid
+    return "posted", txid
 
 
 def list_wallet_transactions(reseller_id: int, limit: int = 50, offset: int = 0):
@@ -1064,6 +1043,33 @@ def get_wallet_transaction_by_reference(reseller_id: int, tx_type: str, referenc
         (reseller_id, tx_type, reference),
     )
     return _d(_LEDGER_COLS, cur.fetchone())
+
+
+def search_wallet_transactions(reseller_id: int, search: str = "",
+                               tx_type: str = None, limit: int = 50,
+                               offset: int = 0):
+    """Search one reseller's immutable ledger with bounded pagination."""
+    limit = min(100, max(1, int(limit)))
+    offset = max(0, int(offset))
+    sql = " FROM reseller_wallet_transactions WHERE reseller_id=?"
+    params = [int(reseller_id)]
+    if tx_type:
+        if tx_type not in TX_TYPES:
+            raise ValueError("invalid tx_type")
+        sql += " AND tx_type=?"
+        params.append(tx_type)
+    search = str(search or "").strip()[:100]
+    if search:
+        pattern = "%" + _escape_like(search) + "%"
+        sql += (" AND (reference LIKE ? ESCAPE '!' OR description LIKE ? ESCAPE '!'"
+                " OR related_order_reference LIKE ? ESCAPE '!')")
+        params.extend([pattern, pattern, pattern])
+    cur = get_cursor()
+    cur.execute("SELECT COUNT(*)" + sql, tuple(params))
+    total = int(cur.fetchone()[0])
+    cur.execute("SELECT *" + sql + " ORDER BY id DESC LIMIT ? OFFSET ?",
+                tuple(params) + (limit, offset))
+    return _ds(_LEDGER_COLS, cur.fetchall()), total
 
 
 # ------------------------------------------------------------------ webhooks
