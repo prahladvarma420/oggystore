@@ -26,14 +26,15 @@ class ResellerApiInfrastructureStaticTests(unittest.TestCase):
         self.assertIn('"/health"', route_source)
         self.assertIn('"/health/db"', route_source)
 
-    def test_phase5_product_routes_and_no_phase6_routes(self):
+    def test_product_and_balance_routes_without_future_order_routes(self):
         route_sources = "\n".join(
             path.read_text()
             for path in (PROJECT_ROOT / "reseller_api/routes").rglob("*.py")
         )
         self.assertIn('"/products"', route_sources)
         self.assertIn('"/products/<string:product_id>"', route_sources)
-        for route in ("/orders", "/balance", "/webhooks"):
+        self.assertIn('"/balance"', route_sources)
+        for route in ("/orders", "/webhooks"):
             self.assertNotIn(route, route_sources)
 
     def test_existing_procfile_commands_are_unchanged(self):
@@ -92,6 +93,7 @@ class ResellerApiInfrastructureRuntimeTests(unittest.TestCase):
         self.assertIn("/api/v1/", rules)
         self.assertIn("/api/v1/products", rules)
         self.assertIn("/api/v1/products/<string:product_id>", rules)
+        self.assertIn("/api/v1/balance", rules)
         self.assertNotIn("/api/v1/orders", rules)
         with patch(
             "reseller_api.middleware.security_controls.is_global_api_enabled",
