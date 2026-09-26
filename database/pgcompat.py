@@ -26,12 +26,74 @@ in this codebase. See _translate() for the full list.
 import os
 import re
 import threading
+from contextlib import contextmanager
+from itertools import count
 
 DATABASE_URL = (os.getenv("DATABASE_URL", "") or "").strip()
+_SAVEPOINT_COUNTER = count(1)
 
 
 def use_postgres() -> bool:
     return DATABASE_URL.lower().startswith(("postgres://", "postgresql://"))
+
+
+@contextmanager
+def atomic(conn):
+    """Run a multi-statement unit atomically on SQLite or PostgreSQL.
+
+    PostgreSQL normally runs in autocommit mode in this compatibility layer;
+    psycopg's transaction context temporarily creates a real transaction.
+    SQLite uses BEGIN IMMEDIATE for a top-level financial write and a unique
+    SAVEPOINT when nested inside an existing transaction.
+    """
+    if isinstance(conn, _PgConn):
+        with conn._lock:
+            conn._transaction_depth += 1
+            try:
+                with conn._pg.transaction():
+                    yield
+            finally:
+                conn._transaction_depth -= 1
+        return
+
+    nested = bool(getattr(conn, "in_transaction", False))
+    savepoint = None
+    if nested:
+        savepoint = "oggy_atomic_{}_{}".format(
+            threading.get_ident(), next(_SAVEPOINT_COUNTER)
+        )
+        conn.execute("SAVEPOINT " + savepoint)
+    else:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except Exception:
+        if savepoint:
+            conn.execute("ROLLBACK TO SAVEPOINT " + savepoint)
+            conn.execute("RELEASE SAVEPOINT " + savepoint)
+        else:
+            conn.rollback()
+        raise
+    else:
+        if savepoint:
+            conn.execute("RELEASE SAVEPOINT " + savepoint)
+        else:
+            conn.commit()
+
+
+def is_unique_violation(exc) -> bool:
+    """Backend-aware unique-constraint classification."""
+    if use_postgres():
+        try:
+            import psycopg
+            return isinstance(exc, psycopg.errors.UniqueViolation)
+        except Exception:
+            return False
+    try:
+        import sqlite3
+        return isinstance(exc, sqlite3.IntegrityError) and "unique" in str(exc).lower()
+    except Exception:
+        return False
 
 
 # Tables whose primary key is an auto-increment "id" column. Plain INSERTs into
@@ -225,6 +287,12 @@ class _PgCursor:
         except Exception as exc:
             if not self._conn._is_connection_error(exc):
                 raise
+            # Retrying a single statement on a new autocommit connection would
+            # split an atomic financial unit. Let the transaction fail so the
+            # database rolls it back; the caller may safely retry the whole
+            # idempotent operation instead.
+            if self._conn._transaction_depth:
+                raise
         # Stale cursor (connection was already refreshed elsewhere): retry
         # once on a fresh cursor from the current connection.
         try:
@@ -320,6 +388,7 @@ class _PgConn:
         self._psycopg = psycopg
         self._dsn = dsn
         self._lock = threading.RLock()
+        self._transaction_depth = 0
         self._pg = self._open()
         # accepted but ignored (sqlite3 compatibility):
         object.__setattr__(self, "row_factory", None)
