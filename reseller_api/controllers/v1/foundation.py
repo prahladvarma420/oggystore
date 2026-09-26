@@ -10,6 +10,6 @@ def api_v1_index():
         "name": current_app.config["API_NAME"],
         "version": current_app.config["API_VERSION"],
         "status": "available",
-        "available_resources": ["products"],
-        "message": "The products resource is available.",
+        "available_resources": ["products", "balance"],
+        "message": "The products and balance resources are available.",
     })
