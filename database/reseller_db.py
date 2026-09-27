@@ -335,6 +335,10 @@ def ensure_reseller_tables():
         cur.execute("CREATE TRIGGER IF NOT EXISTS protect_reseller_ledger_update BEFORE UPDATE ON reseller_wallet_transactions BEGIN SELECT RAISE(ABORT, 'reseller wallet ledger is immutable'); END")
         cur.execute("CREATE TRIGGER IF NOT EXISTS protect_reseller_ledger_delete BEFORE DELETE ON reseller_wallet_transactions BEGIN SELECT RAISE(ABORT, 'reseller wallet ledger is immutable'); END")
 
+    # Phase 7: reseller order metadata columns on the master orders table
+    from reseller_api.services.order_service import ensure_order_metadata_columns
+    ensure_order_metadata_columns()
+
     conn.commit()
 
 
