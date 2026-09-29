@@ -107,6 +107,8 @@ ID_TABLES = {
     "resellers", "reseller_api_keys", "reseller_product_access",
     "reseller_pricing_rules", "reseller_wallet_transactions",
     "reseller_webhooks", "reseller_api_logs", "reseller_security_events",
+    # Phase 9: webhook outbox, worker jobs, delivery log
+    "webhook_outbox", "worker_jobs", "webhook_delivery_log",
 }
 
 # Conflict targets for INSERT OR REPLACE -> ON CONFLICT (...) DO UPDATE.
