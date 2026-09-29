@@ -1,0 +1,1 @@
+"""External fulfillment client stubs."""
