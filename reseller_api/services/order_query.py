@@ -120,8 +120,7 @@ def _format_row(row, include_delivery_status: bool = True) -> Dict[str, Any]:
         5  unit_price_cents (INTEGER, may be NULL for legacy rows)
         6  created
         7  client_order_id
-        8  request_id
-        9  delivery       (encrypted blob, only used for delivery_status)
+        8  delivery       (encrypted blob, only used for delivery_status)
 
     Fields intentionally excluded
     -----------------------------
@@ -164,7 +163,6 @@ def _format_row(row, include_delivery_status: bool = True) -> Dict[str, Any]:
         'status':     _api_status(int(order_id)),
         'created_at': created,
         'updated_at': None,        # master schema has no updated column
-        'request_id': request_id,
     }
     if client_order_id:
         result['client_order_id'] = client_order_id
