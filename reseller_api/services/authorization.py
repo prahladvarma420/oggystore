@@ -11,6 +11,7 @@ FOUNDATION_READ = "foundation:read"
 PRODUCTS_READ = "products:read"
 BALANCE_READ = "balance:read"
 ORDERS_READ = "orders:read"
+DELIVERY_READ = "delivery:read"
 ORDERS_CREATE = "orders:create"
 WEBHOOKS_READ = "webhooks:read"
 WEBHOOKS_WRITE = "webhooks:write"
@@ -167,7 +168,7 @@ def is_reseller_blocked(context, expected_environment):
 __all__ = [
     "AuthorizationDecision",
     "SUPPORTED_OPERATIONS",
-    "FOUNDATION_READ", "PRODUCTS_READ", "BALANCE_READ", "ORDERS_READ",
+    "FOUNDATION_READ", "PRODUCTS_READ", "BALANCE_READ", "ORDERS_READ", "DELIVERY_READ",
     "ORDERS_CREATE", "WEBHOOKS_READ", "WEBHOOKS_WRITE",
     "authorize_operation", "authorize_product_access", "can_perform_operation",
     "can_access_product", "can_create_order", "is_api_enabled",
