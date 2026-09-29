@@ -52,18 +52,33 @@ _CLIENT_ORDER_ID_RE = re.compile(r'^[\x21-\x7E]{1,128}$')
 
 # Forbidden request body keys that clients must never supply.
 _FORBIDDEN_CLIENT_FIELDS = frozenset({
+    # Identity / routing — server-resolved only
     "reseller_id",
     "reseller",
+    "source",
+    # Financial — server-calculated only
     "price",
     "unit_price",
+    "unit_price_cents",
     "total",
+    "total_cents",
     "balance",
+    # Stock / delivery — set by fulfilment pipeline
     "stock_status",
+    "delivery",
+    "stock_restored",
+    "partial_stock_restored",
+    # Order metadata — set by server
     "order_id",
     "id",
     "status",
-    "delivery",
+    "master_status",
+    "failure_reason",
     "payment_method",
+    # Reseller account state — read-only admin fields
+    "is_active",
+    "is_suspended",
+    "is_blocked",
 })
 
 # Public product ID pattern — must match the PRD-* format produced by
