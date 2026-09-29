@@ -141,7 +141,6 @@ def create_order():
         "currency":       pricing.currency,                 # "USDT"
         "status":         order_status,                     # "completed" | "replaced" | ...
         "created_at":     result.created_at,                # ISO-like timestamp from DB
-        "request_id":     context.request_id,
     }
     # Include client_order_id only when the client provided one.
     if validated.client_order_id:
@@ -215,4 +214,32 @@ def order_detail(order_id: str):
     return success_response({"order": order})
 
 
-__all__ = ["create_order", "list_orders", "order_detail"]
+
+
+# ---------------------------------------------------------------------------
+# Delivery endpoint — Phase 8
+# ---------------------------------------------------------------------------
+
+from reseller_api.services.authorization import DELIVERY_READ
+from reseller_api.services.order_delivery import get_order_delivery
+
+
+@require_operation(DELIVERY_READ)
+def order_delivery(order_id: str):
+    """GET /api/v1/orders/<order_id>/delivery — return decrypted delivery items.
+
+    IDOR prevention: query always scopes to authenticated reseller_id.
+    Returns decrypted delivery items only for completed orders owned by
+    the authenticated reseller. Pending/failed/cancelled orders return
+    an appropriate status message with an empty items list.
+    """
+    context = get_authenticated_context()
+    try:
+        result = get_order_delivery(context, order_id)
+    except ApiError:
+        raise
+    except Exception as exc:
+        raise ApiError("delivery_error", "Delivery could not be retrieved.", 500) from exc
+    return success_response({"delivery": result})
+
+__all__ = ["create_order", "list_orders", "order_detail", "order_delivery"]
