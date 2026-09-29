@@ -5,7 +5,7 @@ from flask import Blueprint
 from reseller_api.controllers.v1.foundation import api_v1_index
 from reseller_api.controllers.v1.products import list_products, product_detail
 from reseller_api.controllers.v1.balance import balance_detail
-from reseller_api.controllers.v1.orders import create_order, list_orders, order_detail
+from reseller_api.controllers.v1.orders import create_order, list_orders, order_detail, order_delivery
 from reseller_api.middleware.authentication import authenticate_request
 from reseller_api.middleware.security_controls import enforce_global_api_control
 from reseller_api.middleware.rate_limit import (
@@ -44,6 +44,13 @@ blueprint.add_url_rule(
     "/orders/<string:order_id>",
     "order_detail",
     order_detail,
+    methods=["GET"],
+)
+
+blueprint.add_url_rule(
+    "/orders/<string:order_id>/delivery",
+    "order_delivery",
+    order_delivery,
     methods=["GET"],
 )
 
