@@ -186,7 +186,9 @@ def ensure_delivery_log_table() -> None:
     """Create webhook_delivery_log if it does not exist (idempotent)."""
     conn = get_conn()
     cur  = get_cursor()
-    cur.executescript("""
+    # executescript is SQLite-only — use one execute() per statement so this
+    # works on both SQLite and the Postgres-compatibility cursor.
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS webhook_delivery_log (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             outbox_event_id INTEGER NOT NULL,
@@ -201,22 +203,31 @@ def ensure_delivery_log_table() -> None:
             error_category  TEXT,
             next_retry_at   TEXT,
             created_at      TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP)
-        );
-        CREATE INDEX IF NOT EXISTS ix_dlg_outbox
-            ON webhook_delivery_log(outbox_event_id);
-        CREATE INDEX IF NOT EXISTS ix_dlg_webhook
-            ON webhook_delivery_log(webhook_id, created_at);
-        CREATE INDEX IF NOT EXISTS ix_dlg_reseller
-            ON webhook_delivery_log(reseller_id, created_at);
-        -- Prevent two workers logging the same attempt for the same event+webhook.
-        -- ON CONFLICT IGNORE makes INSERT OR IGNORE a safe upsert guard.
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_dlg_attempt
-            ON webhook_delivery_log(outbox_event_id, webhook_id, attempt);
-        -- Enforce UUID uniqueness at the DB level (UUID4 collision is astronomically
-        -- unlikely, but the constraint is a safety net for bugs).
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_dlg_request_id
-            ON webhook_delivery_log(request_id);
+        )
     """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS ix_dlg_outbox"
+        " ON webhook_delivery_log(outbox_event_id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS ix_dlg_webhook"
+        " ON webhook_delivery_log(webhook_id, created_at)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS ix_dlg_reseller"
+        " ON webhook_delivery_log(reseller_id, created_at)"
+    )
+    # Prevent two workers logging the same attempt for the same event+webhook.
+    # ON CONFLICT IGNORE makes INSERT OR IGNORE a safe upsert guard.
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_dlg_attempt"
+        " ON webhook_delivery_log(outbox_event_id, webhook_id, attempt)"
+    )
+    # Enforce UUID uniqueness at the DB level.
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_dlg_request_id"
+        " ON webhook_delivery_log(request_id)"
+    )
     conn.commit()
 
 
@@ -542,5 +553,3 @@ def get_delivery_for_webhook(
         "next_retry_at":   r["next_retry_at"],
         "created_at":      r["created_at"],
     }
-
-
