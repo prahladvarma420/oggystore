@@ -1,176 +1,103 @@
-"""Framework-neutral authorization policy for authenticated reseller APIs."""
+"""Framework-neutral reseller API-key authentication service.
 
-from dataclasses import dataclass
-from typing import Mapping, Optional
+This module is intentionally Flask-free so it can be unit-tested without
+a running application context.  All Flask-specific wiring lives in
+``reseller_api.middleware.authentication``.
+
+Security invariants
+-------------------
+* The raw secret is used only inside ``authenticate_credentials`` and is
+  never stored, logged, or returned to callers.
+* Timing-safe comparison (``secrets.compare_digest``) is always performed
+  even when the key_id lookup fails, preventing timing side-channels.
+* Every failure path returns ``None``; callers must not distinguish between
+  bad key, bad secret, revoked key, disabled reseller, etc.
+"""
+from __future__ import annotations
+
+import hashlib
+import secrets
+from typing import Optional
 
 import database.reseller_db as rdb
-from reseller_api.context import ApiRequestContext
+from reseller_api.context import AuthenticatedPrincipal
+
+# Used for the dummy comparison when a key_id lookup returns nothing,
+# so the compare_digest call always takes the same time.
+_DUMMY_HASH: str = hashlib.sha256(b"invalid-api-credential-dummy").hexdigest()
 
 
-FOUNDATION_READ = "foundation:read"
-PRODUCTS_READ = "products:read"
-BALANCE_READ = "balance:read"
-ORDERS_READ = "orders:read"
-DELIVERY_READ = "delivery:read"
-ORDERS_CREATE = "orders:create"
-WEBHOOKS_READ = "webhooks:read"
-WEBHOOKS_WRITE = "webhooks:write"
-
-SUPPORTED_OPERATIONS = frozenset({
-    FOUNDATION_READ,
-    PRODUCTS_READ,
-    BALANCE_READ,
-    ORDERS_READ,
-    ORDERS_CREATE,
-    WEBHOOKS_READ,
-    WEBHOOKS_WRITE,
-})
-
-_REQUEST_LIMIT_FIELDS = (
-    "rate_limit_per_min",
-    "daily_request_limit",
-    "monthly_request_limit",
-)
-_ORDER_LIMIT_FIELDS = (
-    "orders_per_min",
-    "daily_order_limit",
-    "monthly_order_limit",
-)
+def _hash_secret(raw: str) -> str:
+    """SHA-256 hex digest of the raw secret string."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-@dataclass(frozen=True)
-class AuthorizationDecision:
-    allowed: bool
-    reason: str
-    operation: str
-    limits: Optional[Mapping[str, int]] = None
+def authenticate_credentials(
+    key_id: str,
+    secret: str,
+    expected_environment: str,
+) -> Optional[AuthenticatedPrincipal]:
+    """Return an ``AuthenticatedPrincipal`` or ``None`` for every failure.
 
+    The deliberately uniform ``None`` result prevents callers from inferring
+    whether a key ID, secret, revocation status, environment mismatch, or
+    disabled reseller caused authentication to fail.
 
-def _deny(operation: str, reason: str, limits=None):
-    return AuthorizationDecision(False, reason, operation, limits)
-
-
-def _limits(snapshot):
-    names = _REQUEST_LIMIT_FIELDS + _ORDER_LIMIT_FIELDS
-    return {name: int(snapshot[name]) for name in names}
-
-
-def _validated_snapshot(context: ApiRequestContext, expected_environment: str):
-    """Re-check mutable state for every authorization decision."""
-    if not isinstance(context, ApiRequestContext):
-        return None, "missing_authenticated_context"
-    if expected_environment not in ("test", "production"):
-        return None, "invalid_server_environment"
-    if context.environment != expected_environment:
-        return None, "context_environment_mismatch"
-
-    snapshot = rdb.get_api_authorization_snapshot(
-        context.reseller_id,
-        context.api_key_id,
-    )
-    if not snapshot:
-        return None, "key_reseller_scope_mismatch"
-    if snapshot["key_id"] != context.api_key_public_id:
-        return None, "key_identity_mismatch"
-    if snapshot["reseller_public_id"] != context.reseller_public_id:
-        return None, "reseller_identity_mismatch"
-    if snapshot["key_status"] != "active" or not bool(snapshot["key_enabled"]):
-        return None, "key_not_active"
-    if snapshot["key_environment"] != expected_environment:
-        return None, "key_environment_mismatch"
-    if snapshot["reseller_status"] != "active":
-        return None, "reseller_not_active"
-    if bool(snapshot["user_blocked"]):
-        return None, "reseller_blocked"
-    if not bool(snapshot["api_enabled"]):
-        return None, "api_disabled"
-    return snapshot, "authorized"
-
-
-def authorize_operation(context: ApiRequestContext, operation: str,
-                        expected_environment: str):
-    """Answer whether this authenticated key may perform a known operation.
-
-    There is currently no stored custom-scope model. Supported operations are
-    explicit and deny unknown permissions. Per-reseller configured limits are
-    returned for later atomic rate-limit enforcement.
+    Parameters
+    ----------
+    key_id:
+        The public key identifier supplied by the caller (e.g. ``rk_test_…``).
+    secret:
+        The private secret supplied by the caller.  It is compared in
+        constant time and then discarded.
+    expected_environment:
+        The environment that this API server instance is configured for
+        (e.g. ``"test"`` or ``"production"``).
     """
-    operation = str(operation or "")
-    if operation not in SUPPORTED_OPERATIONS:
-        return _deny(operation, "unsupported_operation")
+    # Fast-path: empty credentials cannot possibly authenticate.
+    if not key_id or not secret:
+        return None
 
-    snapshot, reason = _validated_snapshot(context, expected_environment)
-    if not snapshot:
-        return _deny(operation, reason)
-    limits = _limits(snapshot)
+    # --- Step 1: fetch the stored auth record --------------------------------
+    record = rdb.get_api_auth_record(key_id)
+    stored_hash: str = record["secret_hash"] if record else _DUMMY_HASH
 
-    if any(limits[name] <= 0 for name in _REQUEST_LIMIT_FIELDS):
-        return _deny(operation, "request_limit_disabled", limits)
-    if operation == ORDERS_CREATE and any(
-        limits[name] <= 0 for name in _ORDER_LIMIT_FIELDS
-    ):
-        return _deny(operation, "order_limit_disabled", limits)
-    return AuthorizationDecision(True, "authorized", operation, limits)
+    # --- Step 2: constant-time secret comparison (always runs) ---------------
+    secret_matches: bool = secrets.compare_digest(stored_hash, _hash_secret(secret))
 
+    # --- Step 3: validate every field; any failure returns None --------------
+    if not record or not secret_matches:
+        return None
+    if record["key_status"] != "active":
+        return None
+    if not bool(record["key_enabled"]):
+        return None
+    if record["reseller_status"] != "active":
+        return None
+    if not bool(record["api_enabled"]):
+        return None
+    if bool(record["user_blocked"]):
+        return None
+    if record["environment"] != expected_environment:
+        return None
 
-def authorize_product_access(context: ApiRequestContext, product_id: int,
-                             expected_environment: str,
-                             operation: str = PRODUCTS_READ):
-    """Authorize one server-resolved master product for this reseller.
-
-    No reseller ID, ownership flag, price, or balance is accepted from client
-    input. ``product_id`` must be an internal ID resolved by server code from a
-    future public product identifier.
-    """
-    decision = authorize_operation(context, operation, expected_environment)
-    if not decision.allowed:
-        return decision
-    if isinstance(product_id, bool) or not isinstance(product_id, int) or product_id <= 0:
-        return _deny(operation, "invalid_server_product_id", decision.limits)
-    state = rdb.get_reseller_product_access_state(context.reseller_id, product_id)
-    if not state or not bool(state["product_active"]):
-        return _deny(operation, "product_unavailable", decision.limits)
-    if not bool(state["access_enabled"]):
-        return _deny(operation, "product_access_denied", decision.limits)
-    return decision
-
-
-def can_perform_operation(context, operation, expected_environment):
-    return authorize_operation(context, operation, expected_environment).allowed
-
-
-def can_access_product(context, product_id, expected_environment):
-    return authorize_product_access(
-        context, product_id, expected_environment, PRODUCTS_READ
-    ).allowed
-
-
-def can_create_order(context, expected_environment):
-    return authorize_operation(context, ORDERS_CREATE, expected_environment).allowed
-
-
-def is_api_enabled(context, expected_environment):
-    snapshot, _reason = _validated_snapshot(context, expected_environment)
-    return bool(snapshot)
-
-
-def is_reseller_blocked(context, expected_environment):
-    if not isinstance(context, ApiRequestContext):
-        return True
-    snapshot = rdb.get_api_authorization_snapshot(
-        context.reseller_id, context.api_key_id
+    # --- Step 4: build the principal -----------------------------------------
+    principal = AuthenticatedPrincipal(
+        environment=record["environment"],
+        reseller_id=int(record["reseller_id"]),
+        reseller_public_id=str(record["reseller_public_id"]),
+        api_key_id=int(record["api_key_id"]),
+        api_key_public_id=str(record["key_id"]),
     )
-    if not snapshot:
-        return True
-    return bool(snapshot["user_blocked"])
+
+    # --- Step 5: best-effort usage telemetry (non-transactional) -------------
+    # Authentication succeeds even if this write fails.
+    try:
+        rdb.touch_api_key_used_throttled(principal.api_key_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+    return principal
 
 
-__all__ = [
-    "AuthorizationDecision",
-    "SUPPORTED_OPERATIONS",
-    "FOUNDATION_READ", "PRODUCTS_READ", "BALANCE_READ", "ORDERS_READ", "DELIVERY_READ",
-    "ORDERS_CREATE", "WEBHOOKS_READ", "WEBHOOKS_WRITE",
-    "authorize_operation", "authorize_product_access", "can_perform_operation",
-    "can_access_product", "can_create_order", "is_api_enabled",
-    "is_reseller_blocked",
-]
+__all__ = ["authenticate_credentials"]
