@@ -30,7 +30,8 @@ def _client_ip():
     if current_app.config.get("RESELLER_API_TRUST_PROXY"):
         forwarded = request.headers.get("X-Forwarded-For", "")
         if forwarded:
-            candidate = forwarded.split(",", 1)[0].strip()
+            # Use rightmost value — Railway appends the real client IP on the right.
+            candidate = forwarded.rsplit(",", 1)[-1].strip()
     try:
         return str(ipaddress.ip_address(candidate))
     except ValueError:
