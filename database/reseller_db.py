@@ -346,6 +346,21 @@ def ensure_reseller_tables():
     from reseller_api.services.order_service import ensure_order_metadata_columns
     ensure_order_metadata_columns()
 
+    # Phase 10: IP-based auth-failure counters (brute-force protection)
+    ensure_ip_auth_counter_table()
+
+    # Phase 10 P3: endpoint-specific quotas
+    ensure_endpoint_quota_table()
+
+    # Phase 10 P4: financial events audit log
+    ensure_financial_event_table()
+
+    # Phase 10 P7: reseller quota settings
+    ensure_quota_settings_table()
+
+    # Phase 10 Prompt 3: endpoint-specific quota counters
+    ensure_endpoint_quota_table()
+
     conn.commit()
 
 
@@ -1716,3 +1731,382 @@ def set_reseller_limits(reseller_id: int, **updates) -> dict:
         raise ValueError("reseller not found")
     conn.commit()
     return get_reseller_limits(reseller_id)
+
+
+# ---------------------------------------------------------------------------
+# IP authentication-failure counters — Phase 10 Prompt 2
+# ---------------------------------------------------------------------------
+
+def ensure_ip_auth_counter_table() -> None:
+    """Create reseller_ip_auth_counters (idempotent).
+
+    Called from ensure_reseller_tables() so the table exists before any
+    auth middleware runs.  One row per (ip_hash, minute_bucket).
+    ip_hash is a 32-hex-char SHA-256 truncation; raw IPs are never stored.
+    """
+    conn = get_conn()
+    cur  = get_cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS reseller_ip_auth_counters (
+            ip_hash       TEXT NOT NULL,
+            minute_bucket TEXT NOT NULL,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            updated       TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            PRIMARY KEY (ip_hash, minute_bucket)
+        )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ip_auth_bucket"
+        " ON reseller_ip_auth_counters(minute_bucket)"
+    )
+    conn.commit()
+
+
+def get_ip_auth_failure_count(ip_hash: str, minute_bucket: str) -> int:
+    """Return current failure count for this ip_hash/minute_bucket (0 if absent)."""
+    cur = get_cursor()
+    cur.execute(
+        "SELECT failure_count FROM reseller_ip_auth_counters"
+        " WHERE ip_hash=? AND minute_bucket=?",
+        (str(ip_hash), str(minute_bucket)),
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+def increment_ip_auth_failure(ip_hash: str, minute_bucket: str) -> int:
+    """Atomically increment the failure counter; return the new count.
+
+    Uses a single conditional UPSERT so concurrent workers on multiple
+    Railway instances cannot race — the DB serialises the increment.
+    """
+    conn = get_conn()
+    cur  = get_cursor()
+    stamp = now_text()
+    cur.execute(
+        """
+        INSERT INTO reseller_ip_auth_counters
+            (ip_hash, minute_bucket, failure_count, updated)
+        VALUES (?, ?, 1, ?)
+        ON CONFLICT(ip_hash, minute_bucket) DO UPDATE SET
+            failure_count = reseller_ip_auth_counters.failure_count + 1,
+            updated       = excluded.updated
+        """,
+        (str(ip_hash), str(minute_bucket), stamp),
+    )
+    conn.commit()
+    cur.execute(
+        "SELECT failure_count FROM reseller_ip_auth_counters"
+        " WHERE ip_hash=? AND minute_bucket=?",
+        (str(ip_hash), str(minute_bucket)),
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row else 1
+
+
+
+
+# --------------------------------------------------------------------------- #
+# Phase 10 Prompt 3: Endpoint-specific quota counters                         #
+# --------------------------------------------------------------------------- #
+
+# --------------------------------------------------------------------------- #
+# Phase 10 Prompt 9: Prune stale counter rows (unbounded table growth fix)    #
+# --------------------------------------------------------------------------- #
+
+def prune_stale_ip_auth_counters(keep_minutes: int = 60) -> int:
+    """Delete reseller_ip_auth_counters rows older than keep_minutes.
+    Safe to call from any worker concurrently. Returns rows deleted.
+    """
+    import datetime as _dt
+    conn, cur = get_conn(), get_cursor()
+    cutoff = (_dt.datetime.utcnow() - _dt.timedelta(minutes=keep_minutes)
+              ).strftime("%Y-%m-%dT%H:%M")
+    cur.execute("DELETE FROM reseller_ip_auth_counters WHERE minute_bucket < ?",
+                (cutoff,))
+    deleted = cur.rowcount
+    conn.commit()
+    return deleted
+
+
+def prune_stale_endpoint_quotas(keep_minutes: int = 10) -> int:
+    """Delete reseller_endpoint_quotas rows whose bucket has expired.
+    Returns rows deleted.
+    """
+    import datetime as _dt
+    conn, cur = get_conn(), get_cursor()
+    cutoff = (_dt.datetime.utcnow() - _dt.timedelta(minutes=keep_minutes)
+              ).strftime("%Y-%m-%dT%H:%M")
+    cur.execute(
+        "DELETE FROM reseller_endpoint_quotas WHERE minute_bucket < ? AND minute_bucket != ''",
+        (cutoff,))
+    deleted = cur.rowcount
+    conn.commit()
+    return deleted
+
+# Phase 10 Prompt 3: Endpoint quota table + function                          #
+# --------------------------------------------------------------------------- #
+
+def ensure_endpoint_quota_table():
+    """Create reseller_endpoint_quotas. Idempotent."""
+    conn, cur = get_conn(), get_cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS reseller_endpoint_quotas(
+            reseller_id   INTEGER NOT NULL
+                          REFERENCES resellers(id) ON DELETE CASCADE,
+            category      TEXT NOT NULL,
+            minute_bucket TEXT NOT NULL DEFAULT '',
+            minute_count  INTEGER NOT NULL DEFAULT 0,
+            updated       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (reseller_id, category)
+        )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ep_quota_reseller "
+        "ON reseller_endpoint_quotas(reseller_id)"
+    )
+    conn.commit()
+
+
+def consume_endpoint_quota(reseller_id: int, category: str,
+                           minute_bucket: str, limit: int):
+    """Atomically consume one unit from a per-category per-reseller counter.
+
+    Returns (allowed: bool, used_count: int).
+    Single-statement UPSERT prevents concurrent race conditions.
+    """
+    limit = max(1, int(limit))
+    stamp = now_text()
+    conn, cur = get_conn(), get_cursor()
+    try:
+        cur.execute("""
+            INSERT INTO reseller_endpoint_quotas
+                (reseller_id, category, minute_bucket, minute_count, updated)
+            VALUES (?, ?, ?, 1, ?)
+            ON CONFLICT(reseller_id, category) DO UPDATE SET
+                minute_count = CASE
+                    WHEN reseller_endpoint_quotas.minute_bucket = ?
+                    THEN reseller_endpoint_quotas.minute_count + 1
+                    ELSE 1 END,
+                minute_bucket = ?,
+                updated = ?
+            WHERE
+                (CASE
+                    WHEN reseller_endpoint_quotas.minute_bucket = ?
+                    THEN reseller_endpoint_quotas.minute_count + 1
+                    ELSE 1 END) <= ?
+        """, (
+            reseller_id, category, minute_bucket, stamp,
+            minute_bucket, minute_bucket, stamp,
+            minute_bucket, limit,
+        ))
+        allowed = cur.rowcount > 0
+        conn.commit()
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+        raise
+    cur.execute(
+        "SELECT minute_count FROM reseller_endpoint_quotas "
+        "WHERE reseller_id=? AND category=?",
+        (reseller_id, category),
+    )
+    row = cur.fetchone()
+    used = int(row[0]) if row else (1 if allowed else limit)
+    return allowed, used
+
+
+# --------------------------------------------------------------------------- #
+# Phase 10 Prompt 4: Financial events audit log                               #
+# --------------------------------------------------------------------------- #
+
+def ensure_financial_event_table():
+    """Create reseller_financial_events. Idempotent."""
+    conn, cur = get_conn(), get_cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS reseller_financial_events(
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            reseller_id INTEGER NOT NULL
+                        REFERENCES resellers(id) ON DELETE CASCADE,
+            event_type  TEXT NOT NULL,
+            product_id  INTEGER,
+            quantity    INTEGER,
+            detail      TEXT DEFAULT '',
+            created     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_fin_events_reseller "
+        "ON reseller_financial_events(reseller_id, created)"
+    )
+    conn.commit()
+
+
+def log_financial_event_db(reseller_id: int, event_type: str,
+                           detail: str = '', product_id=None, quantity=None):
+    """Insert one financial audit event row. Never raises."""
+    try:
+        conn, cur = get_conn(), get_cursor()
+        cur.execute(
+            "INSERT INTO reseller_financial_events "
+            "(reseller_id, event_type, product_id, quantity, detail, created) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (reseller_id, event_type, product_id, quantity, detail, now_text()),
+        )
+        conn.commit()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "[fin_audit] DB error type=%s: %s", event_type, exc
+        )
+
+
+def count_recent_product_orders(reseller_id: int, product_id: int,
+                                since_iso: str) -> int:
+    """Count financial events of type 'order_placed' for a product since a timestamp."""
+    try:
+        cur = get_cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM reseller_financial_events "
+            "WHERE reseller_id=? AND product_id=? AND event_type='order_placed' "
+            "AND created >= ?",
+            (reseller_id, product_id, since_iso),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
+
+# --------------------------------------------------------------------------- #
+# Phase 10 Prompt 7: Reseller quota settings                                  #
+# --------------------------------------------------------------------------- #
+
+def ensure_quota_settings_table():
+    """Create reseller_quota_settings. Idempotent."""
+    conn, cur = get_conn(), get_cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS reseller_quota_settings(
+            reseller_id         INTEGER PRIMARY KEY
+                                REFERENCES resellers(id) ON DELETE CASCADE,
+            daily_order_quota   INTEGER NOT NULL DEFAULT 0,
+            monthly_order_quota INTEGER NOT NULL DEFAULT 0,
+            api_enabled         INTEGER NOT NULL DEFAULT 1,
+            updated             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+
+
+def get_quota_settings(reseller_id: int) -> dict:
+    """Return quota settings for a reseller (defaults if not set)."""
+    cur = get_cursor()
+    cur.execute(
+        "SELECT daily_order_quota, monthly_order_quota, api_enabled "
+        "FROM reseller_quota_settings WHERE reseller_id=?",
+        (reseller_id,),
+    )
+    row = cur.fetchone()
+    if row:
+        return {
+            "daily_order_quota":   int(row[0]),
+            "monthly_order_quota": int(row[1]),
+            "api_enabled":         bool(row[2]),
+        }
+    # Default: unlimited (0 = disabled check)
+    return {"daily_order_quota": 0, "monthly_order_quota": 0, "api_enabled": True}
+
+
+def set_quota_settings(reseller_id: int, daily_order_quota: int = None,
+                       monthly_order_quota: int = None, api_enabled: bool = None):
+    """Upsert quota settings for a reseller."""
+    conn, cur = get_conn(), get_cursor()
+    cur.execute(
+        "INSERT INTO reseller_quota_settings "
+        "(reseller_id, daily_order_quota, monthly_order_quota, api_enabled, updated) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(reseller_id) DO UPDATE SET "
+        "daily_order_quota=COALESCE(?, daily_order_quota), "
+        "monthly_order_quota=COALESCE(?, monthly_order_quota), "
+        "api_enabled=COALESCE(?, api_enabled), "
+        "updated=?",
+        (
+            reseller_id,
+            daily_order_quota or 0, monthly_order_quota or 0,
+            1 if api_enabled is None else int(api_enabled),
+            now_text(),
+            daily_order_quota, monthly_order_quota,
+            None if api_enabled is None else int(api_enabled),
+            now_text(),
+        ),
+    )
+    conn.commit()
+
+
+def count_orders_for_quota(reseller_id: int, day_bucket: str,
+                           month_bucket: str) -> dict:
+    """Count financial order events for daily/monthly quota checks."""
+    try:
+        cur = get_cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM reseller_financial_events "
+            "WHERE reseller_id=? AND event_type='order_placed' "
+            "AND substr(created,1,10)=?",
+            (reseller_id, day_bucket),
+        )
+        row = cur.fetchone()
+        daily = int(row[0]) if row else 0
+        cur.execute(
+            "SELECT COUNT(*) FROM reseller_financial_events "
+            "WHERE reseller_id=? AND event_type='order_placed' "
+            "AND substr(created,1,7)=?",
+            (reseller_id, month_bucket),
+        )
+        row = cur.fetchone()
+        monthly = int(row[0]) if row else 0
+        return {"daily": daily, "monthly": monthly}
+    except Exception:
+        return {"daily": 0, "monthly": 0}
+
+
+# --------------------------------------------------------------------------- #
+# Phase 10 Prompt 6: Key-identifier auth-failure tracking                     #
+# --------------------------------------------------------------------------- #
+
+def increment_key_auth_failure(key_prefix: str, bucket: str) -> int:
+    """Increment auth failure counter for a key identifier prefix."""
+    conn, cur = get_conn(), get_cursor()
+    stamp = now_text()
+    try:
+        cur.execute("""
+            INSERT INTO reseller_ip_auth_counters(ip_hash, minute_bucket, failure_count, updated)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT(ip_hash, minute_bucket) DO UPDATE SET
+                failure_count = failure_count + 1,
+                updated = ?
+        """, ("key:" + key_prefix, bucket, stamp, stamp))
+        conn.commit()
+        cur.execute(
+            "SELECT failure_count FROM reseller_ip_auth_counters "
+            "WHERE ip_hash=? AND minute_bucket=?",
+            ("key:" + key_prefix, bucket),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else 1
+    except Exception:
+        return 0
+
+
+def get_key_auth_failure_count(key_prefix: str, bucket: str) -> int:
+    """Return current auth failure count for a key identifier prefix."""
+    try:
+        cur = get_cursor()
+        cur.execute(
+            "SELECT failure_count FROM reseller_ip_auth_counters "
+            "WHERE ip_hash=? AND minute_bucket=?",
+            ("key:" + key_prefix, bucket),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
