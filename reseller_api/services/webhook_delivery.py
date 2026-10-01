@@ -134,6 +134,30 @@ def _send_http(
         HEADER_TIMESTAMP:   timestamp,
     }
 
+    # DNS rebinding guard: re-resolve destination immediately before the
+    # HTTP request and reject if it now maps to a private/internal address.
+    # This closes the window between URL registration and delivery.
+    try:
+        import socket as _socket, ipaddress as _ipaddress
+        from urllib.parse import urlsplit as _us
+        _dest_host = _us(url).hostname or ""
+        try:
+            _dest_ip = _ipaddress.ip_address(_dest_host.strip("[]"))
+        except ValueError:
+            _dest_ip = _ipaddress.ip_address(_socket.gethostbyname(_dest_host))
+        if not _dest_ip.is_global:
+            return {
+                "http_status":    None,
+                "success":        False,
+                "error_category": "ssrf_blocked",
+                "elapsed_ms":     0,
+                "responded_at":   now_text(),
+            }
+    except Exception:
+        # Resolution failure — treat as connection error; requests.post will
+        # also fail immediately and we log ERR_DNS there.
+        pass
+
     t0 = time.monotonic()
     try:
         resp = requests.post(
@@ -186,9 +210,8 @@ def ensure_delivery_log_table() -> None:
     """Create webhook_delivery_log if it does not exist (idempotent)."""
     conn = get_conn()
     cur  = get_cursor()
-    # executescript is SQLite-only — use one execute() per statement so this
-    # works on both SQLite and the Postgres-compatibility cursor.
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS webhook_delivery_log (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             outbox_event_id INTEGER NOT NULL,
@@ -204,29 +227,37 @@ def ensure_delivery_log_table() -> None:
             next_retry_at   TEXT,
             created_at      TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP)
         )
-    """)
-    cur.execute(
-        "CREATE INDEX IF NOT EXISTS ix_dlg_outbox"
-        " ON webhook_delivery_log(outbox_event_id)"
+        """
     )
     cur.execute(
-        "CREATE INDEX IF NOT EXISTS ix_dlg_webhook"
-        " ON webhook_delivery_log(webhook_id, created_at)"
+        """
+        CREATE INDEX IF NOT EXISTS ix_dlg_outbox
+            ON webhook_delivery_log(outbox_event_id)
+        """
     )
     cur.execute(
-        "CREATE INDEX IF NOT EXISTS ix_dlg_reseller"
-        " ON webhook_delivery_log(reseller_id, created_at)"
+        """
+        CREATE INDEX IF NOT EXISTS ix_dlg_webhook
+            ON webhook_delivery_log(webhook_id, created_at)
+        """
     )
-    # Prevent two workers logging the same attempt for the same event+webhook.
-    # ON CONFLICT IGNORE makes INSERT OR IGNORE a safe upsert guard.
     cur.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS ux_dlg_attempt"
-        " ON webhook_delivery_log(outbox_event_id, webhook_id, attempt)"
+        """
+        CREATE INDEX IF NOT EXISTS ix_dlg_reseller
+            ON webhook_delivery_log(reseller_id, created_at)
+        """
     )
-    # Enforce UUID uniqueness at the DB level.
     cur.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS ux_dlg_request_id"
-        " ON webhook_delivery_log(request_id)"
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_dlg_attempt
+            ON webhook_delivery_log(outbox_event_id, webhook_id, attempt)
+        """
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_dlg_request_id
+            ON webhook_delivery_log(request_id)
+        """
     )
     conn.commit()
 
@@ -553,3 +584,5 @@ def get_delivery_for_webhook(
         "next_retry_at":   r["next_retry_at"],
         "created_at":      r["created_at"],
     }
+
+
