@@ -84,6 +84,10 @@ def get_db():
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=8000;")
+        # Enforce FOREIGN KEY constraints (CASCADE/RESTRICT/SET NULL) declared
+        # by the reseller schema. SQLite defaults to OFF; PostgreSQL always
+        # enforces. Without this, SQLite silently left orphan child rows.
+        conn.execute("PRAGMA foreign_keys=ON;")
     except Exception:
         pass
     return conn
@@ -144,6 +148,70 @@ def log_action(action, details=""):
            (admin_id, "[WEB] " + action, detail))
     except Exception:
         pass
+
+
+# ---- Phase 11 P6/P8: reseller product-sync notifications -------------------
+# Fail-safe wrappers around reseller_api.services.product_sync. Every wrapper
+# swallows and logs its own errors: a notification problem must NEVER break
+# or roll back an owner operation.
+
+def _product_sync():
+    from reseller_api.services import product_sync
+    return product_sync
+
+
+def _sync_notify_updated(pid, changed_fields):
+    try:
+        _product_sync().notify_product_updated(int(pid), changed_fields=changed_fields)
+    except Exception:
+        app.logger.exception("product_sync: notify_product_updated failed for #%s", pid)
+
+
+def _sync_notify_toggle(pid, new_value):
+    try:
+        ps = _product_sync()
+        if int(new_value):
+            ps.notify_product_enabled(int(pid))
+        else:
+            ps.notify_product_disabled(int(pid))
+    except Exception:
+        app.logger.exception("product_sync: notify toggle failed for #%s", pid)
+
+
+def _sync_capture_before_delete(pid):
+    """Capture (public_id, name, resellers-with-access) BEFORE the row is deleted.
+
+    After a hard delete the public_id and access rows are cascade-gone, so the
+    delete handler must call this first and pass the triple to
+    _sync_notify_deleted() afterwards.
+    """
+    try:
+        row = q("SELECT public_id, name FROM products WHERE id=?", (pid,), one=True)
+        if not row:
+            return None, None, []
+        pub = row["public_id"] or rdb.ensure_product_public_id(pid)
+        resellers = _product_sync().get_resellers_with_product_access(pid)
+        return pub, row["name"], resellers
+    except Exception:
+        app.logger.exception("product_sync: capture_before_delete failed for #%s", pid)
+        return None, None, []
+
+
+def _sync_notify_deleted(pid, public_id, name, resellers):
+    try:
+        if public_id:
+            _product_sync().notify_product_deleted(
+                int(pid), public_id, name, resellers=resellers
+            )
+    except Exception:
+        app.logger.exception("product_sync: notify_product_deleted failed for #%s", pid)
+
+
+def _sync_notify_stock(pid, available):
+    try:
+        _product_sync().notify_stock_updated(int(pid), int(available))
+    except Exception:
+        app.logger.exception("product_sync: notify_stock_updated failed for #%s", pid)
 
 
 TG_EMOJI_RE = _re.compile(r'<tg-emoji emoji-id="(\d+)">(.*?)</tg-emoji>', _re.S)
@@ -1452,6 +1520,8 @@ def api_product_update(pid):
     vals.append(pid)
     ex("UPDATE products SET {} WHERE id=?".format(", ".join(fields)), tuple(vals))
     log_action("edit_product", "#{} -> {}".format(pid, list(d.keys())))
+    # P11-P6: notify affected resellers
+    _sync_notify_updated(pid, list(d.keys()))
 
     # Auto-scale bulk (tier) prices by the same ratio as the base price.
     if old_price is not None:
@@ -1500,10 +1570,15 @@ def api_product_update(pid):
 @app.route("/api/products/<int:pid>/delete", methods=["POST"])
 @login_required
 def api_product_delete(pid):
+    # P11-P6: capture access + public_id BEFORE cascading delete
+    _pub, _name, _rs = _sync_capture_before_delete(pid)
     ex("DELETE FROM products WHERE id=?", (pid,))
     ex("DELETE FROM product_stock WHERE product_id=?", (pid,))
     ex("DELETE FROM product_price_tiers WHERE product_id=?", (pid,))
     log_action("delete_product", "#{}".format(pid))
+    # P11-P6: emit after the SQL has committed
+    if _pub:
+        _sync_notify_deleted(pid, _pub, _name, _rs)
     return jsonify({"ok": True})
 
 
@@ -1519,6 +1594,9 @@ def api_product_toggle(pid):
     newv = 0 if row["v"] else 1
     ex("UPDATE products SET {}=? WHERE id=?".format(field), (newv, pid))
     log_action("toggle_" + field, "#{} -> {}".format(pid, newv))
+    # P11-P6: emit sync event for active toggle only
+    if field == "active":
+        _sync_notify_toggle(pid, newv)
     return jsonify({"ok": True, "value": newv})
 
 
@@ -1614,6 +1692,9 @@ def api_stock_add(pid):
     added = botdb.restock_product(pid, codes)
     log_action("add_stock", "#{} +{} op={}".format(pid, added, op_id or "none"))
     available = botdb.get_available_stock_count(pid)
+    # P11-P6: notify resellers with access about the new stock level
+    if added > 0:
+        _sync_notify_stock(pid, available)
 
     # Record completed operation for idempotency (only when op_id supplied).
     if op_id and added > 0:
@@ -1676,6 +1757,8 @@ def api_stock_add_accounts(pid):
                         "error": "No valid accounts found - check the format / separator"}), 400
     log_action("add_account_stock", "#{} +{} op={}".format(pid, added, op_id or "none"))
     available = botdb.get_available_stock_count(pid)
+    # P11-P6: notify resellers with access about the new stock level
+    _sync_notify_stock(pid, available)
 
     # Record completed operation for idempotency.
     if op_id:
@@ -1725,6 +1808,8 @@ def api_stock_delete(stock_id):
     avail = botdb.get_available_stock_count(pid)
     ex("UPDATE products SET stock=? WHERE id=?", (avail, pid))
     log_action("delete_code", "stock#{} product#{}".format(stock_id, pid))
+    # P11-P6: notify resellers with access about the reduced stock level
+    _sync_notify_stock(pid, avail)
     return jsonify({"ok": True, "available": avail})
 
 
@@ -1752,6 +1837,8 @@ def api_stock_delete_all(pid):
     ex("UPDATE products SET stock=? WHERE id=?", (avail, pid))
     log_action("delete_all_stock",
                "product#{} removed={} left={}".format(pid, removed, avail))
+    # P11-P6: notify resellers with access about the reduced stock level
+    _sync_notify_stock(pid, avail)
     return jsonify({"ok": True, "deleted": removed, "available": avail})
 
 
@@ -3466,6 +3553,49 @@ def api_reseller_limits_update(pubid):
         pass
     return jsonify({"ok": True, "limits": limits})
 
+
+
+@app.route("/api/resellers/<pubid>/security-events")
+@login_required
+def api_reseller_security_events(pubid):
+    """List recent security events for a specific reseller.
+
+    Phase 10 Prompt 8: Gives the admin visibility into authentication
+    failures, rate-limit hits, quota violations, and other abuse signals
+    for a particular reseller account.  No secrets are returned.
+
+    Query params:
+        event_type  – filter to a specific event type (optional)
+        limit       – max rows (default 50, max 200)
+        offset      – pagination offset (default 0)
+    """
+    res = _resolve_reseller(pubid)
+    if not res:
+        return jsonify({"ok": False, "error": "Reseller not found"}), 404
+    rid = res["id"]
+    try:
+        event_type = request.args.get("event_type") or None
+        limit  = min(int(request.args.get("limit",  50)), 200)
+        offset = max(int(request.args.get("offset",  0)),   0)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Invalid pagination parameter"}), 400
+
+    events = rdb.list_security_events(
+        reseller_id=rid, event_type=event_type,
+        limit=limit, offset=offset,
+    )
+    # Strip any residual sensitive-looking long strings — defence in depth.
+    safe_events = []
+    for ev in events:
+        safe_events.append({
+            "id":          ev.get("id"),
+            "event_type":  ev.get("event_type"),
+            "ip":          ev.get("ip"),
+            "description": (ev.get("description") or "")[:500],
+            "created":     ev.get("created"),
+        })
+    return jsonify({"ok": True, "reseller_id": pubid, "events": safe_events,
+                    "count": len(safe_events)})
 
 if __name__ == "__main__":
     port = int(os.getenv("WEB_ADMIN_PORT", "5000"))
