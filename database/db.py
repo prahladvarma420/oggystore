@@ -33,6 +33,10 @@ def _new_conn():
     try:
         c.cursor().execute("PRAGMA journal_mode=WAL")
         c.cursor().execute("PRAGMA busy_timeout=15000")
+        # Enforce FOREIGN KEY constraints (CASCADE/RESTRICT/SET NULL) declared
+        # by the reseller schema. SQLite defaults to OFF; PostgreSQL always
+        # enforces. Without this, SQLite silently left orphan child rows.
+        c.cursor().execute("PRAGMA foreign_keys=ON")
     except Exception:
         pass
     return c
