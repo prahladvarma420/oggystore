@@ -361,6 +361,9 @@ def ensure_reseller_tables():
     # Phase 10 Prompt 3: endpoint-specific quota counters
     ensure_endpoint_quota_table()
 
+    # Phase 11 P3: reseller product mapping table
+    ensure_product_mapping_table()
+
     conn.commit()
 
 
@@ -764,7 +767,8 @@ def backfill_product_public_ids(batch_size: int = 500) -> int:
 
 
 def list_reseller_api_products(reseller_id: int, *, page: int, limit: int,
-                               search: str = "", category: str = ""):
+                               search: str = "", category: str = "",
+                               availability: str = ""):
     """Paginated, deny-by-default view over the existing master catalog.
 
     This is a reseller-scoped repository query, not a second catalog. Only an
@@ -801,8 +805,32 @@ def list_reseller_api_products(reseller_id: int, *, page: int, limit: int,
         "LEFT JOIN categories c ON c.id=p.category_id "
     )
     predicate = " WHERE " + " AND ".join(where)
+
+    # Availability HAVING clause applied to the computed stock expression so
+    # filtering is consistent with the value returned in the response.
+    avail_filter = str(availability or "").strip().lower()
+    if avail_filter == "in_stock":
+        having = " HAVING CASE WHEN COUNT(ps.id)>0 THEN COUNT(ps.id) ELSE q.fallback_stock END > 0"
+    elif avail_filter == "out_of_stock":
+        having = " HAVING CASE WHEN COUNT(ps.id)>0 THEN COUNT(ps.id) ELSE q.fallback_stock END = 0"
+    else:
+        having = ""
+
     cur = get_cursor()
-    cur.execute("SELECT COUNT(*)" + joins + predicate, tuple(params))
+    if avail_filter:
+        # The availability filter lives in a HAVING over the stock join, so a
+        # plain COUNT(*) would overcount. Count the grouped rows instead so
+        # pagination metadata (total/pages) matches the filtered result set.
+        count_having = having.replace("q.fallback_stock", "COALESCE(p.stock, 0)")
+        cur.execute(
+            "SELECT COUNT(*) FROM (SELECT p.id" + joins
+            + "LEFT JOIN product_stock ps ON ps.product_id=p.id AND ps.sold=0"
+            + predicate
+            + " GROUP BY p.id, p.stock" + count_having + ")",
+            tuple(params),
+        )
+    else:
+        cur.execute("SELECT COUNT(*)" + joins + predicate, tuple(params))
     count_row = cur.fetchone()
     total = int(count_row[0] or 0) if count_row else 0
 
@@ -830,13 +858,16 @@ def list_reseller_api_products(reseller_id: int, *, page: int, limit: int,
         "q.warranty, q.max_per_order, q.featured, q.category_name, "
         "q.fallback_stock, q.master_price, q.rule_type, q.value_cents, q.value_bps"
     )
+    # ``having`` was computed above (shared with the total-count query so the
+    # filtered result set and pagination metadata stay consistent).
     select_sql = (
         "SELECT " + grouped + ", "
         "CASE WHEN COUNT(ps.id)>0 THEN COUNT(ps.id) ELSE q.fallback_stock END "
         "FROM (" + inner_sql + ") q "
         "LEFT JOIN product_stock ps ON ps.product_id=q.product_id AND ps.sold=0 "
-        "GROUP BY " + grouped + " "
-        "ORDER BY q.featured DESC, q.product_id DESC"
+        "GROUP BY " + grouped
+        + having
+        + " ORDER BY q.featured DESC, q.product_id DESC"
     )
     offset = (page - 1) * limit
     cur.execute(select_sql, tuple(params + [limit, offset]))
@@ -2110,3 +2141,265 @@ def get_key_auth_failure_count(key_prefix: str, bucket: str) -> int:
         return int(row[0]) if row else 0
     except Exception:
         return 0
+
+
+# ------------------------------------------------------------------ phase 11 p3: product mappings
+
+def ensure_product_mapping_table() -> None:
+    """Create reseller_product_mappings if it does not exist. Idempotent.
+
+    Deletion policy:
+      - ON DELETE CASCADE on reseller_id  -> cleaning up a reseller removes all mappings.
+      - ON DELETE CASCADE on product_id   -> when the owner hard-deletes a master product
+        the mapping is automatically removed; no orphan rows are ever left.
+    When the owner disables a product (active=0) the mapping row stays but the
+    product will not appear in the reseller catalog (filtered at query time).
+    """
+    conn = get_conn()
+    cur = get_cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS reseller_product_mappings(
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        reseller_id INTEGER NOT NULL REFERENCES resellers(id) ON DELETE CASCADE,
+        product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        custom_name        TEXT,
+        custom_description TEXT,
+        reseller_sku       TEXT,
+        enabled     INTEGER NOT NULL DEFAULT 1,
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        UNIQUE(reseller_id, product_id)
+    )""")
+    # Phase 11 P4: add reseller_sku if table was created before this column existed
+    try:
+        cur.execute("ALTER TABLE reseller_product_mappings ADD COLUMN reseller_sku TEXT")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rpm_reseller "
+        "ON reseller_product_mappings(reseller_id)"
+    )
+    conn.commit()
+
+
+def import_reseller_product(
+    reseller_id: int,
+    product_id: int,
+    custom_name: str = None,
+    custom_description: str = None,
+) -> dict:
+    """Create a reseller product mapping.  Raises ValueError on conflict.
+
+    - Only call after verifying the master product is active=1 and the reseller
+      has an enabled access row (authorize_product_access).
+    - The product_id is the INTERNAL integer id, never the public PRD- string.
+    - Duplicate import (same reseller + product) raises ValueError('already_imported').
+    """
+    conn = get_conn()
+    cur = get_cursor()
+    try:
+        cur.execute(
+            "INSERT INTO reseller_product_mappings"
+            "(reseller_id, product_id, custom_name, custom_description, enabled)"
+            " VALUES(?,?,?,?,1)",
+            (
+                int(reseller_id),
+                int(product_id),
+                str(custom_name).strip() if custom_name else None,
+                str(custom_description).strip() if custom_description else None,
+            ),
+        )
+        conn.commit()
+        mapping_id = cur.lastrowid
+    except Exception as exc:
+        # Roll the failed transaction back IMMEDIATELY. Without this the
+        # implicit write transaction stays open on this thread's connection
+        # and keeps holding the SQLite/Postgres write lock — under concurrent
+        # imports the leaked lock blocks other writers until they hit the
+        # busy timeout and surface raw "database is locked" errors (and the
+        # lock can outlive the request on a reused worker-thread connection).
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        msg = str(exc).lower()
+        if "unique" in msg or "duplicate" in msg:
+            raise ValueError("already_imported") from None
+        raise
+    return get_reseller_product_mapping(reseller_id, product_id) or {"id": mapping_id}
+
+
+_MAPPING_COLS = (
+    "id", "reseller_id", "product_id", "custom_name",
+    "custom_description", "reseller_sku", "enabled", "created_at", "updated_at",
+)
+_MAPPING_SELECT = (
+    "id, reseller_id, product_id, custom_name, custom_description,"
+    " reseller_sku, enabled, created_at, updated_at"
+)
+
+
+def get_reseller_product_mapping(reseller_id: int, product_id: int) -> dict | None:
+    """Return the mapping row (or None) for one reseller+product pair."""
+    cur = get_cursor()
+    cur.execute(
+        f"SELECT {_MAPPING_SELECT} FROM reseller_product_mappings "
+        "WHERE reseller_id=? AND product_id=?",
+        (int(reseller_id), int(product_id)),
+    )
+    row = cur.fetchone()
+    return dict(zip(_MAPPING_COLS, row)) if row else None
+
+
+def get_reseller_product_mapping_by_public_id(
+    reseller_id: int, public_id: str
+) -> dict | None:
+    """Resolve a PRD-* public id to a mapping row for this reseller."""
+    cur = get_cursor()
+    cur.execute(
+        f"SELECT m.{', m.'.join(_MAPPING_COLS)} "
+        "FROM reseller_product_mappings m "
+        "JOIN products p ON p.id=m.product_id "
+        "WHERE m.reseller_id=? AND p.public_id=?",
+        (int(reseller_id), str(public_id)),
+    )
+    row = cur.fetchone()
+    return dict(zip(_MAPPING_COLS, row)) if row else None
+
+
+def list_reseller_product_mappings(reseller_id: int) -> list:
+    """Return all mapping rows for a reseller, joined with master product metadata.
+
+    The join is intentionally read-only: only safe catalog columns are
+    returned.  Internal product fields (cost, delivery, fulfillment, etc.)
+    are excluded at this layer.
+    """
+    cur = get_cursor()
+    cur.execute(
+        "SELECT m.id, m.reseller_id, m.product_id, m.custom_name,"
+        " m.custom_description, m.reseller_sku, m.enabled,"
+        " m.created_at, m.updated_at,"
+        " p.public_id, p.name AS master_name, p.active AS master_active,"
+        " COALESCE(a.enabled, 0) AS access_enabled,"
+        " COALESCE(p.stock, 0) AS fallback_stock,"
+        " CASE WHEN COUNT(ps.id)>0 THEN COUNT(ps.id) ELSE COALESCE(p.stock,0) END"
+        " AS available_quantity, p.price AS master_price,"
+        " pr.rule_type, pr.value_cents, pr.value_bps,"
+        " CASE WHEN c.active=1 THEN c.name ELSE NULL END AS category_name "
+        "FROM reseller_product_mappings m "
+        "JOIN products p ON p.id=m.product_id "
+        "JOIN reseller_product_access a"
+        "  ON a.reseller_id=m.reseller_id AND a.product_id=p.id "
+        "LEFT JOIN categories c ON c.id=p.category_id "
+        "LEFT JOIN reseller_pricing_rules pr"
+        "  ON pr.product_id=p.id AND pr.reseller_id=m.reseller_id AND pr.enabled=1 "
+        "LEFT JOIN product_stock ps ON ps.product_id=p.id AND ps.sold=0 "
+        "WHERE m.reseller_id=? "
+        "GROUP BY m.id, p.public_id, p.name, p.active, a.enabled, p.stock, p.price,"
+        "  pr.rule_type, pr.value_cents, pr.value_bps, c.active, c.name "
+        "ORDER BY m.id DESC",
+        (int(reseller_id),),
+    )
+    extended_cols = (
+        "id", "reseller_id", "product_id", "custom_name", "custom_description",
+        "reseller_sku", "enabled", "created_at", "updated_at",
+        "public_id", "master_name", "master_active", "access_enabled",
+        "fallback_stock",
+        "available_quantity", "master_price",
+        "rule_type", "value_cents", "value_bps", "category_name",
+    )
+    return [dict(zip(extended_cols, row)) for row in cur.fetchall()]
+
+
+def update_reseller_product_mapping(
+    reseller_id: int,
+    product_id: int,
+    *,
+    custom_name=...,
+    custom_description=...,
+    reseller_sku=...,
+    enabled=...,
+) -> dict | None:
+    """Partial update of a reseller mapping.  Only supplied fields are changed.
+
+    Pass ``Ellipsis`` (the default) to leave a field unchanged.
+    Pass ``None`` to clear a text field.
+    Returns the updated mapping row, or None if no mapping exists.
+    """
+    sets, params = [], []
+    if custom_name is not ...:
+        sets.append("custom_name=?")
+        params.append(str(custom_name).strip() if custom_name is not None else None)
+    if custom_description is not ...:
+        sets.append("custom_description=?")
+        params.append(
+            str(custom_description).strip() if custom_description is not None else None
+        )
+    if reseller_sku is not ...:
+        sets.append("reseller_sku=?")
+        params.append(
+            str(reseller_sku).strip() if reseller_sku is not None else None
+        )
+    if enabled is not ...:
+        sets.append("enabled=?")
+        params.append(1 if enabled else 0)
+    if not sets:
+        return get_reseller_product_mapping(reseller_id, product_id)
+    sets.append("updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')")
+    params.extend([int(reseller_id), int(product_id)])
+    conn = get_conn()
+    cur = get_cursor()
+    cur.execute(
+        f"UPDATE reseller_product_mappings SET {', '.join(sets)} "
+        "WHERE reseller_id=? AND product_id=?",
+        tuple(params),
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        return None
+    return get_reseller_product_mapping(reseller_id, product_id)
+
+
+def remove_reseller_product_mapping(reseller_id: int, product_id: int) -> bool:
+    """Hard-delete one reseller mapping. Returns True if a row was deleted.
+
+    The master product is never touched. Pricing rules are LEFT in place so
+    they can be reused if the reseller re-imports the product later.
+    """
+    conn = get_conn()
+    cur = get_cursor()
+    cur.execute(
+        "DELETE FROM reseller_product_mappings WHERE reseller_id=? AND product_id=?",
+        (int(reseller_id), int(product_id)),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+# ── Product lookup helpers (used by tests and service layer) ─────────────────
+
+def get_product_by_id(product_id: int) -> dict | None:
+    """Return a minimal product row dict for the given internal product_id,
+    or None if the product does not exist."""
+    cur = get_cursor()
+    cur.execute(
+        "SELECT id, name, price, stock, active, description FROM products WHERE id=?",
+        (int(product_id),),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return dict(zip(("id", "name", "price", "stock", "active", "description"), row))
+
+
+def delete_product(product_id: int) -> bool:
+    """Hard-delete a product row.  ON DELETE CASCADE will remove all child rows
+    (stock, access rows, reseller mappings, etc.).
+    Returns True if a row was deleted, False if the product did not exist.
+    This is an owner-only administrative operation; never expose to resellers.
+    """
+    conn = get_conn()
+    cur = get_cursor()
+    cur.execute("DELETE FROM products WHERE id=?", (int(product_id),))
+    conn.commit()
+    return cur.rowcount > 0
