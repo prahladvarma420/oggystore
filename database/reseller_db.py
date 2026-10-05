@@ -2165,8 +2165,8 @@ def ensure_product_mapping_table() -> None:
         custom_description TEXT,
         reseller_sku       TEXT,
         enabled     INTEGER NOT NULL DEFAULT 1,
-        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-        updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(reseller_id, product_id)
     )""")
     # Phase 11 P4: add reseller_sku if table was created before this column existed
