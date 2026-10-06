@@ -5,12 +5,27 @@ the product's fulfillment_type field.
 """
 
 import json
-from database.db import get_cursor
+from database.db import _safe_add_column, get_conn, get_cursor
 
 FULFILLMENT_CODE    = "code_stock"
 FULFILLMENT_MANUAL  = "manual"
 FULFILLMENT_EXTERNAL = "external_api"
 FULFILLMENT_SUPPLIER = "supplier_api"
+
+
+def ensure_fulfillment_columns():
+    """Add the router's product columns if missing (idempotent).
+
+    Phase 12 P10 finding: fulfillment_type / fulfillment_config were never
+    added to any schema path, so route_fulfillment() would have crashed with
+    "no such column" the first time it was invoked.  Registered with the
+    Phase 12 startup schema hook (ensure_order_metadata_columns) so every
+    boot applies it.
+    """
+    conn = get_conn()
+    _safe_add_column("products", "fulfillment_type", "TEXT")
+    _safe_add_column("products", "fulfillment_config", "TEXT")
+    conn.commit()
 
 
 def get_product_fulfillment_type(product_id: int) -> str:
