@@ -567,23 +567,22 @@ async def handle_reseller_callback(q, uid, data, context) -> bool:
             if not old or old["reseller_id"] != res["id"] or old["status"] != "active":
                 await q.answer("❌ Key not found.", show_alert=True)
                 return True
-            if len(rdb.list_api_keys(res["id"])) >= MAX_ACTIVE_KEYS:
-                await q.answer(f"⚠️ Maximum {MAX_ACTIVE_KEYS} active keys — revoke one first.",
-                               show_alert=True)
-                return True
+            # Rotation is exempt from the MAX_ACTIVE_KEYS cap: the old key
+            # auto-expires after a 24h grace window (rotate_api_key_for_reseller),
+            # so the two-key overlap closes itself even if the user never
+            # revokes the old key manually.
             try:
-                key_id, secret = rdb.create_api_key(res["id"], old["environment"])
+                rotated = rdb.rotate_api_key_for_reseller(res["id"], old_kid)
             except Exception as exc:
                 # NEVER include key material in logs/errors
                 log_error("reseller key rotation failed", exc, extra=f"uid={uid}")
                 await edit_or_send(q, "❌ Could not rotate right now. Please try again.",
                                    build_reseller_keys(res)[1])
                 return True
-            try:
-                rdb.log_security_event(res["id"], "api_key_rotated",
-                                       description=f"key {old_kid} rotated -> {key_id} via telegram by {uid}")
-            except Exception:
-                pass
+            if not rotated:
+                await q.answer("❌ Key not found.", show_alert=True)
+                return True
+            key_id, secret, old_expires = rotated
             text, markup = build_key_reveal(key_id, secret, old["environment"],
                                             done_cb=f"res_rot_done_{old_kid}")
             await edit_or_send(q, text, markup)
@@ -610,7 +609,9 @@ async def handle_reseller_callback(q, uid, data, context) -> bool:
                 "✅ <b>New key saved.</b> The secret has been scrubbed and can never "
                 "be retrieved again.\n\n"
                 f"Final step: revoke the old key <code>{old_kid}</code> once your "
-                "integration uses the new one.",
+                "integration uses the new one.\n\n"
+                "🕓 Safety net: the old key expires automatically 24 hours after "
+                "rotation even if you never revoke it.",
                 InlineKeyboardMarkup(rows))
             return True
 
