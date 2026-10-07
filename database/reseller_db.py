@@ -72,7 +72,8 @@ _PUBLIC_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # gift-code convention
 _RESELLER_COLS = ("id", "public_id", "telegram_user_id", "name", "username",
                   "status", "created", "updated")
 _API_KEY_COLS = ("id", "key_id", "secret_hash", "reseller_id", "environment",
-                 "status", "created", "last_used_at", "revoked_at", "enabled")
+                 "status", "created", "last_used_at", "revoked_at", "enabled",
+                 "expires_at", "rotated_to")   # Phase 13 P5 lifecycle fields
 _ACCESS_COLS = ("id", "reseller_id", "product_id", "enabled", "created", "updated")
 _PRICING_COLS = ("id", "reseller_id", "product_id", "rule_type", "value_cents",
                  "value_bps", "enabled", "created", "updated")
@@ -321,6 +322,10 @@ def ensure_reseller_tables():
     _safe_add_column("resellers", "monthly_order_limit", "INTEGER NOT NULL DEFAULT 10000")
     _safe_add_column("resellers", "api_enabled", "INTEGER NOT NULL DEFAULT 1")
     _safe_add_column("reseller_api_keys", "enabled", "INTEGER NOT NULL DEFAULT 1")
+    # Phase 13 P5: optional key expiry (shop-time "YYYY-MM-DD HH:MM:SS"; NULL
+    # = never expires) and rotation linkage (old key -> its successor).
+    _safe_add_column("reseller_api_keys", "expires_at", "TEXT")
+    _safe_add_column("reseller_api_keys", "rotated_to", "TEXT")
     _safe_add_column("reseller_api_logs", "reseller_public_id", "TEXT")
     _safe_add_column("reseller_api_logs", "key_id", "TEXT")
     _safe_add_column("reseller_api_logs", "ip", "TEXT")
@@ -478,13 +483,17 @@ def create_api_key(reseller_id: int, environment: str = "test"):
 
 
 def verify_api_key_secret(key_id: str, secret: str) -> bool:
-    """True when the presented secret matches the stored hash of an ACTIVE key."""
+    """True when the presented secret matches the stored hash of an ACTIVE,
+    unexpired key."""
     cur = get_cursor()
     cur.execute(
-        "SELECT secret_hash, status FROM reseller_api_keys WHERE key_id=?", (key_id,)
+        "SELECT secret_hash, status, expires_at FROM reseller_api_keys WHERE key_id=?",
+        (key_id,),
     )
     row = cur.fetchone()
     if not row or row[1] != "active":
+        return False
+    if row[2] and str(row[2]) <= now_text():   # Phase 13 P5: expiry enforced
         return False
     return secrets.compare_digest(row[0], _hash_secret(secret))
 
@@ -557,6 +566,73 @@ def set_api_key_enabled_for_reseller(reseller_id: int, key_id: str,
     return cur.rowcount > 0
 
 
+def set_api_key_expiry_for_reseller(reseller_id: int, key_id: str,
+                                    expires_at) -> bool:
+    """Ownership-scoped expiry management for an ACTIVE key.
+
+    expires_at: "YYYY-MM-DD HH:MM:SS" (shop timezone) or None to clear.
+    A past timestamp is allowed — it simply disables the key immediately.
+    Never revives or extends a revoked key.
+    """
+    if expires_at is not None:
+        import re as _re
+        if not isinstance(expires_at, str) or not _re.fullmatch(
+                r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", expires_at):
+            raise ValueError("expires_at must be 'YYYY-MM-DD HH:MM:SS' or None")
+    conn, cur = get_conn(), get_cursor()
+    cur.execute(
+        "UPDATE reseller_api_keys SET expires_at=? "
+        "WHERE key_id=? AND reseller_id=? AND status='active'",
+        (expires_at, key_id, reseller_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def rotate_api_key_for_reseller(reseller_id: int, old_key_id: str,
+                                grace_hours: float = 24.0):
+    """Rotate an API key with a controlled overlap window.
+
+    Creates a fresh key in the same environment and sets the old key's
+    expires_at to now + grace_hours, so the reseller can migrate without
+    losing access — and the old key retires automatically even if nobody
+    remembers to revoke it manually.
+
+    Rotation is exempt from the MAX_ACTIVE_KEYS cap *by design*: the window
+    is temporary and self-closing.  The cap still applies to plain creation.
+
+    Returns (new_key_id, new_secret, old_expires_at) on success.
+    Returns None when the old key is missing, foreign, or not active.
+    Raises PermissionError when the reseller is not active (key creation
+    contract).  Never logs or stores the new secret in plaintext.
+    """
+    old = get_api_key(old_key_id)
+    if not old or int(old["reseller_id"]) != int(reseller_id):
+        return None
+    if old["status"] != "active":
+        return None
+    new_key_id, new_secret = create_api_key(int(reseller_id), old["environment"])
+    from utils.timezone import now as _now
+    from datetime import timedelta as _td
+    expiry = (_now() + _td(hours=float(grace_hours))).strftime("%Y-%m-%d %H:%M:%S")
+    conn, cur = get_conn(), get_cursor()
+    cur.execute(
+        "UPDATE reseller_api_keys SET expires_at=?, rotated_to=? "
+        "WHERE key_id=? AND reseller_id=? AND status='active'",
+        (expiry, new_key_id, old_key_id, int(reseller_id)),
+    )
+    conn.commit()
+    try:
+        log_security_event(
+            int(reseller_id), "api_key_rotated",
+            description=(f"key {old_key_id} rotated -> {new_key_id}; "
+                         f"old key expires {expiry}"),
+        )
+    except Exception:
+        pass
+    return new_key_id, new_secret, expiry
+
+
 def get_api_auth_record(key_id: str):
     """Load the exact server-side fields needed for API authentication.
 
@@ -566,7 +642,7 @@ def get_api_auth_record(key_id: str):
     cur = get_cursor()
     cur.execute(
         "SELECT k.id, k.key_id, k.secret_hash, k.reseller_id, k.environment, "
-        "k.status, k.enabled, k.last_used_at, "
+        "k.status, k.enabled, k.last_used_at, k.expires_at, "
         "r.public_id, r.status, r.api_enabled, r.telegram_user_id, "
         "COALESCE(u.blocked, 0) "
         "FROM reseller_api_keys k "
@@ -580,7 +656,8 @@ def get_api_auth_record(key_id: str):
         return None
     cols = (
         "api_key_id", "key_id", "secret_hash", "reseller_id", "environment",
-        "key_status", "key_enabled", "last_used_at", "reseller_public_id",
+        "key_status", "key_enabled", "last_used_at", "expires_at",
+        "reseller_public_id",
         "reseller_status", "api_enabled", "telegram_user_id", "user_blocked",
     )
     return _d(cols, row)
@@ -1080,6 +1157,1012 @@ def post_wallet_transaction(reseller_id: int, tx_type: str, amount_cents: int,
                 return classify_existing(row)
         raise
     return "posted", txid
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 P6 — webhook, delivery & fulfillment analytics
+#
+# Sources of truth: webhook_outbox (business events), webhook_delivery_log
+# (per-attempt HTTP results), reseller_webhooks (configured endpoints),
+# orders (fulfillment lifecycle per the P14 P3 status model).  Read-only;
+# no external calls; no secrets or payloads anywhere in the output.
+#
+# Latency notes: the schema stores second-resolution timestamps, so latency
+# is reported in whole seconds (outbox created_at -> processed_at) — honest
+# precision, no fabricated millisecond numbers.
+# ---------------------------------------------------------------------------
+
+def _webhook_analytics(where: str, params: tuple, days: int,
+                       since: str = None) -> dict:
+    cur = get_cursor()
+    from utils.timezone import now as _now
+    from datetime import timedelta as _td
+    if since is None:
+        since = (_now() - _td(days=max(1, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
+
+    scope = f"{where} AND created_at >= ?"
+    cur.execute(
+        f"""
+        SELECT COUNT(*),
+         SUM(CASE WHEN status='delivered' THEN 1 ELSE 0 END),
+         SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END),
+         SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),
+         SUM(CASE WHEN attempts > 1 THEN 1 ELSE 0 END),
+         AVG(CASE WHEN status='delivered' AND processed_at IS NOT NULL
+             THEN CAST(strftime('%s', processed_at) AS INTEGER)
+                  - CAST(strftime('%s', created_at) AS INTEGER) END)
+        FROM webhook_outbox WHERE {scope}
+        """,
+        params + (since,),
+    )
+    total, delivered, pending, dead, retried, avg_lat = cur.fetchone()
+
+    cur.execute(
+        f"SELECT event_type, COUNT(*) FROM webhook_outbox WHERE {scope}"
+        " GROUP BY event_type ORDER BY 2 DESC",
+        params + (since,),
+    )
+    by_type = {t: int(c) for t, c in cur.fetchall()}
+
+    dscope = f"{where} AND created_at >= ?"
+    cur.execute(
+        f"""
+        SELECT COUNT(*),
+         SUM(CASE WHEN success=1 THEN 1 ELSE 0 END),
+         SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),
+         SUM(CASE WHEN attempt > 1 THEN 1 ELSE 0 END)
+        FROM webhook_delivery_log WHERE {dscope}
+        """,
+        params + (since,),
+    )
+    d_total, d_ok, d_fail, d_retries = cur.fetchone()
+
+    cur.execute(
+        f"SELECT COALESCE(http_status,0) code, COUNT(*) FROM webhook_delivery_log"
+        f" WHERE {dscope} GROUP BY code ORDER BY 2 DESC",
+        params + (since,),
+    )
+    http_dist = {}
+    for code, c in cur.fetchall():
+        key = str(int(code)) if code else "no_response"
+        http_dist[key] = int(c)
+
+    return {
+        "window_days": max(1, int(days)),
+        "events_total": int(total or 0),
+        "delivered": int(delivered or 0),
+        "pending": int(pending or 0),
+        "dead_lettered": int(dead or 0),
+        "events_retried": int(retried or 0),
+        "avg_delivery_seconds": (round(float(avg_lat), 1)
+                                 if avg_lat is not None else None),
+        "by_event_type": by_type,
+        "delivery_attempts": int(d_total or 0),
+        "attempts_succeeded": int(d_ok or 0),
+        "attempts_failed": int(d_fail or 0),
+        "retry_attempts": int(d_retries or 0),
+        "http_status_distribution": http_dist,
+    }
+
+
+def get_platform_webhook_analytics(days: int = 7, since: str = None) -> dict:
+    """Owner view: platform webhook + fulfillment operational metrics."""
+    cur = get_cursor()
+    out = _webhook_analytics("1=1", (), days, since=since)
+    cur.execute(
+        "SELECT COUNT(*), SUM(CASE WHEN enabled=1 THEN 1 ELSE 0 END)"
+        " FROM reseller_webhooks"
+    )
+    total_wh, enabled_wh = cur.fetchone()
+    out["webhooks_configured"] = int(total_wh or 0)
+    out["webhooks_enabled"] = int(enabled_wh or 0)
+
+    # fulfillment lifecycle (reseller-API orders, same window)
+    from utils.timezone import now as _now
+    from datetime import timedelta as _td
+    if since is None:
+        since = (_now() - _td(days=max(1, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute(
+        """
+        SELECT COUNT(*),
+         SUM(CASE WHEN COALESCE(master_status,'') LIKE '%Failed%' THEN 1 ELSE 0 END),
+         SUM(CASE WHEN COALESCE(master_status,'') LIKE '%Cancelled%' THEN 1 ELSE 0 END),
+         SUM(CASE WHEN COALESCE(master_status,'') NOT LIKE '%Failed%'
+                   AND COALESCE(master_status,'') NOT LIKE '%Cancelled%'
+                   AND (delivery IS NULL OR delivery='') THEN 1 ELSE 0 END),
+         SUM(CASE WHEN COALESCE(master_status,'') NOT LIKE '%Failed%'
+                   AND COALESCE(master_status,'') NOT LIKE '%Cancelled%'
+                   AND delivery IS NOT NULL AND delivery<>'' THEN 1 ELSE 0 END)
+        FROM orders
+        WHERE source='reseller_api' AND reseller_id IS NOT NULL AND created >= ?
+        """,
+        (since,),
+    )
+    f_total, f_failed, f_cancelled, f_pending, f_completed = cur.fetchone()
+    out["fulfillment"] = {
+        "orders": int(f_total or 0),
+        "completed": int(f_completed or 0),
+        "pending": int(f_pending or 0),
+        "failed": int(f_failed or 0),
+        "cancelled": int(f_cancelled or 0),
+        "success_rate": (round(int(f_completed or 0) / int(f_total), 4)
+                         if f_total else None),
+    }
+    return out
+
+
+def get_reseller_webhook_analytics(reseller_id: int, days: int = 30) -> dict:
+    """One reseller's webhook/delivery activity (reseller-safe)."""
+    cur = get_cursor()
+    out = _webhook_analytics("reseller_id=?", (int(reseller_id),), days)
+    cur.execute(
+        "SELECT COUNT(*), SUM(CASE WHEN enabled=1 THEN 1 ELSE 0 END)"
+        " FROM reseller_webhooks WHERE reseller_id=?",
+        (int(reseller_id),),
+    )
+    total_wh, enabled_wh = cur.fetchone()
+    out["webhooks_configured"] = int(total_wh or 0)
+    out["webhooks_enabled"] = int(enabled_wh or 0)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 P5 — product sales, stock & inventory analytics
+#
+# Sources of truth: master `products` + `product_stock` (code rows with
+# sold flags) + `reseller_product_mappings` (adoption) + `orders` (sales
+# via the Phase 14 P3 status model).  Read-only; index-bounded; integer
+# cents end to end.  No duplicate stock is tracked — availability is read
+# from the master inventory at query time.
+#
+# "units_sold" follows the P3 kept-units definition (non-terminal orders
+# minus partially-refunded units).  "out-of-stock events" are not a tracked
+# event stream in the current architecture — we report the truthful
+# per-product stockout STATE (availability == 0) instead of fabricating
+# history.
+# ---------------------------------------------------------------------------
+
+def get_product_sales_analytics(days: int = 30, since: str = None) -> dict:
+    """Owner view: per-product sales + inventory picture over a window.
+
+    Returns per-product rows plus a per-category rollup.  All sales counts
+    cover reseller-API orders in the window; availability/adoption reflect
+    the current master inventory and mapping tables.
+    """
+    from utils.timezone import now as _now
+    from datetime import timedelta as _td
+    cur = get_cursor()
+    if since is None:
+        since = (_now() - _td(days=max(1, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        # keep window_days truthful when the caller passed an explicit bound
+        try:
+            from datetime import datetime as _dt
+            span = (_now().date() - _dt.strptime(since[:10], "%Y-%m-%d").date()).days + 1
+            days = max(1, span)
+        except Exception:
+            pass
+
+    # --- sales per product in window (reseller-API orders) ---------------
+    cur.execute(
+        """
+        SELECT o.product_id,
+               COUNT(*) orders,
+               SUM(CASE WHEN COALESCE(o.master_status,'') NOT LIKE '%Failed%'
+                         AND COALESCE(o.master_status,'') NOT LIKE '%Cancelled%'
+                       THEN 1 ELSE 0 END) ok_orders,
+               SUM(CASE WHEN COALESCE(o.master_status,'') LIKE '%Failed%'
+                       THEN 1 ELSE 0 END) failed_orders,
+               SUM(CASE WHEN COALESCE(o.master_status,'') LIKE '%Cancelled%'
+                       THEN 1 ELSE 0 END) cancelled_orders,
+               COALESCE(SUM(CASE WHEN COALESCE(o.master_status,'') NOT LIKE '%Failed%'
+                                  AND COALESCE(o.master_status,'') NOT LIKE '%Cancelled%'
+                            THEN o.quantity ELSE 0 END),0) units,
+               COALESCE(SUM(o.unit_price_cents*o.quantity),0) gross,
+               COUNT(DISTINCT o.reseller_id) resellers
+        FROM orders o
+        WHERE o.source='reseller_api' AND o.reseller_id IS NOT NULL
+          AND o.created >= ?
+        GROUP BY o.product_id
+        """,
+        (since,),
+    )
+    sales = {}
+    for pid, orders, ok_o, f_o, c_o, units, gross, resellers in cur.fetchall():
+        sales[int(pid)] = {
+            "orders": int(orders or 0),
+            "successful_orders": int(ok_o or 0),
+            "failed_orders": int(f_o or 0),
+            "cancelled_orders": int(c_o or 0),
+            "units": int(units or 0),
+            "gross_cents": int(gross or 0),
+            "resellers": int(resellers or 0),
+        }
+
+    # partial-refunded units per product (kept-units correction, exact)
+    cur.execute(
+        """
+        SELECT o.product_id,
+               COALESCE(SUM(t.amount_cents / o.unit_price_cents),0) refunded_units
+        FROM reseller_wallet_transactions t
+        JOIN orders o ON t.reference = 'rapi.partial_refund.order.' || o.id
+                  AND t.reseller_id = o.reseller_id
+        WHERE t.tx_type='refund_credit' AND o.created >= ?
+          AND o.source='reseller_api'
+        GROUP BY o.product_id
+        """,
+        (since,),
+    )
+    for pid, ru in cur.fetchall():
+        if int(pid) in sales:
+            sales[int(pid)]["units"] = max(
+                0, sales[int(pid)]["units"] - int(ru or 0))
+
+    # --- master product + inventory + adoption ----------------------------
+    cur.execute(
+        """
+        SELECT p.id, p.public_id, p.name, p.active, p.category_id,
+               c.name AS category_name,
+               (SELECT COUNT(*) FROM product_stock s
+                 WHERE s.product_id=p.id AND s.sold=0) codes_available,
+               (SELECT COUNT(*) FROM product_stock s
+                 WHERE s.product_id=p.id AND s.sold=1) codes_consumed,
+               COALESCE(p.stock,0) manual_stock,
+               (SELECT COUNT(*) FROM reseller_product_mappings m
+                 WHERE m.product_id=p.id AND m.enabled=1) adopted_by
+        FROM products p
+        LEFT JOIN categories c ON c.id=p.category_id
+        """
+    )
+    products = []
+    for (pid, pub, name, active, cat_id, cat_name, codes_avail,
+         codes_consumed, manual_stock, adopted_by) in cur.fetchall():
+        pid = int(pid)
+        s = sales.get(pid, {})
+        availability = int(codes_avail or 0)
+        if availability == 0 and int(manual_stock or 0) > 0:
+            availability = int(manual_stock)
+        products.append({
+            "product_id": str(pub or ensure_product_public_id(pid)),
+            "name": str(name or ""),
+            "active": bool(active),
+            "category": cat_name or None,
+            "orders": s.get("orders", 0),
+            "successful_orders": s.get("successful_orders", 0),
+            "failed_orders": s.get("failed_orders", 0),
+            "cancelled_orders": s.get("cancelled_orders", 0),
+            "units_sold": s.get("units", 0),
+            "gross_sales": from_cents(s.get("gross_cents", 0)),
+            "resellers": s.get("resellers", 0),
+            "adopted_by": int(adopted_by or 0),   # enabled mappings
+            "available_now": availability,
+            "stock_consumed_codes": int(codes_consumed or 0),
+            "out_of_stock": availability == 0,
+        })
+    products.sort(key=lambda r: (-r["units_sold"], r["name"]))
+
+    # --- category rollup ---------------------------------------------------
+    by_cat: dict = {}
+    for row in products:
+        key = row["category"] or "Uncategorized"
+        agg = by_cat.setdefault(key, {"category": key, "products": 0,
+                                      "orders": 0, "units_sold": 0,
+                                      "gross_cents": 0})
+        agg["products"] += 1
+        agg["orders"] += row["orders"]
+        agg["units_sold"] += row["units_sold"]
+        agg["gross_cents"] += int(round(float(row["gross_sales"]) * 100))
+    categories = []
+    for agg in by_cat.values():
+        agg["gross_sales"] = from_cents(agg.pop("gross_cents"))
+        categories.append(agg)
+    categories.sort(key=lambda r: -r["units_sold"])
+
+    active_products = [r for r in products if r["active"]]
+    return {
+        "window_days": max(1, int(days)),
+        "currency": "USDT",
+        "products_total": len(products),
+        "products_with_sales": sum(1 for r in products if r["orders"] > 0),
+        "top_products": products[:10],
+        "low_performers": [r for r in products
+                           if r["active"] and r["orders"] == 0][:10],
+        "out_of_stock_count": sum(1 for r in active_products if r["out_of_stock"]),
+        "categories": categories,
+        "products": products,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 P4 — wallet & financial analytics
+#
+# Source of truth: the immutable reseller_wallet_transactions ledger +
+# reseller_wallet balance.  Pure read-only aggregation — analytics never
+# write and never join the transaction-processing path.  Integer cents
+# everywhere; from_cents only for display strings.
+#
+# Ledger tx types (whitelisted at the schema level):
+#   topup_credit, refund_credit, adjustment_credit (positive amounts)
+#   purchase_debit, adjustment_debit (negative amounts)
+#
+# Definitions:
+#   total_purchases — Σ |purchase_debit|  (orders only)
+#   total_debits    — Σ |purchase_debit + adjustment_debit|
+#   total_credits   — Σ topup + refund + adjustment credits
+#   refunds         — Σ refund_credit
+#   net_spend       — total_purchases − refunds
+# ---------------------------------------------------------------------------
+
+_LEDGER_SUMMARY_SQL = """
+    SELECT
+     COUNT(*),
+     COALESCE(SUM(CASE WHEN tx_type='purchase_debit' THEN -amount_cents END),0),
+     COALESCE(SUM(CASE WHEN tx_type='purchase_debit' THEN 1 END),0),
+     COALESCE(SUM(CASE WHEN tx_type IN ('purchase_debit','adjustment_debit')
+                   THEN -amount_cents END),0),
+     COALESCE(SUM(CASE WHEN tx_type IN ('topup_credit','refund_credit',
+                                        'adjustment_credit')
+                   THEN amount_cents END),0),
+     COALESCE(SUM(CASE WHEN tx_type='refund_credit' THEN amount_cents END),0),
+     COALESCE(SUM(CASE WHEN tx_type='refund_credit' THEN 1 END),0)
+    FROM reseller_wallet_transactions
+"""
+
+
+def get_wallet_financial_summary(reseller_id: int) -> dict:
+    """One reseller's financial summary (reseller-safe)."""
+    cur = get_cursor()
+    rid = int(reseller_id)
+    cur.execute(_LEDGER_SUMMARY_SQL + " WHERE reseller_id=?", (rid,))
+    (tx_count, purchases, purchase_count, debits, credits,
+     refunds, refund_count) = cur.fetchone()
+    balance = get_wallet_balance_cents(rid)
+    purchases = int(purchases or 0)
+    refunds = int(refunds or 0)
+    return {
+        "balance_cents": balance,
+        "balance": from_cents(balance),
+        "currency": "USDT",
+        "transaction_count": int(tx_count or 0),
+        "total_purchases_cents": purchases,
+        "total_purchases": from_cents(purchases),
+        "purchase_count": int(purchase_count or 0),
+        "total_debits_cents": int(debits or 0),
+        "total_debits": from_cents(int(debits or 0)),
+        "total_credits_cents": int(credits or 0),
+        "total_credits": from_cents(int(credits or 0)),
+        "refunds_cents": refunds,
+        "refunds": from_cents(refunds),
+        "refund_count": int(refund_count or 0),
+        "net_spend_cents": purchases - refunds,
+        "net_spend": from_cents(purchases - refunds),
+    }
+
+
+def get_platform_financial_summary() -> dict:
+    """Owner view: platform totals + per-reseller spending board."""
+    cur = get_cursor()
+    cur.execute(_LEDGER_SUMMARY_SQL)
+    (tx_count, purchases, purchase_count, debits, credits,
+     refunds, refund_count) = cur.fetchone()
+    purchases = int(purchases or 0)
+    refunds = int(refunds or 0)
+
+    cur.execute(
+        "SELECT COALESCE(SUM(balance_cents),0), COUNT(*) FROM reseller_wallet"
+    )
+    total_balance, wallets = cur.fetchone()
+
+    # per-reseller: balance, purchases, refunds, net spend (board)
+    cur.execute(
+        """
+        SELECT w.reseller_id,
+               w.balance_cents,
+               COALESCE(SUM(CASE WHEN t.tx_type='purchase_debit'
+                            THEN -t.amount_cents END),0) purchases,
+               COALESCE(SUM(CASE WHEN t.tx_type='refund_credit'
+                            THEN t.amount_cents END),0) refunds,
+               COUNT(t.id) txs,
+               r.public_id, r.name
+        FROM reseller_wallet w
+        LEFT JOIN reseller_wallet_transactions t ON t.reseller_id=w.reseller_id
+        LEFT JOIN resellers r ON r.id=w.reseller_id
+        GROUP BY w.reseller_id
+        ORDER BY purchases DESC
+        LIMIT 100
+        """
+    )
+    board = []
+    for rid, bal, pur, ref, txs, rpub, rname in cur.fetchall():
+        row = (rpub, rname)
+        board.append({
+            "reseller_id": str(row[0] or ""),
+            "name": str(row[1] or ""),
+            "balance": from_cents(int(bal or 0)),
+            "total_purchases": from_cents(int(pur or 0)),
+            "refunds": from_cents(int(ref or 0)),
+            "net_spend": from_cents(int(pur or 0) - int(ref or 0)),
+            "transaction_count": int(txs or 0),
+        })
+
+    return {
+        "currency": "USDT",
+        "transaction_count": int(tx_count or 0),
+        "total_purchases_cents": purchases,
+        "total_purchases": from_cents(purchases),
+        "purchase_count": int(purchase_count or 0),
+        "total_debits_cents": int(debits or 0),
+        "total_debits": from_cents(int(debits or 0)),
+        "total_credits_cents": int(credits or 0),
+        "total_credits": from_cents(int(credits or 0)),
+        "refunds_cents": refunds,
+        "refunds": from_cents(refunds),
+        "refund_count": int(refund_count or 0),
+        "net_spend_cents": purchases - refunds,
+        "net_spend": from_cents(purchases - refunds),
+        "balances_held_cents": int(total_balance or 0),
+        "balances_held": from_cents(int(total_balance or 0)),
+        "wallets": int(wallets or 0),
+        "resellers": board,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 P3 — reseller order & sales analytics
+#
+# Source of truth: the master `orders` table (reseller rows carry
+# source='reseller_api', reseller_id, quantity, unit_price_cents,
+# master_status) joined with the immutable wallet ledger for refunds
+# (refund_credit rows referenced rapi.{refund|cancel_refund|partial_refund}
+# .order.<id>).  Nothing is counted twice and nothing is recomputed from
+# client-supplied data — every figure derives from authoritative records.
+#
+# Status model (mirrors the P12 lifecycle mapping):
+#   failed    — master_status LIKE '%Failed%'
+#   cancelled — master_status LIKE '%Cancelled%'
+#   pending   — neither terminal, and no delivery content stored yet
+#               (manual-fulfillment products awaiting delivery)
+#   completed — everything else (code products deliver instantly at order)
+#
+# Financial definitions (integer cents end to end; from_cents only for
+# display — Decimal-safe string output as elsewhere in the project):
+#   gross_sales       — Σ unit_price*quantity over ALL orders in scope
+#   refunds_full      — Σ full-failure refunds      (rapi.refund.order.*)
+#   refunds_cancel    — Σ cancellation refunds      (rapi.cancel_refund.*)
+#   refunds_partial   — Σ partial refunds           (rapi.partial_refund.*)
+#   net_sales         — gross − all refunds
+#   avg_order_value   — gross / total_orders
+#   quantity_sold     — units charged and kept (non-terminal orders minus
+#                       partially-refunded units)
+# ---------------------------------------------------------------------------
+
+_SALES_SCOPE_WHERE = (
+    "o.reseller_id IS NOT NULL AND o.source='reseller_api'"
+)
+
+
+def _sales_day_bounds(date_from: str = None, date_to: str = None):
+    """Normalize inclusive YYYY-MM-DD bounds to a created-range predicate."""
+    import re as _re
+    def _ok(v):
+        return isinstance(v, str) and _re.fullmatch(r"\d{4}-\d{2}-\d{2}", v)
+    lo = f"{date_from} 00:00:00" if _ok(date_from) else None
+    hi = f"{date_to} 23:59:59" if _ok(date_to) else None
+    return lo, hi
+
+
+def _sales_analytics(where: str, params: tuple, refund_where: str,
+                     refund_params: tuple) -> dict:
+    """Shared aggregation over a bounded, indexed order scope."""
+    cur = get_cursor()
+
+    # master_status is NULL for instantly-completed orders — COALESCE to ''
+    # so the NOT LIKE buckets include them (NULL LIKE anything is NULL).
+    cur.execute(
+        f"""
+        SELECT COUNT(*),
+         SUM(CASE WHEN COALESCE(o.master_status,'') LIKE '%Failed%' THEN 1 ELSE 0 END),
+         SUM(CASE WHEN COALESCE(o.master_status,'') LIKE '%Cancelled%' THEN 1 ELSE 0 END),
+         SUM(CASE WHEN COALESCE(o.master_status,'') NOT LIKE '%Failed%'
+                   AND COALESCE(o.master_status,'') NOT LIKE '%Cancelled%'
+                   AND (o.delivery IS NULL OR o.delivery='') THEN 1 ELSE 0 END),
+         SUM(CASE WHEN COALESCE(o.master_status,'') NOT LIKE '%Failed%'
+                   AND COALESCE(o.master_status,'') NOT LIKE '%Cancelled%'
+                   AND o.delivery IS NOT NULL AND o.delivery<>'' THEN 1 ELSE 0 END),
+         SUM(CASE WHEN COALESCE(o.master_status,'') NOT LIKE '%Failed%'
+                   AND COALESCE(o.master_status,'') NOT LIKE '%Cancelled%'
+                   AND o.delivery IS NOT NULL AND o.delivery<>''
+                 THEN o.unit_price_cents*o.quantity ELSE 0 END),
+         COALESCE(SUM(o.unit_price_cents*o.quantity),0),
+         COALESCE(SUM(CASE WHEN COALESCE(o.master_status,'') NOT LIKE '%Failed%'
+                            AND COALESCE(o.master_status,'') NOT LIKE '%Cancelled%'
+                      THEN o.quantity ELSE 0 END),0)
+        FROM orders o WHERE {where}
+        """,
+        params,
+    )
+    (total, failed, cancelled, pending, completed, completed_cents,
+     gross_cents, qty_sold) = cur.fetchone()
+    total = int(total or 0)
+    completed = int(completed or 0)
+    gross_cents = int(gross_cents or 0)
+
+    # --- refunds by kind (ledger is authoritative; prefix = refund kind) ---
+    # When the order scope filters by product, the refund scope must follow
+    # it — otherwise a per-product drilldown would leak sibling products'
+    # refunds.  We then join the ledger through the scoped orders.
+    product_scoped = "o.product_id=?" in where
+    refunds = {}
+    for kind, prefix in (("full", "rapi.refund.order."),
+                         ("cancellation", "rapi.cancel_refund.order."),
+                         ("partial", "rapi.partial_refund.order.")):
+        if product_scoped:
+            cur.execute(
+                "SELECT COALESCE(SUM(t.amount_cents),0), COUNT(*)"
+                " FROM reseller_wallet_transactions t"
+                " JOIN orders o ON t.reference = ? || o.id"
+                "           AND t.reseller_id = o.reseller_id"
+                f" WHERE t.tx_type='refund_credit' AND {where}",
+                (prefix,) + params,
+            )
+        else:
+            cur.execute(
+                "SELECT COALESCE(SUM(amount_cents),0), COUNT(*)"
+                " FROM reseller_wallet_transactions t"
+                " WHERE t.tx_type='refund_credit' AND t.reference LIKE ?"
+                + (f" AND {refund_where}" if refund_where else ""),
+                (prefix + "%",) + tuple(refund_params),
+            )
+        amount, cnt = cur.fetchone()
+        refunds[kind] = {"cents": int(amount or 0), "count": int(cnt or 0)}
+    refunds_total_cents = sum(r["cents"] for r in refunds.values())
+
+    # --- partially-refunded units: partial refunds are exactly
+    # unit_price x failed_units (Phase 8 handler), so units are derivable
+    # exactly from the ledger (integer division is exact by construction).
+    cur.execute(
+        f"""
+        SELECT COALESCE(SUM(t.amount_cents / o.unit_price_cents),0)
+        FROM reseller_wallet_transactions t
+        JOIN orders o ON t.reference = 'rapi.partial_refund.order.' || o.id
+                  AND t.reseller_id = o.reseller_id
+        WHERE {where} AND t.tx_type='refund_credit'
+        """,
+        params,
+    )
+    partial_units = int(cur.fetchone()[0] or 0)
+
+    # --- refunded orders: distinct orders with >=1 refund row -------------
+    cur.execute(
+        f"""
+        SELECT COUNT(*) FROM orders o
+        WHERE {where} AND EXISTS (
+            SELECT 1 FROM reseller_wallet_transactions t
+            WHERE t.reseller_id = o.reseller_id
+              AND t.tx_type='refund_credit'
+              AND t.reference IN (
+                  'rapi.refund.order.' || o.id,
+                  'rapi.cancel_refund.order.' || o.id,
+                  'rapi.partial_refund.order.' || o.id))
+        """,
+        params,
+    )
+    refunded_orders = int(cur.fetchone()[0] or 0)
+
+    return {
+        "orders_total": total,
+        "completed": completed,
+        "pending": int(pending or 0),
+        "failed": int(failed or 0),
+        "cancelled": int(cancelled or 0),
+        "refunded_orders": refunded_orders,
+        # quantity sold = units charged and KEPT (partial-refunded units
+        # subtract; failed/cancelled orders never entered the bucket)
+        "quantity_sold": max(0, int(qty_sold or 0) - partial_units),
+        "gross_sales_cents": gross_cents,
+        "completed_sales_cents": int(completed_cents or 0),
+        "refunds_full_cents": refunds["full"]["cents"],
+        "refunds_cancellation_cents": refunds["cancellation"]["cents"],
+        "refunds_partial_cents": refunds["partial"]["cents"],
+        "refunds_total_cents": refunds_total_cents,
+        "refund_events": sum(r["count"] for r in refunds.values()),
+        "net_sales_cents": gross_cents - refunds_total_cents,
+        "avg_order_value_cents": (gross_cents // total) if total else 0,
+    }
+
+
+def get_reseller_sales_analytics(reseller_id: int, date_from: str = None,
+                                 date_to: str = None, days: int = 30,
+                                 product_id: int = None) -> dict:
+    """Sales analytics for ONE reseller (reseller-safe, index-bounded).
+
+    product_id (optional, server-resolved): drill down to one product.
+    product_id=-1 (inaccessible product, per the controller's non-oracle
+    convention) yields a zeroed scope."""
+    from utils.timezone import now as _now
+    from datetime import timedelta as _td
+    rid = int(reseller_id)
+    lo, hi = _sales_day_bounds(date_from, date_to)
+    if lo is None:
+        lo = (_now() - _td(days=max(1, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
+    where = _SALES_SCOPE_WHERE + " AND o.reseller_id=?"
+    params = [rid]
+    if product_id is not None:
+        where += " AND o.product_id=?"
+        params.append(int(product_id))
+    if lo:
+        where += " AND o.created >= ?"
+        params.append(lo)
+    if hi:
+        where += " AND o.created <= ?"
+        params.append(hi)
+    out = _sales_analytics(where, tuple(params), "t.reseller_id=?", (rid,))
+
+    cur = get_cursor()
+    # top products by units sold (bounded scope)
+    cur.execute(
+        f"""
+        SELECT o.product_id, COUNT(*) orders, COALESCE(SUM(o.quantity),0) units,
+               COALESCE(SUM(o.unit_price_cents*o.quantity),0) gross
+        FROM orders o WHERE {where}
+        GROUP BY o.product_id ORDER BY units DESC LIMIT 10
+        """,
+        params,
+    )
+    top = []
+    for pid, orders, units, gross in cur.fetchall():
+        pub = ensure_product_public_id(int(pid)) if pid else None
+        top.append({"product_id": pub, "orders": int(orders),
+                    "units": int(units), "gross_sales": from_cents(int(gross))})
+    out["top_products"] = top
+
+    # orders by date (bounded)
+    cur.execute(
+        f"""
+        SELECT substr(o.created,1,10) day, COUNT(*) c,
+               COALESCE(SUM(o.unit_price_cents*o.quantity),0) gross
+        FROM orders o WHERE {where}
+        GROUP BY day ORDER BY day
+        """,
+        params,
+    )
+    out["orders_by_date"] = [
+        {"date": str(d), "orders": int(c), "gross_sales": from_cents(int(g))}
+        for d, c, g in cur.fetchall()
+    ]
+    # display-ready money strings (existing convention)
+    for k in ("gross_sales", "completed_sales", "net_sales", "avg_order_value"):
+        out[k] = from_cents(out[f"{k}_cents"])
+    out["refunds_total"] = from_cents(out["refunds_total_cents"])
+    out["currency"] = "USDT"
+    return out
+
+
+def get_platform_sales_analytics(date_from: str = None, date_to: str = None,
+                                 product_id: int = None,
+                                 reseller_id: int = None) -> dict:
+    """Owner view: all-reseller sales analytics with optional filters."""
+    where = _SALES_SCOPE_WHERE
+    params = []
+    if reseller_id:
+        where += " AND o.reseller_id=?"
+        params.append(int(reseller_id))
+    if product_id:
+        where += " AND o.product_id=?"
+        params.append(int(product_id))
+    lo, hi = _sales_day_bounds(date_from, date_to)
+    if lo:
+        where += " AND o.created >= ?"
+        params.append(lo)
+    if hi:
+        where += " AND o.created <= ?"
+        params.append(hi)
+    refund_where = "1=1"
+    refund_params: tuple = ()
+    if reseller_id:
+        refund_where = "t.reseller_id=?"
+        refund_params = (int(reseller_id),)
+    out = _sales_analytics(where, tuple(params), refund_where, refund_params)
+
+    cur = get_cursor()
+    # per-reseller leaderboard (bounded scope, single JOIN — no N+1)
+    cur.execute(
+        f"""
+        SELECT o.reseller_id, COUNT(*) orders,
+               COALESCE(SUM(o.unit_price_cents*o.quantity),0) gross,
+               r.public_id, r.name
+        FROM orders o
+        LEFT JOIN resellers r ON r.id=o.reseller_id
+        WHERE {where}
+        GROUP BY o.reseller_id ORDER BY gross DESC LIMIT 10
+        """,
+        params,
+    )
+    board = []
+    for rid, orders, gross, rpub, rname in cur.fetchall():
+        board.append({
+            "reseller_id": str(rpub or ""),
+            "name": str(rname or ""),
+            "orders": int(orders), "gross_sales": from_cents(int(gross)),
+        })
+    out["resellers"] = board
+    for k in ("gross_sales", "completed_sales", "net_sales", "avg_order_value"):
+        out[k] = from_cents(out[f"{k}_cents"])
+    out["refunds_total"] = from_cents(out["refunds_total_cents"])
+    out["currency"] = "USDT"
+    return out
+
+
+def get_api_usage_platform(days: int = 7, since: str = None) -> dict:
+    """Platform-wide API usage for the owner (Phase 14 P2).
+
+    Read-only aggregation over reseller_api_logs — the existing append-only
+    request log.  Time windows use RANGE predicates on `created` (served by
+    idx_reseller_api_logs_created); the daily series is one grouped query
+    over the bounded range, not N scans.  Clock note: log rows are stamped
+    with shop-time now_text(), so day/month buckets use the shop clock —
+    the same convention as get_reseller_api_usage().
+    """
+    from utils.timezone import now as _now
+    from datetime import timedelta as _td
+    cur = get_cursor()
+    now = _now()
+    day_start = now.strftime("%Y-%m-%d 00:00:00")
+    month_start = now.strftime("%Y-%m-01 00:00:00")
+    # Phase 14 P7: optional explicit lower bound for dashboard date filters;
+    # the series span follows the actual window, not the days default.
+    if since:
+        series_start = since
+        try:
+            from datetime import datetime as _dt
+            span_days = (now.date() - _dt.strptime(since[:10], "%Y-%m-%d").date()).days + 1
+            days = max(1, span_days)
+        except Exception:
+            pass
+    else:
+        series_start = (now - _td(days=max(1, int(days)) - 1)).strftime("%Y-%m-%d 00:00:00")
+
+    def _counts(since: str) -> dict:
+        cur.execute(
+            "SELECT COUNT(*),"
+            " SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END),"
+            " SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END),"
+            " SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END),"
+            " SUM(CASE WHEN status_code = 429 THEN 1 ELSE 0 END),"
+            " AVG(response_ms), MAX(response_ms)"
+            " FROM reseller_api_logs WHERE created >= ?",
+            (since,),
+        )
+        total, ok, e4, e5, e429, avg_ms, max_ms = cur.fetchone()
+        total = int(total or 0)
+        failed = int(e4 or 0) + int(e5 or 0)
+        return {
+            "total": total,
+            "successful": int(ok or 0),
+            "failed": failed,
+            "errors_4xx": int(e4 or 0),
+            "errors_5xx": int(e5 or 0),
+            "rate_limited_429": int(e429 or 0),
+            "error_rate": round(failed / total, 4) if total else 0.0,
+            "avg_ms": round(float(avg_ms or 0), 1),
+            "max_ms": int(max_ms or 0),
+        }
+
+    cur.execute(
+        "SELECT endpoint, COUNT(*) c,"
+        " SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) errors,"
+        " AVG(response_ms) avg_ms"
+        " FROM reseller_api_logs WHERE created >= ?"
+        " GROUP BY endpoint ORDER BY c DESC LIMIT 10",
+        (since or month_start,),
+    )
+    top_endpoints = [
+        {"endpoint": e, "requests": int(c), "errors": int(er or 0),
+         "avg_ms": round(float(a or 0), 1)}
+        for e, c, er, a in cur.fetchall()
+    ]
+
+    cur.execute(
+        "SELECT reseller_public_id, COUNT(*) c,"
+        " SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) errors"
+        " FROM reseller_api_logs WHERE created >= ? AND reseller_public_id IS NOT NULL"
+        " GROUP BY reseller_public_id ORDER BY c DESC LIMIT 10",
+        (since or month_start,),
+    )
+    top_resellers = [
+        {"reseller_id": rid, "requests": int(c), "errors": int(er or 0)}
+        for rid, c, er in cur.fetchall()
+    ]
+
+    cur.execute(
+        "SELECT substr(created,1,10) day, COUNT(*) c,"
+        " SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) errors,"
+        " AVG(response_ms) avg_ms"
+        " FROM reseller_api_logs WHERE created >= ?"
+        " GROUP BY day ORDER BY day",
+        (series_start,),
+    )
+    by_day = {str(d): (int(c), int(er or 0), round(float(a or 0), 1))
+              for d, c, er, a in cur.fetchall()}
+    series = []
+    for i in range(max(1, int(days))):
+        day = (now - _td(days=max(1, int(days)) - 1 - i)).strftime("%Y-%m-%d")
+        c, er, a = by_day.get(day, (0, 0, 0.0))
+        series.append({"date": day, "requests": c, "errors": er, "avg_ms": a})
+
+    out = {
+        "today": _counts(day_start),
+        "this_month": _counts(month_start),
+        "top_endpoints": top_endpoints,
+        "top_resellers": top_resellers,
+        "daily": series,
+    }
+    if since:
+        out["window"] = _counts(since)
+        out["window_since"] = since
+    return out
+
+
+def get_reseller_endpoint_usage(reseller_id: int, days: int = 30) -> list:
+    """Per-endpoint usage breakdown for ONE reseller (Phase 14 P2).
+
+    Reseller-safe: scoped to the caller's own log rows only, bounded window,
+    counts and latency only (no IPs, agents, or request data).
+    """
+    from utils.timezone import now as _now
+    from datetime import timedelta as _td
+    cur = get_cursor()
+    since = (_now() - _td(days=max(1, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute(
+        "SELECT endpoint, method, COUNT(*) c,"
+        " SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) ok,"
+        " SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) errors,"
+        " AVG(response_ms) avg_ms"
+        " FROM reseller_api_logs WHERE reseller_id=? AND created >= ?"
+        " GROUP BY endpoint, method ORDER BY c DESC LIMIT 20",
+        (int(reseller_id), since),
+    )
+    return [
+        {"endpoint": e, "method": m, "requests": int(c),
+         "successful": int(o or 0), "failed": int(er or 0),
+         "avg_ms": round(float(a or 0), 1)}
+        for e, m, c, o, er, a in cur.fetchall()
+    ]
+
+
+def get_reseller_key_usage(reseller_id: int) -> list:
+    """Per-API-key request usage for ONE reseller (public key ids only)."""
+    cur = get_cursor()
+    cur.execute(
+        "SELECT k.key_id, COUNT(l.id) c,"
+        " SUM(CASE WHEN l.status_code >= 400 THEN 1 ELSE 0 END) errors,"
+        " MAX(l.created) last_at"
+        " FROM reseller_api_keys k"
+        " LEFT JOIN reseller_api_logs l ON l.api_key_id = k.id"
+        " WHERE k.reseller_id=?"
+        " GROUP BY k.id ORDER BY c DESC",
+        (int(reseller_id),),
+    )
+    return [
+        {"key_id": kid, "requests": int(c or 0), "errors": int(er or 0),
+         "last_used_at": last}
+        for kid, c, er, last in cur.fetchall()
+    ]
+
+
+def get_reseller_api_usage(reseller_id: int, day_bucket: str = None,
+                           month_bucket: str = None) -> dict:
+    """Aggregate API-usage metrics for ONE reseller (Phase 13 P6).
+
+    Owner WebAdmin and the reseller-safe /api/v1/usage endpoint share this
+    single aggregation.  All reads hit indexed columns or small per-reseller
+    scans — no table sweeps, no per-request overhead (counters already exist:
+    reseller_api_logs, reseller_security_events, reseller_financial_events,
+    orders, webhook tables).
+
+    Returns only reseller-safe numbers (counts, volume, timestamps) — no IPs,
+    no user agents, no key material, no other reseller's data.
+    """
+    from utils.timezone import today_prefix, month_prefix
+    day = day_bucket or today_prefix()
+    month = month_bucket or month_prefix()
+    cur = get_cursor()
+    rid = int(reseller_id)
+
+    cur.execute(
+        "SELECT COUNT(*),"
+        " SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END),"
+        " SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END),"
+        " SUM(CASE WHEN status_code = 429 THEN 1 ELSE 0 END),"
+        " AVG(response_ms), MAX(created)"
+        " FROM reseller_api_logs WHERE reseller_id=?",
+        (rid,),
+    )
+    total, ok, failed, rl429, avg_ms, last_req = cur.fetchone()
+
+    cur.execute(
+        "SELECT COUNT(*) FROM reseller_api_logs"
+        " WHERE reseller_id=? AND substr(created,1,10)=?",
+        (rid, day),
+    )
+    today_requests = int(cur.fetchone()[0])
+
+    cur.execute(
+        "SELECT event_type, COUNT(*) FROM reseller_security_events"
+        " WHERE reseller_id=? AND event_type IN"
+        " ('rate_limit_exceeded','quota_exceeded','auth_failure','brute_force_blocked')"
+        " GROUP BY event_type",
+        (rid,),
+    )
+    sec = {t: int(c) for t, c in cur.fetchall()}
+
+    cur.execute(
+        "SELECT COUNT(*), COALESCE(SUM(unit_price_cents * quantity),0)"
+        " FROM orders WHERE reseller_id=? AND source='reseller_api'",
+        (rid,),
+    )
+    orders_total, volume_cents = cur.fetchone()
+
+    quota = get_quota_settings(rid)
+    used = count_orders_for_quota(rid, day, month)
+
+    cur.execute(
+        "SELECT COUNT(*), SUM(CASE WHEN enabled=1 THEN 1 ELSE 0 END)"
+        " FROM reseller_webhooks WHERE reseller_id=?",
+        (rid,),
+    )
+    wh_total, wh_enabled = cur.fetchone()
+
+    cur.execute(
+        "SELECT COUNT(*) FROM webhook_delivery_log"
+        " WHERE reseller_id=? AND success=0",
+        (rid,),
+    )
+    wh_failed = int(cur.fetchone()[0])
+
+    cur.execute(
+        "SELECT COUNT(*) FROM webhook_outbox"
+        " WHERE reseller_id=? AND status='failed'",
+        (rid,),
+    )
+    wh_dead = int(cur.fetchone()[0])
+
+    cur.execute(
+        "SELECT MAX(last_used_at) FROM reseller_api_keys WHERE reseller_id=?",
+        (rid,),
+    )
+    last_key = cur.fetchone()[0]
+
+    daily_q = int(quota.get("daily_order_quota") or 0)
+    monthly_q = int(quota.get("monthly_order_quota") or 0)
+    return {
+        "requests_total": int(total or 0),
+        "requests_ok": int(ok or 0),
+        "requests_failed": int(failed or 0),
+        "requests_today": today_requests,
+        "rate_limited_429": int(rl429 or 0),
+        "rate_limit_events": sec.get("rate_limit_exceeded", 0),
+        "quota_exceeded_events": sec.get("quota_exceeded", 0),
+        "auth_failure_events": sec.get("auth_failure", 0)
+                               + sec.get("brute_force_blocked", 0),
+        "avg_response_ms": round(float(avg_ms or 0)),
+        "last_request_at": last_req,
+        "last_key_used_at": last_key,
+        "orders_total": int(orders_total or 0),
+        "order_volume": from_cents(int(volume_cents or 0)),
+        "orders_today": used["daily"],
+        "orders_this_month": used["monthly"],
+        "quota_daily": daily_q or None,          # None = unlimited
+        "quota_monthly": monthly_q or None,
+        "quota_daily_remaining": (max(0, daily_q - used["daily"])
+                                  if daily_q else None),
+        "quota_monthly_remaining": (max(0, monthly_q - used["monthly"])
+                                    if monthly_q else None),
+        "webhooks_configured": int(wh_total or 0),
+        "webhooks_enabled": int(wh_enabled or 0),
+        "webhook_deliveries_failed": wh_failed,
+        "webhook_events_dead_lettered": wh_dead,
+    }
 
 
 def list_wallet_transactions(reseller_id: int, limit: int = 50, offset: int = 0):
@@ -2265,6 +3348,25 @@ def get_reseller_product_mapping_by_public_id(
     )
     row = cur.fetchone()
     return dict(zip(_MAPPING_COLS, row)) if row else None
+
+
+def has_enabled_product_mapping(reseller_id: int, product_id: int) -> bool:
+    """True only when the reseller holds an ENABLED catalog mapping.
+
+    Phase 12 P2: the orderable catalog is the reseller's own mapping list,
+    not the raw owner access grant. The order-validation layer calls this
+    after access authorization so a product that was never imported — or
+    whose mapping the reseller disabled — cannot be ordered. Deny-by-default:
+    a missing row reads as False.
+    """
+    cur = get_cursor()
+    cur.execute(
+        "SELECT enabled FROM reseller_product_mappings "
+        "WHERE reseller_id=? AND product_id=?",
+        (int(reseller_id), int(product_id)),
+    )
+    row = cur.fetchone()
+    return bool(row and row[0])
 
 
 def list_reseller_product_mappings(reseller_id: int) -> list:
