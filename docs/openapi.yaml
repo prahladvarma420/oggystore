@@ -558,6 +558,322 @@ paths:
         "400": {$ref: "#/components/responses/ValidationError"}
         "401": {$ref: "#/components/responses/Unauthorized"}
 
+  /refunds:
+    get:
+      tags: [Refunds]
+      summary: List your refund records (cursor pagination)
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {name: after_id, in: query, schema: {type: string, pattern: '^REF-[A-HJ-NP-Z2-9]{10}$'}}
+        - {name: kind, in: query, schema: {type: string, enum: [full, partial, cancellation, administrative]}}
+      responses:
+        "200":
+          description: Refund records
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          refunds:
+                            type: array
+                            items: {$ref: "#/components/schemas/RefundRecord"}
+                      meta: {$ref: "#/components/schemas/CursorPagination"}
+        "400": {$ref: "#/components/responses/ValidationError"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /refunds/{refundId}:
+    get:
+      tags: [Refunds]
+      summary: Get one of your refund records
+      parameters: [{name: refundId, in: path, required: true, schema: {type: string, pattern: '^REF-[A-HJ-NP-Z2-9]{10}$'}}]
+      responses:
+        "200":
+          description: Refund record (foreign IDs return the same 404)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          refund: {$ref: "#/components/schemas/RefundRecord"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /invoices:
+    get:
+      tags: [Invoices]
+      summary: List your invoices (cursor pagination)
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {name: after_id, in: query, schema: {type: string, pattern: '^INV-[A-HJ-NP-Z2-9]{12}$'}}
+        - {name: status, in: query, schema: {type: string, enum: [draft, finalized, void]}}
+        - {name: date_from, in: query, schema: {type: string, format: date}, description: "invoice overlaps any day on/after this date"}
+        - {name: date_to, in: query, schema: {type: string, format: date}, description: "invoice overlaps any day on/before this date"}
+        - {name: currency, in: query, schema: {type: string, enum: [USDT]}}
+      responses:
+        "200":
+          description: Invoice page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          invoices:
+                            type: array
+                            items: {$ref: "#/components/schemas/Invoice"}
+                      meta: {$ref: "#/components/schemas/CursorPagination"}
+        "400": {$ref: "#/components/responses/ValidationError"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /invoices/{invoiceId}:
+    get:
+      tags: [Invoices]
+      summary: Get one of your invoices
+      parameters: [{name: invoiceId, in: path, required: true, schema: {type: string, pattern: '^INV-[A-HJ-NP-Z2-9]{12}$'}}]
+      responses:
+        "200":
+          description: Invoice detail (foreign IDs return the same 404)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          invoice: {$ref: "#/components/schemas/Invoice"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /invoices/{invoiceId}/lines:
+    get:
+      tags: [Invoices]
+      summary: Invoice line items
+      parameters: [{name: invoiceId, in: path, required: true, schema: {type: string, pattern: '^INV-[A-HJ-NP-Z2-9]{12}$'}}]
+      responses:
+        "200":
+          description: Line items with ledger references
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          invoice_id: {type: string}
+                          invoice_number: {type: string}
+                          currency: {type: string}
+                          lines:
+                            type: array
+                            items: {$ref: "#/components/schemas/InvoiceLine"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /invoices/{invoiceId}/transactions:
+    get:
+      tags: [Invoices]
+      summary: Ledger transactions documented by this invoice
+      parameters: [{name: invoiceId, in: path, required: true, schema: {type: string, pattern: '^INV-[A-HJ-NP-Z2-9]{12}$'}}]
+      responses:
+        "200":
+          description: Ledger-referenced transactions (own invoice only)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          invoice_id: {type: string}
+                          invoice_number: {type: string}
+                          currency: {type: string}
+                          transactions:
+                            type: array
+                            items: {$ref: "#/components/schemas/WalletTransaction"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /invoices/{invoiceId}/document:
+    get:
+      tags: [Invoices]
+      summary: Printable invoice document (HTML)
+      parameters: [{name: invoiceId, in: path, required: true, schema: {type: string, pattern: '^INV-[A-HJ-NP-Z2-9]{12}$'}}]
+      responses:
+        "200":
+          description: Printable HTML invoice (print-to-PDF in any browser)
+          content:
+            text/html:
+              schema: {type: string}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /transactions:
+    get:
+      tags: [Wallet]
+      summary: Your ledger transaction history (cursor paginated)
+      description: |
+        Reads the authoritative immutable wallet ledger — your rows only.
+        Filters: type, direction, date_from/date_to (YYYY-MM-DD), order_id
+        (ORD-*; includes that order's refunds).  `balance_before` is derived
+        as balance_after − amount (exact chain arithmetic); `reference` is
+        the idempotency identity.
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+        - {name: after, in: query, schema: {type: string}, description: "opaque cursor from meta.pagination.next_after"}
+        - {name: type, in: query, schema: {type: string, enum: [topup_credit, purchase_debit, refund_credit, adjustment_credit, adjustment_debit]}}
+        - {name: direction, in: query, schema: {type: string, enum: [debit, credit]}}
+        - {name: date_from, in: query, schema: {type: string, format: date}}
+        - {name: date_to, in: query, schema: {type: string, format: date}}
+        - {name: order_id, in: query, schema: {type: string, pattern: '^ORD-\d{8}$'}}
+      responses:
+        "200":
+          description: Transaction page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          transactions:
+                            type: array
+                            items: {$ref: "#/components/schemas/WalletTransaction"}
+        "400": {$ref: "#/components/responses/ValidationError"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /statements:
+    get:
+      tags: [Statements]
+      summary: List your statements (cursor pagination)
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {name: after_id, in: query, schema: {type: string, pattern: '^STMT-[A-HJ-NP-Z2-9]{12}$'}}
+        - {name: status, in: query, schema: {type: string, enum: [open, finalized]}}
+        - {name: period_type, in: query, schema: {type: string, enum: [monthly, weekly, custom, invoice]}}
+        - {name: date_from, in: query, schema: {type: string, format: date}, description: "statement overlaps any day on/after this date"}
+        - {name: date_to, in: query, schema: {type: string, format: date}, description: "statement overlaps any day on/before this date"}
+        - {name: currency, in: query, schema: {type: string, enum: [USDT]}}
+      responses:
+        "200":
+          description: Statement page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          statements:
+                            type: array
+                            items: {$ref: "#/components/schemas/Statement"}
+                      meta: {$ref: "#/components/schemas/CursorPagination"}
+        "400": {$ref: "#/components/responses/ValidationError"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /statements/{statementId}:
+    get:
+      tags: [Statements]
+      summary: Get one of your statements (with invoice reconciliation)
+      parameters: [{name: statementId, in: path, required: true, schema: {type: string, pattern: '^STMT-[A-HJ-NP-Z2-9]{12}$'}}]
+      responses:
+        "200":
+          description: Statement detail (foreign IDs return the same 404)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          statement: {$ref: "#/components/schemas/Statement"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /statements/{statementId}/transactions:
+    get:
+      tags: [Statements]
+      summary: Statement transactions (ledger-referenced, paginated)
+      parameters:
+        - {name: statementId, in: path, required: true, schema: {type: string, pattern: '^STMT-[A-HJ-NP-Z2-9]{12}$'}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 100}}
+        - {name: after_id, in: query, schema: {type: integer}}
+      responses:
+        "200":
+          description: Chronological lines with running balances
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          statement_id: {type: string}
+                          statement_number: {type: string}
+                          currency: {type: string}
+                          transactions:
+                            type: array
+                            items: {$ref: "#/components/schemas/StatementLine"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /statements/{statementId}/invoices:
+    get:
+      tags: [Statements]
+      summary: Invoices related to the statement period
+      parameters: [{name: statementId, in: path, required: true, schema: {type: string, pattern: '^STMT-[A-HJ-NP-Z2-9]{12}$'}}]
+      responses:
+        "200": {description: Related invoices, content: {application/json: {schema: {$ref: "#/components/schemas/Envelope"}}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /statements/{statementId}/document:
+    get:
+      tags: [Statements]
+      summary: Printable statement document (HTML)
+      parameters: [{name: statementId, in: path, required: true, schema: {type: string, pattern: '^STMT-[A-HJ-NP-Z2-9]{12}$'}}]
+      responses:
+        "200":
+          description: Printable HTML statement
+          content:
+            text/html:
+              schema: {type: string}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
   /exports/orders.csv:
     get:
       tags: [Orders]
@@ -972,6 +1288,113 @@ components:
           items: {type: string}
           description: "Decrypted delivery content (codes/accounts). Empty when pending/failed/cancelled."
         message: {type: string, description: "Present for non-delivered states"}
+    Invoice:
+      type: object
+      properties:
+        invoice_id: {type: string, example: "INV-ABC123XY4567"}
+        invoice_number: {type: string, example: "INV-2026-000042"}
+        status: {type: string, enum: [draft, finalized, void]}
+        currency: {type: string, enum: [USDT]}
+        billing_period:
+          type: object
+          properties:
+            start: {type: string, format: date}
+            end: {type: string, format: date}
+        subtotal: {type: string, example: "250.00"}
+        refunds: {type: string}
+        adjustment_credits: {type: string}
+        adjustment_debits: {type: string}
+        topups: {type: string, description: "informational wallet funding in the period"}
+        total: {type: string}
+        amount_paid: {type: string, description: "prepaid model: settled at order time"}
+        amount_due: {type: string}
+        orders_count: {type: integer}
+        transactions_count: {type: integer}
+        issued_at: {type: string}
+        finalized_at: {type: [string, "null"]}
+        voided_at: {type: [string, "null"]}
+    InvoiceLine:
+      type: object
+      properties:
+        type: {type: string, enum: [purchase, refund_full, refund_cancellation, refund_partial, adjustment_credit, adjustment_debit, topup]}
+        label: {type: string}
+        description: {type: string}
+        reference: {type: string, description: "ledger idempotency reference"}
+        order_id: {type: [string, "null"], example: "ORD-00000042"}
+        product_id: {type: [string, "null"]}
+        quantity: {type: integer}
+        unit_amount: {type: string}
+        total: {type: string}
+        currency: {type: string}
+        created_at: {type: string}
+    RefundRecord:
+      type: object
+      properties:
+        refund_id: {type: string, example: "REF-ABC123XY45"}
+        order_id: {type: string, example: "ORD-00000042"}
+        kind: {type: string, enum: [full, partial, cancellation, administrative]}
+        amount: {type: string, example: "10.00"}
+        currency: {type: string, enum: [USDT]}
+        reason: {type: string}
+        source: {type: string, enum: [system_failure, cancellation, admin]}
+        status: {type: string, enum: [completed]}
+        reference: {type: string, description: "ledger idempotency reference"}
+        created_at: {type: string}
+    WalletTransaction:
+      type: object
+      properties:
+        reference: {type: string, example: "rapi.12.9f2a-…"}
+        type: {type: string, enum: [topup_credit, purchase_debit, refund_credit, adjustment_credit, adjustment_debit]}
+        direction: {type: string, enum: [debit, credit]}
+        amount: {type: string, example: "10.00"}
+        currency: {type: string, enum: [USDT]}
+        balance_before: {type: string, description: "derived: balance_after − amount"}
+        balance_after: {type: string, description: "authoritative, from the ledger"}
+        order_id: {type: [string, "null"], example: "ORD-00000042"}
+        description: {type: string}
+        created_at: {type: string}
+    Statement:
+      type: object
+      properties:
+        statement_id: {type: string, example: "STMT-ABC123XY4567"}
+        statement_number: {type: string, example: "ST-2026-000007"}
+        status: {type: string, enum: [open, finalized]}
+        currency: {type: string, enum: [USDT]}
+        period_type: {type: string, enum: [monthly, weekly, custom, invoice]}
+        period:
+          type: object
+          properties:
+            start: {type: string, description: "inclusive lower bound (shop time)"}
+            end: {type: string, description: "EXCLUSIVE upper bound (half-open)"}
+            half_open: {type: boolean}
+            timezone: {type: string}
+        opening_balance: {type: string, example: "500.00"}
+        closing_balance: {type: string}
+        total_credits: {type: string}
+        total_debits: {type: string}
+        purchases: {type: string}
+        refunds: {type: string}
+        adjustment_credits: {type: string}
+        adjustment_debits: {type: string}
+        topups: {type: string}
+        orders_count: {type: integer}
+        transactions_count: {type: integer}
+        invoice_ids: {type: array, items: {type: string}}
+        generated_at: {type: string}
+        finalized_at: {type: [string, "null"]}
+    StatementLine:
+      type: object
+      properties:
+        date: {type: string}
+        type: {type: string, example: "purchase_debit"}
+        label: {type: string}
+        direction: {type: string, enum: [debit, credit]}
+        amount: {type: string}
+        balance_after: {type: string, description: "authoritative running balance from the ledger"}
+        reference: {type: string}
+        order_id: {type: [string, "null"]}
+        description: {type: string}
+        currency: {type: string}
     WalletSummary:
       type: object
       properties:
