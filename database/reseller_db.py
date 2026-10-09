@@ -351,6 +351,22 @@ def ensure_reseller_tables():
     from reseller_api.services.order_service import ensure_order_metadata_columns
     ensure_order_metadata_columns()
 
+    # Phase 15 P2: invoice document tables (draft/finalized/void + triggers)
+    from database.invoice_db import ensure_invoice_tables
+    ensure_invoice_tables()
+
+    # Phase 15 P3: statement snapshot tables (open/finalized + triggers)
+    from database.statement_db import ensure_statement_tables
+    ensure_statement_tables()
+
+    # Phase 15 P5: adjustment/refund business records (+ triggers)
+    from database.adjustment_db import ensure_adjustment_tables
+    ensure_adjustment_tables()
+
+    # Phase 15 P6: reconciliation runs + discrepancies (append-only)
+    from database.reconciliation_db import ensure_reconciliation_tables
+    ensure_reconciliation_tables()
+
     # Phase 10: IP-based auth-failure counters (brute-force protection)
     ensure_ip_auth_counter_table()
 
@@ -1641,19 +1657,48 @@ _SALES_SCOPE_WHERE = (
 )
 
 
-def _sales_day_bounds(date_from: str = None, date_to: str = None):
-    """Normalize inclusive YYYY-MM-DD bounds to a created-range predicate."""
+def _shop_day_bounds_to_utc(date_from: str = None, date_to: str = None):
+    """Inclusive SHOP-timezone day bounds converted to UTC instants.
+
+    The orders.created column stamps UTC (database default); the business
+    day boundary the user means is shop-time (utils.timezone).  Converting
+    is what makes "today" correct on both sides of the IST/UTC day flip
+    (P15.10 finding: the P14 filter compared shop-day bounds to UTC
+    timestamps and silently emptied the window after the flip)."""
     import re as _re
+    from datetime import datetime, timezone
+    from utils.timezone import TZ
     def _ok(v):
         return isinstance(v, str) and _re.fullmatch(r"\d{4}-\d{2}-\d{2}", v)
-    lo = f"{date_from} 00:00:00" if _ok(date_from) else None
-    hi = f"{date_to} 23:59:59" if _ok(date_to) else None
+    lo = hi = None
+    if _ok(date_from):
+        lo = (datetime.strptime(date_from, "%Y-%m-%d")
+              .replace(tzinfo=TZ).astimezone(timezone.utc)
+              .strftime("%Y-%m-%d %H:%M:%S"))
+    if _ok(date_to):
+        hi = (datetime.strptime(date_to, "%Y-%m-%d")
+              .replace(hour=23, minute=59, second=59, tzinfo=TZ)
+              .astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
     return lo, hi
 
 
+def _sales_day_bounds(date_from: str = None, date_to: str = None):
+    """Order-scope bounds: shop-day semantics converted to the UTC clock of
+    the orders.created column.  (Ledger bounds stay shop-time — see the
+    refund scoping in _sales_analytics.)"""
+    return _shop_day_bounds_to_utc(date_from, date_to)
+
+
 def _sales_analytics(where: str, params: tuple, refund_where: str,
-                     refund_params: tuple) -> dict:
-    """Shared aggregation over a bounded, indexed order scope."""
+                     refund_params: tuple,
+                     refund_window: tuple = None) -> dict:
+    """Shared aggregation over a bounded, indexed order scope.
+
+    refund_window (lo, hi) — optional SHOP-time bounds applied to refund
+    ledger rows (the ledger stamps shop time; the order scope uses UTC
+    after the P15.10 conversion).  Refunds count in the window they
+    OCCURRED, matching invoice/statement semantics."""
+    cur = get_cursor()
     cur = get_cursor()
 
     # master_status is NULL for instantly-completed orders — COALESCE to ''
@@ -1696,6 +1741,14 @@ def _sales_analytics(where: str, params: tuple, refund_where: str,
     for kind, prefix in (("full", "rapi.refund.order."),
                          ("cancellation", "rapi.cancel_refund.order."),
                          ("partial", "rapi.partial_refund.order.")):
+        refund_window_sql = ""
+        refund_window_params = ()
+        if refund_window and refund_window[0]:
+            refund_window_sql += " AND t.created >= ?"
+            refund_window_params += (refund_window[0],)
+        if refund_window and refund_window[1]:
+            refund_window_sql += " AND t.created <= ?"
+            refund_window_params += (refund_window[1],)
         if product_scoped:
             cur.execute(
                 "SELECT COALESCE(SUM(t.amount_cents),0), COUNT(*)"
@@ -1710,8 +1763,9 @@ def _sales_analytics(where: str, params: tuple, refund_where: str,
                 "SELECT COALESCE(SUM(amount_cents),0), COUNT(*)"
                 " FROM reseller_wallet_transactions t"
                 " WHERE t.tx_type='refund_credit' AND t.reference LIKE ?"
-                + (f" AND {refund_where}" if refund_where else ""),
-                (prefix + "%",) + tuple(refund_params),
+                + (f" AND {refund_where}" if refund_where else "")
+                + refund_window_sql,
+                (prefix + "%",) + tuple(refund_params) + refund_window_params,
             )
         amount, cnt = cur.fetchone()
         refunds[kind] = {"cents": int(amount or 0), "count": int(cnt or 0)}
@@ -1784,7 +1838,10 @@ def get_reseller_sales_analytics(reseller_id: int, date_from: str = None,
     rid = int(reseller_id)
     lo, hi = _sales_day_bounds(date_from, date_to)
     if lo is None:
-        lo = (_now() - _td(days=max(1, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
+        # default window on the UTC clock of orders.created
+        from datetime import timezone as _tz_utc
+        import datetime as _dtx
+        lo = (_dtx.datetime.now(_tz_utc.utc) - _td(days=max(1, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
     where = _SALES_SCOPE_WHERE + " AND o.reseller_id=?"
     params = [rid]
     if product_id is not None:
@@ -1796,7 +1853,14 @@ def get_reseller_sales_analytics(reseller_id: int, date_from: str = None,
     if hi:
         where += " AND o.created <= ?"
         params.append(hi)
-    out = _sales_analytics(where, tuple(params), "t.reseller_id=?", (rid,))
+    # refunds live on the ledger's SHOP clock — window them with raw
+    # shop-day bounds (never the UTC-converted order bounds)
+    ref_lo = f"{date_from} 00:00:00" if date_from else None
+    ref_hi = f"{date_to} 23:59:59" if date_to else None
+    if ref_lo is None:
+        ref_lo = (_now() - _td(days=max(1, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
+    out = _sales_analytics(where, tuple(params), "t.reseller_id=?", (rid,),
+                           refund_window=(ref_lo, ref_hi))
 
     cur = get_cursor()
     # top products by units sold (bounded scope)
@@ -1862,7 +1926,10 @@ def get_platform_sales_analytics(date_from: str = None, date_to: str = None,
     if reseller_id:
         refund_where = "t.reseller_id=?"
         refund_params = (int(reseller_id),)
-    out = _sales_analytics(where, tuple(params), refund_where, refund_params)
+    ref_lo = f"{date_from} 00:00:00" if date_from else None
+    ref_hi = f"{date_to} 23:59:59" if date_to else None
+    out = _sales_analytics(where, tuple(params), refund_where, refund_params,
+                           refund_window=(ref_lo, ref_hi))
 
     cur = get_cursor()
     # per-reseller leaderboard (bounded scope, single JOIN — no N+1)
