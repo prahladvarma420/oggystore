@@ -20,12 +20,13 @@ def _fernet():
         return Fernet(derived)
 
 
-def encrypt_text(value: str) -> str:
+def encrypt_text(value: str, *, force: bool = False) -> str:
+    """Encrypt text; force treats an enc: prefix as user text, not ciphertext."""
     if value is None:
         return value
     value = str(value)
 
-    if value.startswith(PREFIX):
+    if value.startswith(PREFIX) and not force:
         return value
 
     f = _fernet()
