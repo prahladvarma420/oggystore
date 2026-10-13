@@ -332,7 +332,8 @@ _BLOCK_RESOURCE_TYPES = ("image", "media", "font")
 def _log(msg: str):
     """Server-side breadcrumb, visible in Railway deploy logs."""
     try:
-        print(f"[CANVA] {msg}", flush=True)
+        from utils.email_privacy import safe_message
+        print(f"[CANVA] {safe_message(msg)}", flush=True)
     except Exception:
         pass
 
@@ -460,19 +461,7 @@ def send_canva_invite_sync(email: str):
             None,
         )
     try:
-        started = time.monotonic()
-        max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
-            ok, message, screenshot = _send_canva_invite_locked(email)
-            if ok or not (isinstance(message, str) and message.startswith(_IP_BLOCK_MARK)):
-                return ok, message, screenshot
-            elapsed = time.monotonic() - started
-            if attempt < max_attempts and elapsed < 70:
-                _log(f"IP-level block on attempt {attempt} ({int(elapsed)}s) — fresh browser = new rotating proxy IP; retrying")
-                time.sleep(3)
-                continue
-            break
-        return False, message[len(_IP_BLOCK_MARK):], screenshot
+        return _send_canva_with_retries_locked(email)
     finally:
         pw_lane.release()
     """Lane-guarded entry: never run two Chromium jobs at the same time."""
@@ -488,6 +477,23 @@ def send_canva_invite_sync(email: str):
         return _send_canva_invite_locked(email)
     finally:
         pw_lane.release()
+
+
+def _send_canva_with_retries_locked(email):
+    """Same retry behavior, caller already holds the existing pw_lane."""
+    started = time.monotonic()
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        ok, message, screenshot = _send_canva_invite_locked(email)
+        if ok or not (isinstance(message, str) and message.startswith(_IP_BLOCK_MARK)):
+            return ok, message, screenshot
+        elapsed = time.monotonic() - started
+        if attempt < max_attempts and elapsed < 70:
+            _log(f"IP-level block on attempt {attempt} ({int(elapsed)}s) — fresh browser = new rotating proxy IP; retrying")
+            time.sleep(3)
+            continue
+        break
+    return False, message[len(_IP_BLOCK_MARK):], screenshot
 
 
 def _send_canva_invite_locked(email: str):
@@ -909,6 +915,10 @@ async def process_invite(bot, invite_id: int):
         return
 
     _id, user_id, order_id, email, _status, _error, _created = invite
+    from services.api_email_invites import is_api_order, process_invite as process_api
+    if is_api_order(order_id):
+        await process_api('canva',invite_id)
+        return
     if _status == "sent":
         # Already delivered — a stale/duplicate retry must never double-invite.
         _log(f"invite #{invite_id} already sent; skipping duplicate run")
