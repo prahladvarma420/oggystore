@@ -354,7 +354,8 @@ _BLOCK_RESOURCE_TYPES = ("image", "media", "font")
 def _log(msg: str):
     """Server-side breadcrumb, visible in Railway deploy logs."""
     try:
-        print(f"[M365] {msg}", flush=True)
+        from utils.email_privacy import safe_message
+        print(f"[M365] {safe_message(msg)}", flush=True)
     except Exception:
         pass
 
@@ -1361,6 +1362,10 @@ async def process_invite(bot, invite_id: int):
         return
 
     _id, user_id, order_id, email, _status, _error, _created = invite
+    from services.api_email_invites import is_api_order, process_invite as process_api
+    if is_api_order(order_id):
+        await process_api('m365',invite_id)
+        return
     safe_email = html.escape(str(email), quote=False)
 
     # Route the invite through the session group matching the product's warranty.
@@ -1618,3 +1623,11 @@ async def run_m365_maintenance(context):
                     _log(f"queue flush invite #{inv[0]} error: {repr(pexc)[:120]}")
     except Exception as exc:
         _log(f"queue flush error: {repr(exc)[:150]}")
+
+    # API rows share the same persisted invite queues and the SAME bot-process
+    # browser lane, but never run the interactive/customer notification path.
+    try:
+        from services.api_email_invites import drain_pending
+        await drain_pending()
+    except Exception:
+        _log("API email queue maintenance unavailable")
