@@ -28,6 +28,10 @@ if not logger.handlers:
 
 
 def log_error(title: str, exc: Exception = None, extra: str = ""):
+    from utils.email_privacy import active
+    if active():
+        logger.error("API email fulfillment: automation error")
+        return
     message = f"{title}"
 
     if extra:
