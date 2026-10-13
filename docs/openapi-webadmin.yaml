@@ -1,0 +1,489 @@
+openapi: 3.1.0
+info:
+  title: OGGY internal WebAdmin Phase 16 operations
+  version: '16.10'
+  description: Internal WebAdmin operations supporting Phase 16. Not served under
+    /api/v1 and NOT authorized by reseller API keys. Deploy on the existing separate
+    WebAdmin host; replace the example server URL. Scope includes existing quarantine,
+    lifecycle, fulfillment form and related read surfaces, not every unrelated admin
+    feature.
+servers:
+- url: https://webadmin.example.invalid
+  description: Replace with your actual internal WebAdmin host; not the reseller API
+    server
+security:
+- WebAdminSession: []
+  WebAdminCSRF: []
+paths:
+  /api/orders/{oid}/fail:
+    post:
+      tags:
+      - Owner lifecycle
+      summary: Fail a reseller order
+      operationId: webadminOrderFail
+      description: Owner-only Reseller API fail/refund action. Reuses capped outstanding
+        refund, ledger/refund-record atomicity and one-shot attributed/manual stock
+        restoration. Allowed fail/refund policy can handle delivered orders. Failed
+        financial settlement returns 500; retry the same action to complete established
+        crash recovery. Cancelled/repeated settled orders conflict. Emits order.failed/delivery.failed/refund.created
+        using existing deduplication.
+      parameters:
+      - name: oid
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      requestBody: &id001
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - reason
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                  description: Nonempty after trimming. Sensitive text is redacted
+                    before records/events/notifications.
+      responses:
+        '200': &id002
+          $ref: '#/components/responses/Success'
+        '400': &id003
+          $ref: '#/components/responses/BadRequest'
+        '401': &id004
+          $ref: '#/components/responses/Unauthorized'
+        '403': &id005
+          $ref: '#/components/responses/Forbidden'
+        '404': &id006
+          $ref: '#/components/responses/NotFound'
+        '409': &id007
+          $ref: '#/components/responses/Conflict'
+        '500': &id008
+          $ref: '#/components/responses/RecoveryRequired'
+        '422':
+          $ref: '#/components/responses/LegacyChargeUnavailable'
+  /api/orders/{oid}/cancel:
+    post:
+      tags:
+      - Owner lifecycle
+      summary: Cancel a reseller order
+      operationId: webadminOrderCancel
+      description: Owner-only pre-delivery Reseller API cancellation. Stored delivery
+        is authoritative; reject delivered orders with 409 and use fail/refund instead.
+        Manual pending orders are eligible. Reuses cancellation engine, outstanding
+        refund cap and exactly-once stock restoration. Emits order.cancelled; repeated/concurrent
+        terminal actions conflict.
+      parameters:
+      - name: oid
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      requestBody: *id001
+      responses:
+        '200': *id002
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '409': *id007
+        '500': *id008
+        '422':
+          $ref: '#/components/responses/LegacyChargeUnavailable'
+  /api/orders/{oid}/deliver:
+    post:
+      tags:
+      - Owner lifecycle
+      summary: Deliver a reseller order
+      operationId: webadminOrderDeliver
+      description: Owner-only Reseller API manual completion. Reject failed/cancelled
+        and customer orders. Encrypt content, safe-write/status/update/completion
+        outbox in one atomic operation. Repeated stored-delivery attempt returns 200
+        with note delivery already present, without overwriting or duplicate webhook.
+        Response contains public order_id and delivery_status delivered, never delivery
+        text.
+      parameters:
+      - name: oid
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - delivery
+              properties:
+                delivery:
+                  type: string
+                  minLength: 1
+                  maxLength: 10000
+                  writeOnly: true
+                  description: Nonempty content; whitespace/Unicode/HTML-like text
+                    accepted. Encrypted at rest and absent from action JSON, webhook
+                    and logs.
+      responses:
+        '200': *id002
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '409': *id007
+        '500': *id008
+        '413':
+          $ref: '#/components/responses/TooLarge'
+  /api/orders/{oid}/refund:
+    post:
+      tags:
+      - Legacy quarantine
+      operationId: webadminLegacyRefund
+      summary: Legacy customer refund; reseller API orders quarantined
+      description: Existing authenticated WebAdmin customer refund behavior remains
+        unchanged. source=reseller_api always returns 409 before wallet/deletion/Telegram
+        effects. These are NOT replacement reseller actions. Anonymous requests may
+        receive CSRF 403 before login-required 401 on these existing legacy routes.
+      parameters:
+      - name: oid
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200': *id002
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '409': *id007
+  /api/orders/{oid}/resend:
+    post:
+      tags:
+      - Legacy quarantine
+      operationId: webadminLegacyResend
+      summary: Legacy customer resend; reseller API orders quarantined
+      description: Existing authenticated WebAdmin customer resend behavior remains
+        unchanged. source=reseller_api always returns 409 before wallet/deletion/Telegram
+        effects. These are NOT replacement reseller actions. Anonymous requests may
+        receive CSRF 403 before login-required 401 on these existing legacy routes.
+      parameters:
+      - name: oid
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200': *id002
+        '401': *id004
+        '403': *id005
+        '404': *id006
+        '409': *id007
+  /api/products:
+    get:
+      tags:
+      - Admin read surfaces
+      operationId: webadminListProducts
+      summary: List WebAdmin products; fulfillment secrets omitted
+      security:
+      - WebAdminSession: []
+      description: Authenticated internal WebAdmin view, not a reseller-facing API
+        route. The existing read contract is preserved. Product fulfillment configuration
+        and supplier references are excluded; order delivery visibility follows existing
+        internal admin permissions.
+      responses:
+        '200':
+          $ref: '#/components/responses/Success'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/orders:
+    get:
+      tags:
+      - Admin read surfaces
+      operationId: webadminListOrders
+      summary: List WebAdmin orders with actual reseller lifecycle status
+      security:
+      - WebAdminSession: []
+      description: Authenticated internal WebAdmin view, not a reseller-facing API
+        route. The existing read contract is preserved. Product fulfillment configuration
+        and supplier references are excluded; order delivery visibility follows existing
+        internal admin permissions.
+      responses:
+        '200':
+          $ref: '#/components/responses/Success'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/products/create:
+    post:
+      tags:
+      - Owner fulfillment configuration
+      operationId: webadminProductCreate
+      summary: Create product with optional owner-only fulfillment configuration
+      description: Existing general product-admin fields/permissions remain unchanged.
+        Supplying fulfillment_type or fulfillment_config requires owner role. Invalid
+        configuration is rejected before product writes; missing encryption key fails
+        closed. This documents the Phase 16 configuration slice, not all unrelated
+        optional product-form fields. Create retains existing CSRF-before-login behavior;
+        update reports missing login 401 first.
+      parameters: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: &id009
+              type: object
+              properties:
+                fulfillment_type:
+                  type: string
+                  enum:
+                  - code_stock
+                  - manual
+                  - external_api
+                  - supplier_api
+                fulfillment_config:
+                  writeOnly: true
+                  description: Valid JSON object or encoded JSON string; external
+                    configuration validates HTTPS and public DNS at save/request time,
+                    bounded connect/read timeouts 1-60s, retries 0-3, dispatch budget
+                    <=10s. Supplier additionally requires api_key/supplier_product_id.
+                    Encrypted write-only, never returned. Blank/omitted update preserves
+                    existing config; code_stock/manual require empty config.
+                  anyOf:
+                  - type: object
+                  - type: string
+                    maxLength: 16384
+                  - type: 'null'
+                name:
+                  type: string
+                  minLength: 1
+                price:
+                  type: number
+                delivery:
+                  type: string
+                  writeOnly: true
+              additionalProperties: true
+              required:
+              - name
+      responses:
+        '200': *id002
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '503':
+          $ref: '#/components/responses/EncryptionUnavailable'
+  /api/products/{pid}/update:
+    post:
+      tags:
+      - Owner fulfillment configuration
+      operationId: webadminProductUpdate
+      summary: Update product with optional owner-only fulfillment configuration
+      description: Existing general product-admin fields/permissions remain unchanged.
+        Supplying fulfillment_type or fulfillment_config requires owner role. Invalid
+        configuration is rejected before product writes; missing encryption key fails
+        closed. This documents the Phase 16 configuration slice, not all unrelated
+        optional product-form fields. Create retains existing CSRF-before-login behavior;
+        update reports missing login 401 first.
+      parameters:
+      - name: pid
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: *id009
+      responses:
+        '200': *id002
+        '400': *id003
+        '401': *id004
+        '403': *id005
+        '503':
+          $ref: '#/components/responses/EncryptionUnavailable'
+components:
+  securitySchemes:
+    WebAdminSession:
+      type: apiKey
+      in: cookie
+      name: session
+      description: Existing signed Flask WebAdmin login session. Owner role is required
+        by lifecycle routes and fulfillment-field writes.
+    WebAdminCSRF:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: Existing session CSRF token on mutations; a reseller bearer token
+        is not a substitute.
+  responses:
+    Success:
+      description: Existing WebAdmin JSON contract; ok true. Action may also return
+        result, status, balance, refunded_cents, stock_restored, notify, note or public
+        order_id/delivery_status. No delivery text returned by lifecycle mutations.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - ok
+            properties:
+              ok:
+                type: boolean
+              error:
+                type: string
+            additionalProperties: true
+    BadRequest:
+      description: Invalid input, reason/delivery/configuration or a non-reseller
+        order for lifecycle action.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - ok
+            properties:
+              ok:
+                type: boolean
+              error:
+                type: string
+            additionalProperties: true
+    Unauthorized:
+      description: Authentication missing/expired/revoked. Selected Phase 16 endpoints
+        use 401 before CSRF.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - ok
+            properties:
+              ok:
+                type: boolean
+              error:
+                type: string
+            additionalProperties: true
+    Forbidden:
+      description: Non-owner where owner required, or missing/invalid CSRF on an authenticated
+        mutation; legacy/create may check CSRF before login.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - ok
+            properties:
+              ok:
+                type: boolean
+              error:
+                type: string
+            additionalProperties: true
+    NotFound:
+      description: Order/product not found where the established route checks existence.
+        No private order information is disclosed.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - ok
+            properties:
+              ok:
+                type: boolean
+              error:
+                type: string
+            additionalProperties: true
+    Conflict:
+      description: Terminal/repeated lifecycle claim, action in progress, stored delivery
+        for cancel, or reseller quarantine on legacy routes.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - ok
+            properties:
+              ok:
+                type: boolean
+              error:
+                type: string
+            additionalProperties: true
+    RecoveryRequired:
+      description: Operation failed. Financial fail/cancel may require retry for established
+        crash-resume settlement; completion atomic writes roll back. Error never includes
+        submitted delivery/configuration.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - ok
+            properties:
+              ok:
+                type: boolean
+              error:
+                type: string
+            additionalProperties: true
+    LegacyChargeUnavailable:
+      description: Legacy order lacks a computable reseller charge.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - ok
+            properties:
+              ok:
+                type: boolean
+              error:
+                type: string
+            additionalProperties: true
+    TooLarge:
+      description: Delivery exceeds 10,000 characters or request-body guard.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - ok
+            properties:
+              ok:
+                type: boolean
+              error:
+                type: string
+            additionalProperties: true
+    EncryptionUnavailable:
+      description: Required encryption is unavailable; configuration is not saved
+        plaintext.
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - ok
+            properties:
+              ok:
+                type: boolean
+              error:
+                type: string
+            additionalProperties: true
