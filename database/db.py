@@ -985,6 +985,13 @@ def encrypt_existing_secrets():
             except Exception:
                 continue
             for rid, val in rows:
+                # Do not manufacture encrypted-empty reseller delivery on startup.
+                # Customer secret migration behavior remains unchanged.
+                if table == 'orders' and val == '':
+                    cur.execute("SELECT source FROM orders WHERE id=?", (rid,))
+                    source_row = cur.fetchone()
+                    if source_row and source_row[0] == 'reseller_api':
+                        continue
                 enc = encrypt_text(val)
                 if enc != val:
                     cur.execute('UPDATE %s SET "%s"=? WHERE id=?' % (table, col), (enc, rid))
