@@ -7,6 +7,9 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// HTML escaping alone is not JavaScript-string escaping: entities are decoded
+// before inline handlers execute. Serialize one JS argument, then escape HTML.
+const jsArg = (s) => esc(JSON.stringify(String(s == null ? "" : s)));
 const stripTg = (s) => String(s == null ? "" : s).replace(/<tg-emoji emoji-id="\d+">([\s\S]*?)<\/tg-emoji>/g, "$1");
 const escName = (s) => esc(stripTg(s));
 const money = (n) => "$" + Number(n || 0).toFixed(2);
@@ -26,11 +29,11 @@ async function api(path, opts = {}) {
   let res;
   try { res = await fetch(path, { ...opts, headers }); }
   catch (e) { throw new Error("Network error. Check your connection and try again."); }
-  if (res.status === 401) { location.href = "/login"; return {}; }
+  if (res.status === 401) { location.href = "/login"; throw new Error("Session expired. Please sign in again."); }
   if (res.headers.get("content-type", "").includes("text/csv")) return res;
   let data;
   try { data = await res.json(); } catch (e) { data = { ok: false, error: "Bad response" }; }
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok || data.ok === false) throw new Error(typeof data.error === "string" ? data.error : (data.error?.message || `Request failed (${res.status})`));
   return data;
 }
 const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body || {}) });
@@ -548,7 +551,7 @@ async function viewProducts() {
         <button class="btn btn-sm btn-orange" onclick="flashSale(${p.id})"><span>Flash</span></button>
         <button class="btn btn-sm btn-ghost" onclick="toggleProduct(${p.id},'active')">${p.active ? "Hide" : "Show"}</button>
         <button class="btn btn-sm btn-ghost" onclick="toggleProduct(${p.id},'featured')">${p.featured ? "Unfeature" : "Feature"}</button>
-        <button class="btn btn-sm btn-red" onclick="delProduct(${p.id},'${escName(p.name)}')"><span>Del</span></button>
+        <button class="btn btn-sm btn-red" onclick="delProduct(${p.id},${jsArg(stripTg(p.name))})"><span>Del</span></button>
       </div></td></tr>`;
   }).join("");
   $("#content").innerHTML = `
@@ -658,7 +661,7 @@ async function manageCategories() {
       <button class="btn btn-sm btn-ghost" onclick="moveCategory(${c.id},'up')" ${i === 0 ? "disabled" : ""}>\u2b06</button>
       <button class="btn btn-sm btn-ghost" onclick="moveCategory(${c.id},'down')" ${i === cats.length - 1 ? "disabled" : ""}>\u2b07</button>
       <button class="btn btn-sm btn-ghost" onclick="toggleCategory(${c.id},${c.active ? 0 : 1})">${c.active ? "Deactivate" : "Activate"}</button>
-      <button class="btn btn-sm btn-red" onclick="delCategory(${c.id},'${esc(c.name).replace(/'/g, "\\'")}')"><span>Del</span></button>
+      <button class="btn btn-sm btn-red" onclick="delCategory(${c.id},${jsArg(c.name)})"><span>Del</span></button>
     </div></td></tr>`).join("");
   openModal("🗂 Product Categories", `
     <p class="muted">Categories organize the 🛍 shop menu in the bot (in this order). Products without a category appear under 📦 <b>Other</b>. Deleting a category never deletes products — they move back to Uncategorized.</p>
@@ -1011,7 +1014,7 @@ async function viewUsers() {
     <td>${u.blocked ? '<span class="badge off">Blocked</span>' : '<span class="badge on">Active</span>'}</td>
     <td><div class="row-actions">
       <button class="btn btn-sm btn-glow" onclick="userDetail(${u.user_id})"><span>View</span></button>
-      <button class="btn btn-sm btn-green" onclick="adjustBalance(${u.user_id},'${esc(u.first_name)}')"><span>Balance</span></button>
+      <button class="btn btn-sm btn-green" onclick="adjustBalance(${u.user_id},${jsArg(u.first_name)})"><span>Balance</span></button>
       <button class="btn btn-sm ${u.blocked ? "btn-green" : "btn-red"}" onclick="blockUser(${u.user_id},${u.blocked ? 0 : 1})"><span>${u.blocked ? "Unblock" : "Block"}</span></button>
     </div></td></tr>`).join("");
   const pgBar = (d.pages || 1) > 1 ? `<div class="toolbar" style="margin-top:12px">
@@ -1074,8 +1077,8 @@ async function viewCoupons() {
     <td>${c.expires_at ? fmtDate(c.expires_at) : '<span class="muted">never</span>'}</td>
     <td>${c.active ? '<span class="badge on">Active</span>' : '<span class="badge off">Off</span>'}</td>
     <td><div class="row-actions">
-      <button class="btn btn-sm btn-ghost" onclick="toggleCoupon('${esc(c.code)}')">${c.active ? "Disable" : "Enable"}</button>
-      <button class="btn btn-sm btn-red" onclick="delCoupon('${esc(c.code)}')"><span>Del</span></button>
+      <button class="btn btn-sm btn-ghost" onclick="toggleCoupon(${jsArg(c.code)})">${c.active ? "Disable" : "Enable"}</button>
+      <button class="btn btn-sm btn-red" onclick="delCoupon(${jsArg(c.code)})"><span>Del</span></button>
     </div></td></tr>`).join("");
   $("#content").innerHTML = `<div class="panel glass">
     <div class="toolbar"><div class="grow"></div><button class="btn btn-glow" onclick="addCoupon()"><span>\u2795 New Coupon</span></button></div>
@@ -1139,7 +1142,7 @@ async function viewTemplates() {
     <div class="panel glass">
       <h3>\u270f\ufe0f ${esc(t.title)} <span class="muted" style="font-size:12px">(${esc(t.key)})</span></h3>
       <textarea class="inp" id="tpl_${t.key}" style="min-height:120px">${esc(t.body)}</textarea>
-      <div class="toolbar" style="margin-top:10px"><div class="grow"></div><button class="btn btn-glow" onclick="saveTemplate('${t.key}')"><span>Save</span></button></div>
+      <div class="toolbar" style="margin-top:10px"><div class="grow"></div><button class="btn btn-glow" onclick="saveTemplate(${jsArg(t.key)})"><span>Save</span></button></div>
     </div>`).join("") || empty("No templates");
 }
 async function saveTemplate(key) {
@@ -1387,7 +1390,7 @@ async function viewBackups() {
   const d = await api("/api/backup/list");
   const rows = (d.backups || []).map(b => `<tr>
     <td class="mono">${esc(b.name)}</td><td>${(b.size / 1024).toFixed(1)} KB</td><td class="muted">${esc(b.modified)}</td>
-    <td><a class="btn btn-sm btn-ghost" href="/api/backup/download/${encodeURIComponent(b.name)}">\u2b07 Download</a> <button class="btn btn-sm btn-red" onclick="deleteBackup('${b.name}')"><span>\ud83d\uddd1 Delete</span></button></td></tr>`).join("");
+    <td><a class="btn btn-sm btn-ghost" href="/api/backup/download/${encodeURIComponent(b.name)}">\u2b07 Download</a> <button class="btn btn-sm btn-red" onclick="deleteBackup(${jsArg(b.name)})"><span>\ud83d\uddd1 Delete</span></button></td></tr>`).join("");
   $("#content").innerHTML = `<div class="panel glass">
     <div class="toolbar"><div class="grow"></div><button class="btn btn-glow" id="bkCreate"><span>\ud83d\udcbe Create Backup</span></button></div>
     ${(d.backups || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>File</th><th>Size</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No backups yet", "\ud83d\udcbe")}</div>`;
@@ -1493,7 +1496,7 @@ async function viewSecurity() {
     </div>`;
   }
   const sessList = (sess.sessions || []);
-  const sessRows = sessList.map(s => `<tr><td>${s.current ? '<span class="badge on">This device</span> ' : ''}<span class="muted mono">${esc(s.ip || "?")}</span></td><td class="muted" title="${esc(s.user_agent || "")}">${esc((s.user_agent || "").slice(0, 42)) || "-"}</td><td class="muted">${fmtDate(s.last_seen)}</td><td>${s.current ? '<span class="muted">-</span>' : `<button class="btn btn-sm btn-red" onclick="revokeSession('${esc(s.sid)}')"><span>Revoke</span></button>`}</td></tr>`).join("");
+  const sessRows = sessList.map(s => `<tr><td>${s.current ? '<span class="badge on">This device</span> ' : ''}<span class="muted mono">${esc(s.ip || "?")}</span></td><td class="muted" title="${esc(s.user_agent || "")}">${esc((s.user_agent || "").slice(0, 42)) || "-"}</td><td class="muted">${fmtDate(s.last_seen)}</td><td>${s.current ? '<span class="muted">-</span>' : `<button class="btn btn-sm btn-red" onclick="revokeSession(${jsArg(s.sid)})"><span>Revoke</span></button>`}</td></tr>`).join("");
   const warn = d.force_2fa && !d.twofa_enabled
     ? `<div class="alert error" style="margin-bottom:12px">\u26a0\ufe0f 2FA is mandatory but not set up yet. Please enable it now.</div>` : "";
   $("#content").innerHTML = `
@@ -1507,7 +1510,7 @@ async function viewSecurity() {
         <div class="kv"><span>Login alerts to Telegram</span>${dot(d.bot_alerts)}</div>
         <div class="kv"><span>HTTPS secure cookies</span>${dot(d.https)}</div>
         <div class="kv"><span>Data encrypted at rest</span>${dot(d.encrypted_at_rest)}</div>
-        <div class="kv"><span>Encrypted backups</span>${dot(d.encrypted_backups)}</div>
+        <div class="kv"><span>WebAdmin backup encryption</span>${dot(d.encrypted_backups)}</div>
         <div class="kv"><span>Brute-force lockout</span>${dot(true)}</div>
         <div class="kv"><span>CSRF protection</span>${dot(true)}</div>
         <div class="kv"><span>CSP + security headers</span>${dot(true)}</div>
@@ -1563,7 +1566,7 @@ function showRecoveryCodes(codes) {
     <p class="muted">Store these somewhere safe. Each code works once if you ever lose your authenticator. They will NOT be shown again.</p>
     <div style="text-align:center;margin:12px 0;background:rgba(255,255,255,.04);padding:12px;border-radius:12px">${list || "<span class='muted'>None</span>"}</div>
     <div class="toolbar" style="margin-top:14px"><div class="grow"></div>
-      <button class="btn btn-ghost" onclick="copyRecovery('${(codes || []).join(" ")}')">Copy</button>
+      <button class="btn btn-ghost" onclick="copyRecovery(${jsArg((codes || []).join(" "))})">Copy</button>
       <button class="btn btn-glow" onclick="closeModal(); render();"><span>Done</span></button></div>`);
 }
 function copyRecovery(text) { try { navigator.clipboard.writeText(text); toast("Copied"); } catch (e) { toast("Copy failed", "err"); } }
@@ -1693,7 +1696,7 @@ async function viewResellers() {
     <td>${r.keys_count}</td>
     <td>${r.orders_count}</td>
     <td class="muted">${fmtDate(r.last_activity || r.created)}</td>
-    <td><button class="btn btn-sm btn-glow" onclick="openReseller('${r.public_id}')"><span>Manage</span></button></td></tr>`).join("");
+    <td><button class="btn btn-sm btn-glow" onclick="openReseller(${jsArg(r.public_id)})"><span>Manage</span></button></td></tr>`).join("");
   const pgBar = (d.pages || 1) > 1 ? `<div class="toolbar" style="margin-top:12px">
       <button class="btn btn-sm btn-ghost" onclick="resellersGo(-1)" ${d.page <= 1 ? "disabled" : ""}>◀ Prev</button>
       <span class="muted">Page ${d.page}/${d.pages} · ${d.total} resellers</span>
@@ -1738,7 +1741,7 @@ async function viewResellerDetail(pub) {
     closed: [["reactivate", "♻️ Reactivate", "btn-green"]],
   };
   const btns = (actionsByStatus[r.status] || []).map(([a, label, cls]) =>
-    `<button class="btn btn-sm ${cls}" onclick="resellerAction('${esc(r.public_id)}','${a}')"><span>${label}</span></button>`).join(" ");
+    `<button class="btn btn-sm ${cls}" onclick="resellerAction(${jsArg(r.public_id)},'${a}')"><span>${label}</span></button>`).join(" ");
   const tabs = RESELLER_TABS.map(([key, label]) =>
     `<button class="pill-tab ${resellerActiveTab === key ? "active" : ""}" onclick="resellerTab('${key}')">${label}</button>`).join("");
   const statCard = (label, val) => `<div class="kv"><span>${label}</span><b>${val}</b></div>`;
@@ -1808,16 +1811,16 @@ async function loadResellerWallet(pub) {
     <td>${esc(t.description || "-")}</td><td>${fmtDate(t.created)}</td></tr>`).join("");
   $("#resWalletWrap").innerHTML = `
     <div class="toolbar"><div class="kv"><span>Balance</span><b style="font-size:20px">$${esc(d.balance.balance)}</b></div><div class="grow"></div>
-      ${ADMIN_ROLE === "owner" ? `<button class="btn btn-green" onclick="resellerCreditModal('${esc(pub)}')"><span>➕ Credit wallet</span></button>` : ""}</div>
-    <div class="toolbar" style="margin:12px 0"><input class="inp" placeholder="Search reference, order or reason…" value="${esc(resWalletSearch)}" oninput="clearTimeout(resWalletTimer);resWalletSearch=this.value;resWalletPage=1;resWalletTimer=setTimeout(()=>loadResellerWallet('${esc(pub)}'),300)">
-      <select class="inp" onchange="resWalletType=this.value;resWalletPage=1;loadResellerWallet('${esc(pub)}')">${typeOptions}</select></div>
+      ${ADMIN_ROLE === "owner" ? `<button class="btn btn-green" onclick="resellerCreditModal(${jsArg(pub)})"><span>➕ Credit wallet</span></button>` : ""}</div>
+    <div class="toolbar" style="margin:12px 0"><input class="inp" placeholder="Search reference, order or reason…" value="${esc(resWalletSearch)}" oninput="clearTimeout(resWalletTimer);resWalletSearch=this.value;resWalletPage=1;resWalletTimer=setTimeout(()=>loadResellerWallet(${jsArg(pub)}),300)">
+      <select class="inp" onchange="resWalletType=this.value;resWalletPage=1;loadResellerWallet(${jsArg(pub)})">${typeOptions}</select></div>
     ${rows ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Type</th><th>Amount</th><th>Balance after</th><th>Reference</th><th>Related order</th><th>Reason</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No wallet transactions", "👛")}
-    <div class="toolbar" style="margin-top:10px"><button class="btn btn-sm btn-ghost" ${d.page <= 1 ? "disabled" : ""} onclick="resWalletPage--;loadResellerWallet('${esc(pub)}')">◀ Prev</button><span class="muted">Page ${d.page}/${d.pages} · ${d.total} transactions</span><button class="btn btn-sm btn-ghost" ${d.page >= d.pages ? "disabled" : ""} onclick="resWalletPage++;loadResellerWallet('${esc(pub)}')">Next ▶</button></div>`;
+    <div class="toolbar" style="margin-top:10px"><button class="btn btn-sm btn-ghost" ${d.page <= 1 ? "disabled" : ""} onclick="resWalletPage--;loadResellerWallet(${jsArg(pub)})">◀ Prev</button><span class="muted">Page ${d.page}/${d.pages} · ${d.total} transactions</span><button class="btn btn-sm btn-ghost" ${d.page >= d.pages ? "disabled" : ""} onclick="resWalletPage++;loadResellerWallet(${jsArg(pub)})">Next ▶</button></div>`;
 }
 
 function resellerCreditModal(pub) {
   if (ADMIN_ROLE !== "owner") return toast("Owner permission required", "err");
-  openModal("Credit reseller wallet", `<div class="form-grid"><label>Amount (USDT)<input class="inp" id="rw_amount" inputmode="decimal" placeholder="20.00"></label><label>Unique reference<input class="inp" id="rw_reference" maxlength="128" placeholder="manual-credit-2026-001"></label><label class="full">Reason<textarea class="inp" id="rw_reason" maxlength="500" placeholder="Required audit reason"></textarea></label></div><div class="toolbar" style="margin-top:14px"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-green" onclick="resellerCreditSubmit('${esc(pub)}')">Confirm credit</button></div>`);
+  openModal("Credit reseller wallet", `<div class="form-grid"><label>Amount (USDT)<input class="inp" id="rw_amount" inputmode="decimal" placeholder="20.00"></label><label>Unique reference<input class="inp" id="rw_reference" maxlength="128" placeholder="manual-credit-2026-001"></label><label class="full">Reason<textarea class="inp" id="rw_reason" maxlength="500" placeholder="Required audit reason"></textarea></label></div><div class="toolbar" style="margin-top:14px"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-green" onclick="resellerCreditSubmit(${jsArg(pub)})">Confirm credit</button></div>`);
 }
 async function resellerCreditSubmit(pub) {
   try {
@@ -1959,15 +1962,15 @@ async function loadResellerProducts(pub) {
     <td>${p.active ? '<span class="badge on">active</span>' : '<span class="badge off">hidden</span>'}</td>
     <td>${p.access_enabled ? '<span class="badge on">🔓 enabled</span>' : '<span class="muted">—</span>'}</td>
     <td>${p.access_enabled
-      ? `<button class="btn btn-sm btn-red" onclick="resellerToggleAccess('${esc(pub)}',${p.id},0)"><span>Disable</span></button>`
-      : `<button class="btn btn-sm btn-green" onclick="resellerToggleAccess('${esc(pub)}',${p.id},1)" ${p.active ? "" : "disabled"}><span>Enable</span></button>`}</td>
+      ? `<button class="btn btn-sm btn-red" onclick="resellerToggleAccess(${jsArg(pub)},${p.id},0)"><span>Disable</span></button>`
+      : `<button class="btn btn-sm btn-green" onclick="resellerToggleAccess(${jsArg(pub)},${p.id},1)" ${p.active ? "" : "disabled"}><span>Enable</span></button>`}</td>
   </tr>`).join("");
   wrap.innerHTML = `
     <div class="toolbar">
       <input class="inp" id="resProdBox" placeholder="🔎 Search products..." value="${esc(resProdSearch)}" style="max-width:280px"
-        oninput="clearTimeout(resProdTimer);resProdSearch=this.value;resProdTimer=setTimeout(()=>loadResellerProducts('${esc(pub)}'),300)"
+        oninput="clearTimeout(resProdTimer);resProdSearch=this.value;resProdTimer=setTimeout(()=>loadResellerProducts(${jsArg(pub)}),300)"
         onfocus="resProdFocused=true" onblur="resProdFocused=false">
-      <select class="inp" style="max-width:150px" onchange="resProdFilter=this.value;loadResellerProducts('${esc(pub)}')">
+      <select class="inp" style="max-width:150px" onchange="resProdFilter=this.value;loadResellerProducts(${jsArg(pub)})">
         <option value="" ${resProdFilter === "" ? "selected" : ""}>All products</option>
         <option value="enabled" ${resProdFilter === "enabled" ? "selected" : ""}>Enabled only</option>
         <option value="disabled" ${resProdFilter === "disabled" ? "selected" : ""}>Disabled only</option>
@@ -2002,15 +2005,15 @@ async function loadResellerPricing(pub) {
     <td>${hasRule ? `${esc(p.rule_label)} ${ruleOn ? '<span class="badge on">on</span>' : '<span class="badge off">off</span>'}` : '<span class="muted">—</span>'}</td>
     <td><b>$${p.effective_unit}</b> <span class="muted">${p.source === "master" ? "" : `(${esc(p.source)})`}</span></td>
     <td><div class="row-actions">
-      <button class="btn btn-sm btn-glow" onclick='resellerPriceModal(${JSON.stringify("PUB")},${p.id},${JSON.stringify("NAME")},${JSON.stringify(hasRule ? p.rule_type : "fixed_price")},${JSON.stringify(hasRule ? (p.rule_type === "fixed_price" ? p.master_unit && p.value_cents !== null ? (p.value_cents / 100).toFixed(2) : "" : ((p.value_bps || 0) / 100).toString()) : "")},${hasRule && p.rule_enabled ? 1 : 0})'><span>${hasRule ? "Edit" : "Set price"}</span></button>
-      ${hasRule ? `<button class="btn btn-sm ${ruleOn ? "btn-orange" : "btn-green"}" onclick='resellerPriceToggle(${JSON.stringify("PUB")},${p.id},${JSON.stringify(p.rule_type)},${JSON.stringify(p.rule_type === "fixed_price" ? ((p.value_cents || 0) / 100).toFixed(2) : ((p.value_bps || 0) / 100).toString())},${ruleOn ? 0 : 1})'><span>${ruleOn ? "Disable" : "Enable"}</span></button>
-      <button class="btn btn-sm btn-red" onclick='resellerPriceDelete(${JSON.stringify("PUB")},${p.id},${JSON.stringify("NAME")})'><span>Remove</span></button>` : ""}
+      <button class="btn btn-sm btn-glow" onclick='resellerPriceModal(${jsArg(pub)},${p.id},${jsArg(p.name)},${JSON.stringify(hasRule ? p.rule_type : "fixed_price")},${JSON.stringify(hasRule ? (p.rule_type === "fixed_price" ? p.master_unit && p.value_cents !== null ? (p.value_cents / 100).toFixed(2) : "" : ((p.value_bps || 0) / 100).toString()) : "")},${hasRule && p.rule_enabled ? 1 : 0})'><span>${hasRule ? "Edit" : "Set price"}</span></button>
+      ${hasRule ? `<button class="btn btn-sm ${ruleOn ? "btn-orange" : "btn-green"}" onclick='resellerPriceToggle(${jsArg(pub)},${p.id},${JSON.stringify(p.rule_type)},${JSON.stringify(p.rule_type === "fixed_price" ? ((p.value_cents || 0) / 100).toFixed(2) : ((p.value_bps || 0) / 100).toString())},${ruleOn ? 0 : 1})'><span>${ruleOn ? "Disable" : "Enable"}</span></button>
+      <button class="btn btn-sm btn-red" onclick='resellerPriceDelete(${jsArg(pub)},${p.id},${jsArg(p.name)})'><span>Remove</span></button>` : ""}
     </div></td></tr>`;
   }).join("");
   wrap.innerHTML = `
     <div class="toolbar">
       <input class="inp" id="resPriceBox" placeholder="🔎 Search products..." value="${esc(resPriceSearch)}" style="max-width:280px"
-        oninput="clearTimeout(resPriceTimer);resPriceSearch=this.value;resPriceTimer=setTimeout(()=>loadResellerPricing('${esc(pub)}'),300)"
+        oninput="clearTimeout(resPriceTimer);resPriceSearch=this.value;resPriceTimer=setTimeout(()=>loadResellerPricing(${jsArg(pub)}),300)"
         onfocus="resPriceFocused=true" onblur="resPriceFocused=false">
       <div class="grow"></div>
       <span class="muted">Prices are computed server-side; the API never accepts client prices.</span>
@@ -2072,7 +2075,7 @@ async function loadResellerKeys(pub) {
     <td class="muted">${k.revoked_at ? fmtDate(k.revoked_at) : "—"}</td>
     <td class="muted">${u.total || 0} req · ${u.errors || 0} err · ${u.avg_ms || 0} ms</td>
     <td>${k.status === "active"
-      ? `<button class="btn btn-sm btn-red" onclick="resellerRevokeKey('${esc(pub)}','${esc(k.key_id)}')"><span>Revoke</span></button>`
+      ? `<button class="btn btn-sm btn-red" onclick="resellerRevokeKey(${jsArg(pub)},${jsArg(k.key_id)})"><span>Revoke</span></button>`
       : ""}</td>
   </tr>`;
   }).join("");
@@ -2117,7 +2120,7 @@ async function loadResellerLimits(pub) {
     <p class="muted" style="margin:0 0 10px">Enforced server-side by the reseller API. A limit of 0 means none allowed.</p>
     ${fields}
     <div class="toolbar" style="margin-top:16px"><div class="grow"></div>
-      <button class="btn btn-glow" onclick="resellerSaveLimits('${esc(pub)}')"><span>Save limits</span></button></div>`;
+      <button class="btn btn-glow" onclick="resellerSaveLimits(${jsArg(pub)})"><span>Save limits</span></button></div>`;
 }
 
 async function resellerSaveLimits(pub) {
