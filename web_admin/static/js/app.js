@@ -32,8 +32,14 @@ async function api(path, opts = {}) {
   if (res.status === 401) { location.href = "/login"; throw new Error("Session expired. Please sign in again."); }
   if (res.headers.get("content-type", "").includes("text/csv")) return res;
   let data;
-  try { data = await res.json(); } catch (e) { data = { ok: false, error: "Bad response" }; }
-  if (!res.ok || data.ok === false) throw new Error(typeof data.error === "string" ? data.error : (data.error?.message || `Request failed (${res.status})`));
+  try { data = await res.json(); }
+  catch (e) { throw new Error(`Server returned a non-JSON response (HTTP ${res.status}). Check WebAdmin logs and deployment.`); }
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(`Invalid JSON response (HTTP ${res.status}).`);
+  if (!res.ok || data.ok === false) {
+    const message = typeof data.error === "string" ? data.error : (data.error?.message || `Request failed (${res.status})`);
+    const reference = /^[A-Za-z0-9_-]{1,64}$/.test(data.error_id || "") ? ` (reference: ${data.error_id})` : "";
+    throw new Error(message + reference);
+  }
   return data;
 }
 const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body || {}) });
