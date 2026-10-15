@@ -152,8 +152,13 @@ def log_action(action, details=""):
         except Exception:
             ip = "?"
         detail = (str(details) + " | ip=" + ip) if details else ("ip=" + ip)
-        ex("INSERT INTO admin_logs(admin_id, action, details) VALUES(?,?,?)",
-           (admin_id, "[WEB] " + action, detail))
+        from database.db import write_admin_action
+        connection = get_db()
+        try:
+            write_admin_action("[WEB] " + action, detail, admin_id, cursor=connection.cursor())
+            connection.commit()
+        finally:
+            connection.close()
     except Exception:
         pass
 
@@ -2645,14 +2650,14 @@ SETTING_KEYS = [
     "referral_percent", "low_stock_alert_threshold", "low_stock_alert_levels",
     "min_withdrawal", "loyalty_percent", "first_purchase_discount_percent",
     "buy_x_qty", "buy_x_free", "auto_welcome_coupon", "inactive_days",
-    "inactive_coupon", "reseller_api_global_enabled",
+    "inactive_coupon", "reseller_api_global_enabled", "reseller_api_owner_notify",
 ]
 
 
 @app.route("/api/settings")
 @login_required
 def api_settings():
-    out = {k: botdb.get_setting(k, "") for k in SETTING_KEYS}
+    out = {k: botdb.get_setting(k, "1" if k == "reseller_api_owner_notify" else "") for k in SETTING_KEYS}
     return jsonify({"ok": True, "settings": out, "logo": botdb.get_setting("web_logo", "")})
 
 
@@ -2663,7 +2668,7 @@ def api_settings_update():
     changed = []
     for k, v in d.items():
         if k in SETTING_KEYS:
-            if k == "reseller_api_global_enabled":
+            if k in ("reseller_api_global_enabled", "reseller_api_owner_notify"):
                 normalized = str(v).strip().lower()
                 if normalized not in ("0", "1", "false", "true", "off", "on"):
                     return jsonify({"ok": False, "error": "Invalid API enabled value"}), 400
@@ -2706,15 +2711,29 @@ def api_backup_create():
         if key:
             try:
                 from cryptography.fernet import Fernet
-                raw = open(path, "rb").read()
+                with open(path, "rb") as archive:
+                    raw = archive.read()
                 enc = Fernet(key.encode() if isinstance(key, str) else key).encrypt(raw)
                 enc_path = path + ".enc"
-                open(enc_path, "wb").write(enc)
+                fd = os.open(enc_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as archive:
+                    archive.write(enc)
                 os.remove(path)
                 path = enc_path
                 encrypted = True
-            except Exception as e:
-                log_action("backup_encrypt_failed", str(e))
+            except Exception:
+                # Configured encryption must not silently fall back to plaintext.
+                # Never log a driver/token/key exception; remove our own archive.
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                try:
+                    os.remove(path + ".enc")
+                except OSError:
+                    pass
+                log_action("backup_encrypt_failed", "Configured backup encryption unavailable")
+                return jsonify({"ok": False, "error": "Backup encryption failed; no downloadable archive was produced."}), 500
     finally:
         os.chdir(cwd)
     log_action("create_backup", os.path.basename(path))
@@ -3577,6 +3596,12 @@ def api_reseller_status(pubid):
             description=f"web admin '{session.get('username', '?')}' -> {new_status}")
     except Exception:
         pass
+    # Conditional transition is committed; failure to enqueue is non-fatal.
+    try:
+        from reseller_api.services.order_notifications import notify_reseller_status
+        notify_reseller_status(res, action)
+    except Exception:
+        app.logger.warning("notification category=status_dispatch_failed")
     return jsonify({"ok": True, "status": new_status, "message": msg})
 
 
@@ -4379,7 +4404,7 @@ def api_order_cancel(oid):
     notify = "no_telegram_link"
     res = q("SELECT telegram_user_id FROM resellers WHERE id=?", (rid,), one=True)
     if res and res.get("telegram_user_id"):
-        notify = "sent" if _notify_order_cancelled(
+        notify = "queued" if _notify_order_cancelled(
             int(res["telegram_user_id"]), oid, row, reason, refunded_cents) else "failed"
         if notify == "failed":
             log_action("reseller_order_cancel_notify_failed", f"#{oid}")
@@ -4389,17 +4414,8 @@ def api_order_cancel(oid):
 
 
 def _notify_order_cancelled(tg_uid, oid, row, reason, refunded_cents):
-    """Bounded existing transport; post-transaction, escaped, no delivery data."""
-    try:
-        ok, _ = tg_send(
-            int(tg_uid), "❌ <b>Order cancelled</b>\n"
-            f"Order <code>ORD-{int(oid):08d}</code>\n"
-            f"Product: {html.escape(str(row.get('product_name') or ''))}\n"
-            f"Refund: <b>{rdb.from_cents(int(refunded_cents))} USDT</b>\n"
-            f"Reason: {html.escape(str(reason)[:300])}")
-        return ok
-    except Exception:
-        return False
+    from reseller_api.services.order_notifications import notify_order_cancelled
+    return notify_order_cancelled(tg_uid, oid, row, reason, refunded_cents)
 
 
 @app.route("/api/orders/<int:oid>/fail", methods=["POST"])
@@ -4485,8 +4501,8 @@ def api_order_fail(oid):
                f"refunded={result.get('refunded')} | "
                f"actor={session.get('username', '?')} | {reason[:200]}")
 
-    # Best-effort Telegram notify — AFTER the financial operation, never
-    # inside a transaction, never allowed to fail the request.
+    # Best-effort shared Telegram dispatch AFTER the financial operation.
+    # Queued means accepted, not delivered; no request waits for the Bot.
     notify_status = "skipped"
     if rid:
         try:
@@ -4494,7 +4510,7 @@ def api_order_fail(oid):
                         (rid,), one=True)
             tg_uid = (res_row or {}).get("telegram_user_id")
             if tg_uid:
-                notify_status = ("sent" if _notify_order_failed(
+                notify_status = ("queued" if _notify_order_failed(
                     int(tg_uid), oid, row, reason, refunded_cents) else "failed")
             else:
                 notify_status = "no_telegram_link"
@@ -4513,9 +4529,9 @@ def api_order_fail(oid):
 
 
 def _notify_order_failed(tg_uid, oid, row, reason, refunded_cents=0):
-    # Keep the 16.2 wrapper/patch point and transport behavior for WebAdmin.
+    # Keep the 16.2 wrapper/patch point; shared transport is now asynchronous.
     from reseller_api.services.order_notifications import notify_order_failed
-    return notify_order_failed(tg_uid,oid,row,reason,refunded_cents,send=tg_send)
+    return notify_order_failed(tg_uid,oid,row,reason,refunded_cents)
 
 
 
