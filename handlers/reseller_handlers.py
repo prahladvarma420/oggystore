@@ -23,13 +23,14 @@ from utils.button_styles import AutoStyledButton as InlineKeyboardButton
 import database.reseller_db as rdb
 from database.db import ensure_user, is_blocked
 from config import ADMIN_ID
-from utils.states import user_state
+from utils.states import user_state, RES_TOPUP_AMOUNT, RES_TOPUP_PAYMENT
 from utils.ui import edit_or_send
 from utils.error_logger import log_error
 from keyboards.menus import back_home, back_button
 
 # In-memory application drafts — same convention as utils.states.user_state.
 _apply_drafts = {}  # uid -> shop/brand name
+_topup_drafts = {}  # uid -> selected allowlisted method; no payment proof
 
 
 def build_reseller_home(uid: int):
@@ -94,8 +95,7 @@ def build_reseller_home(uid: int):
             [back_button("home")],
         ])
 
-    # active -> the Reseller Center (menu + info + balance; the remaining
-    # sections are wired but intentionally show "coming soon" for now)
+    # Active -> supported Reseller Center actions only.
     bal = rdb.from_cents(rdb.get_wallet_balance_cents(res["id"]))
     keys = len(rdb.list_api_keys(res["id"]))
     text = (
@@ -112,12 +112,11 @@ def build_reseller_home(uid: int):
     return text, InlineKeyboardMarkup([
         [InlineKeyboardButton("💰 Balance", callback_data="res_wallet"),
          InlineKeyboardButton("🔑 API Keys", callback_data="res_keys")],
-        [InlineKeyboardButton("📦 Products", callback_data="res_soon"),
-         InlineKeyboardButton("💵 Pricing", callback_data="res_soon")],
-        [InlineKeyboardButton("📊 Statistics", callback_data="res_soon"),
+        [InlineKeyboardButton("📦 Products", callback_data="res_products:page:1"),
+         InlineKeyboardButton("💵 Pricing", callback_data="res_pricing:page:1")],
+        [InlineKeyboardButton("📊 Statistics", callback_data="res_stats"),
          InlineKeyboardButton("🔔 Webhooks", callback_data="res_webhooks")],
-        [InlineKeyboardButton("📚 API Docs", callback_data="res_api_docs"),
-         InlineKeyboardButton("⚙️ Settings", callback_data="res_soon")],
+        [InlineKeyboardButton("📚 API Docs", callback_data="res_api_docs")],
         [back_button("home")],
     ])
 
@@ -139,19 +138,286 @@ def get_active_reseller(uid: int):
 
 
 def build_reseller_wallet(res: dict):
-    """💰 Balance view (read-only). Top-ups stay admin-side in Web Admin."""
+    """Ledger-derived balance with independently verified self-service deposits."""
     bal = rdb.from_cents(rdb.get_wallet_balance_cents(res["id"]))
     text = (
         "💰 <b>Reseller Wallet</b>\n\n"
         f"Balance: <b>${bal}</b> USDT\n\n"
-        "Top-ups and adjustments are handled by our team — "
-        "contact support to fund your wallet."
+        "Top up using a supported payment method. "
+        "Your customer balance stays separate."
     )
     return text, InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Top up", callback_data="res_topup")],
         [InlineKeyboardButton("🔄 Refresh", callback_data="res_wallet")],
         [InlineKeyboardButton("◀️ Reseller Center", callback_data="res_center")],
         [back_button("home")],
     ])
+
+
+def build_reseller_topup_methods():
+    from payments.reseller_deposits import rails
+    methods=rails()
+    text="➕ <b>Top up reseller wallet</b>\n\nChoose a payment method. Pay only the server-generated invoice; never send payment proof in chat."
+    if not methods:text += "\n\nNo payment method is currently configured. Please contact support."
+    return text, InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data="res_topup_method_"+method)] for method,label in methods
+    ]+[[InlineKeyboardButton("◀️ Wallet",callback_data="res_wallet")]])
+
+
+def build_reseller_topup_invoice(saved):
+    """Reuse unchanged customer copy; substitute the persisted destination."""
+    from payments import deposit_handlers as customer
+    from utils.timezone import now,TZ,TZ_LABEL
+    from datetime import datetime
+    method=saved['method']
+    text=customer._invoice_text_for(method,float(saved['amount']),float(saved['expected_amount']),int(saved['id']),html.escape(str(saved['memo'] or '')))
+    current={'bep20':customer.USDT_BEP20_ADDRESS,'trc20':customer.USDT_TRC20_ADDRESS,'binance':customer.BINANCE_PAY_ID}[method]
+    text=text.replace('<code>'+str(current)+'</code>','<code>'+html.escape(str(saved['address']))+'</code>')
+    remaining=max(0,int((datetime.strptime(saved['expires_at'],'%Y-%m-%d %H:%M:%S').replace(tzinfo=TZ)-now()).total_seconds()))
+    text += "\n\n💼 <b>Reseller wallet deposit</b>\n"+f"Expires: <code>{html.escape(saved['expires_at'])} {html.escape(TZ_LABEL)}</code>\nRemaining: <b>{remaining//3600}h {(remaining%3600)//60}m</b>\nDo not pay an expired invoice."
+    return text,InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Refresh instructions",callback_data=f"res_topup_show_{saved['id']}")],
+        [InlineKeyboardButton("❌ Cancel payment session",callback_data=f"res_topup_cancel_{saved['id']}")],
+        [InlineKeyboardButton("◀️ Wallet",callback_data="res_wallet")],
+    ])
+
+
+def reseller_topup_qr(saved):
+    """Existing qrcode dependency; QR contains saved address/Pay ID only.
+
+    Binance Pay QR is an ID helper, not an official payment/request token.
+    Exact amount and required memo must still be entered from the invoice.
+    """
+    import io,qrcode
+    output=io.BytesIO();qrcode.make(str(saved['address'])).save(output,format='PNG');output.seek(0);output.name='reseller-payment.png'
+    return output
+
+
+async def _show_reseller_topup(q,uid,saved,*,qr=False):
+    # Caller fetched saved session through the service immediately beforehand.
+    user_state[uid]=RES_TOPUP_PAYMENT
+    text,markup=build_reseller_topup_invoice(saved)
+    await edit_or_send(q,text,markup)
+    if qr:
+        try:
+            await q.message.reply_photo(photo=reseller_topup_qr(saved),caption="Destination / Pay ID only. Verify the network, exact amount and required memo in your invoice.")
+        except Exception:
+            pass  # Text payment instructions remain available.
+
+
+async def _handle_reseller_topup_callback(q,uid,data):
+    from payments import reseller_deposits as deposits
+    try:
+        deposits.active(uid)  # every callback, including navigation and retry
+        if data=='res_topup':
+            saved=deposits.session(uid)
+            if saved:await _show_reseller_topup(q,uid,saved,qr=True)
+            else:
+                _topup_drafts.pop(uid,None);user_state.pop(uid,None)
+                text,markup=build_reseller_topup_methods();await edit_or_send(q,text,markup)
+        elif data.startswith('res_topup_method_'):
+            method=data.removeprefix('res_topup_method_')
+            if method not in dict(deposits.rails()):raise deposits.DepositError('Unsupported or unavailable payment method.')
+            saved=deposits.session(uid)
+            if saved:
+                if saved['method']!=method:raise deposits.DepositError('Cancel the existing session before choosing a different method.')
+                await _show_reseller_topup(q,uid,saved)
+            else:
+                _topup_drafts[uid]=method;user_state[uid]=RES_TOPUP_AMOUNT
+                await edit_or_send(q,'➕ <b>Reseller wallet top-up</b>\n\nSend an amount from <b>0.10 to 5000.00 USDT</b>, with at most two decimals. Example: <code>10.00</code>',InlineKeyboardMarkup([[InlineKeyboardButton('❌ Back to wallet',callback_data='res_topup_back')]]))
+        elif data=='res_topup_back':
+            _topup_drafts.pop(uid,None);user_state.pop(uid,None)
+            text,markup=build_reseller_wallet(deposits.active(uid));await edit_or_send(q,text,markup)
+        elif data.startswith('res_topup_show_'):
+            try:depid=int(data.removeprefix('res_topup_show_'))
+            except ValueError:raise deposits.DepositError('Deposit not found.') from None
+            await _show_reseller_topup(q,uid,deposits.session(uid,depid))
+        elif data.startswith('res_topup_cancel_'):
+            try:depid=int(data.removeprefix('res_topup_cancel_'))
+            except ValueError:raise deposits.DepositError('Deposit not found.') from None
+            deposits.cancel_session(uid,depid);_topup_drafts.pop(uid,None)
+            await edit_or_send(q,'✅ Payment session cancelled. Do not send funds to this invoice. A payment already received cannot be reversed here.',InlineKeyboardMarkup([[InlineKeyboardButton('◀️ Wallet',callback_data='res_wallet')]]))
+        else:raise deposits.DepositError('Unknown top-up action.')
+    except deposits.DepositError as exc:
+        _topup_drafts.pop(uid,None);user_state.pop(uid,None)
+        await edit_or_send(q,'❌ '+html.escape(str(exc)),InlineKeyboardMarkup([[InlineKeyboardButton('◀️ Wallet',callback_data='res_wallet')]]))
+    return True
+
+
+async def _handle_reseller_topup_message(update,uid,text,state):
+    from payments import reseller_deposits as deposits
+    try:
+        deposits.active(uid)
+        if state==RES_TOPUP_AMOUNT:
+            method=_topup_drafts.get(uid)
+            if method is None:raise deposits.DepositError('Reopen Top up and select a payment method.')
+            saved=deposits.create_session(uid,method,text.strip())
+            _topup_drafts.pop(uid,None);user_state[uid]=RES_TOPUP_PAYMENT
+            invoice,markup=build_reseller_topup_invoice(saved)
+            await update.message.reply_text(invoice,parse_mode='HTML',reply_markup=markup,disable_web_page_preview=True)
+            try:
+                await update.message.reply_photo(photo=reseller_topup_qr(saved),caption='Destination / Pay ID only. Use the invoice network, exact amount and memo.')
+            except Exception:pass
+        else:
+            saved=deposits.session(uid)
+            if not saved:raise deposits.DepositError('No payable session remains. Reopen your wallet.')
+            invoice,markup=build_reseller_topup_invoice(saved)
+            await update.message.reply_text(invoice,parse_mode='HTML',reply_markup=markup,disable_web_page_preview=True)
+    except deposits.DepositError as exc:
+        # Invalid amounts can be corrected; denied/expired access cannot persist.
+        if not deposits.active_or_none(uid) or state!=RES_TOPUP_AMOUNT or uid not in _topup_drafts:
+            _topup_drafts.pop(uid,None);user_state.pop(uid,None)
+        await update.message.reply_text('❌ '+html.escape(str(exc)),parse_mode='HTML')
+    return True
+
+
+CATALOG_PAGE_SIZE = 8
+
+
+class CatalogViewError(ValueError):
+    """Safe catalog navigation/initialization message, not an engine error."""
+    pass
+
+
+def _catalog_page_number(value):
+    """Untrusted, bounded navigation hint. Never a product/access assertion."""
+    import re
+    if isinstance(value, bool) or not re.fullmatch(r"-?[0-9]{1,10}", str(value)):
+        raise CatalogViewError("Invalid page. Reopen Products or Pricing.")
+    return max(1, int(value))
+
+
+def read_reseller_telegram_catalog(uid, view="products"):
+    """Fresh authorized service reads; no API-key impersonation, HTTP or writes.
+
+    my-products is a management inventory containing inactive mapping records.
+    Products displays its currently enabled/access-enabled/master-active subset.
+    Pricing preserves pricing API's broader active owner-access scope.
+    """
+    from reseller_api.services.product_import import read_product_mappings_for_reseller
+    from reseller_api.services.pricing import read_product_prices_for_reseller
+    res=get_active_reseller(uid)
+    if not res:raise PermissionError("Active reseller access required.")
+    if view not in ("products", "pricing"):raise CatalogViewError("Invalid catalog view.")
+    if view=="pricing":
+        prices=read_product_prices_for_reseller(res['id'],allocate_missing_ids=False)
+        items=[{key:price[key] for key in ('product_id','name','price','currency')} for price in prices]
+    else:
+        mappings=read_product_mappings_for_reseller(res['id'])
+        items=[]
+        for mapping in mappings:
+            if not (mapping['enabled'] and mapping['master_active'] and mapping['access_enabled']):continue
+            # The my-products service already uses the same integer pricing
+            # resolver as pricing API. No second mapper or price calculation.
+            items.append({'product_id':mapping['product_id'],
+                'name':mapping['custom_name'] or mapping['master_name'],
+                'price':mapping['price'],'currency':mapping['currency'],
+                'availability':mapping['availability'],'enabled':mapping['enabled']})
+    from reseller_api.services.product_import import _PUBLIC_ID_RE
+    if any(not _PUBLIC_ID_RE.fullmatch(str(item['product_id'])) for item in items):
+        raise CatalogViewError('Product identifiers need owner/API initialization before this view is available.')
+    # Revalidate mutable Telegram authorization immediately before hand-off.
+    if not get_active_reseller(uid):raise PermissionError("Active reseller access required.")
+    return items
+
+
+def _catalog_page(items, requested_page):
+    page=_catalog_page_number(requested_page)
+    pages=max(1,(len(items)+CATALOG_PAGE_SIZE-1)//CATALOG_PAGE_SIZE)
+    page=min(page,pages)
+    return items[(page-1)*CATALOG_PAGE_SIZE:page*CATALOG_PAGE_SIZE],page,pages
+
+
+def _catalog_navigation(kind, page, pages):
+    buttons=[]
+    if page>1:buttons.append(InlineKeyboardButton("◀️ Previous",callback_data=f"res_{kind}:page:{page-1}"))
+    if page<pages:buttons.append(InlineKeyboardButton("Next ▶️",callback_data=f"res_{kind}:page:{page+1}"))
+    rows=[buttons] if buttons else []
+    rows += [[InlineKeyboardButton("🔄 Refresh",callback_data=f"res_{kind}:page:{page}")],
+        [InlineKeyboardButton("📚 API Docs",callback_data="res_api_docs")],
+        [InlineKeyboardButton("◀️ Reseller Center",callback_data="res_center")]]
+    return rows
+
+
+def _catalog_name_html(name, budget=220):
+    """Display-only ellipsis at whole-character/entity boundaries.
+
+    Service records retain full API names. Bound rendered message length even
+    for legacy master names without limits and heavily HTML-escaped input.
+    """
+    value=str(name or '—');escaped=html.escape(value)
+    if len(escaped)<=budget:return escaped
+    parts=[];length=0
+    for character in value:
+        piece=html.escape(character)
+        if length+len(piece)>budget-1:break
+        parts.append(piece);length+=len(piece)
+    return ''.join(parts)+'…'
+
+
+def build_reseller_products(items, requested_page=1, notice=None):
+    """Pure display over validated current safe records; at most eight rows."""
+    current,page,pages=_catalog_page(items,requested_page)
+    text="📦 <b>Your products</b>\n"+f"Page {page}/{pages} · {len(items)} products\n\n"
+    if notice:text+=html.escape(str(notice))+"\n\n"
+    rows=[]
+    if not items:
+        text+="No products imported yet. Import products through the reseller API to get started. See 📚 API Docs for instructions."
+    for product in current:
+        name=_catalog_name_html(product['name']);pid=html.escape(str(product['product_id']))
+        available="In stock" if product['availability']=='in_stock' else "Out of stock"
+        text+=f"<b>{name}</b>\n<code>{pid}</code>\nPrice: <b>{html.escape(str(product['price']))} {html.escape(str(product['currency']))}</b>\nAvailability: {available} · Enabled: ✅\n\n"
+        rows.append([InlineKeyboardButton("📦 "+str(product['product_id']),callback_data=f"res_product:detail:{product['product_id']}:{page}")])
+    return text,InlineKeyboardMarkup(rows+_catalog_navigation('products',page,pages))
+
+
+def build_reseller_product_detail(product, return_page=1):
+    """Pure detail card; absence/authorization is handled before calling."""
+    page=_catalog_page_number(return_page)
+    available="In stock" if product['availability']=='in_stock' else "Out of stock"
+    text=("📦 <b>Product details</b>\n\n"+f"<b>{_catalog_name_html(product['name'],2500)}</b>\n"
+        +f"PRD ID: <code>{html.escape(str(product['product_id']))}</code>\n"
+        +f"Availability: {available}\nPrice: <b>{html.escape(str(product['price']))} {html.escape(str(product['currency']))}</b>")
+    return text,InlineKeyboardMarkup([[InlineKeyboardButton('◀️ Products',callback_data=f'res_products:page:{page}')],
+        [InlineKeyboardButton('🔄 Refresh',callback_data=f"res_product:detail:{product['product_id']}:{page}")]])
+
+
+def build_reseller_pricing(items, requested_page=1):
+    current,page,pages=_catalog_page(items,requested_page)
+    text="💵 <b>Your pricing</b>\n"+f"Page {page}/{pages} · {len(items)} products\n\nPrices are managed by the owner and reflect your current effective reseller prices.\n\n"
+    if not items:text+="No products imported yet. Import products through the reseller API to get started. See 📚 API Docs for instructions."
+    for product in current:
+        text+=f"<b>{_catalog_name_html(product['name'])}</b>\n<code>{html.escape(str(product['product_id']))}</code> — <b>{html.escape(str(product['price']))} {html.escape(str(product['currency']))}</b>\n\n"
+    return text,InlineKeyboardMarkup(_catalog_navigation('pricing',page,pages))
+
+
+async def _handle_reseller_catalog_callback(q,uid,data):
+    import re
+    from reseller_api.services.pricing import PricingError
+    try:
+        # Check even malformed callbacks: navigation never establishes access.
+        if not get_active_reseller(uid):raise PermissionError('Active reseller access required.')
+        match=re.fullmatch(r'res_(products|pricing):page:(-?[0-9]{1,10})',data)
+        detail=re.fullmatch(r'res_product:detail:(PRD-[A-HJ-NP-Z2-9]{12}):(-?[0-9]{1,10})',data)
+        if match:
+            kind,page=match.groups();page=_catalog_page_number(page)
+            items=read_reseller_telegram_catalog(uid,kind)
+            text,markup=(build_reseller_products(items,page) if kind=='products' else build_reseller_pricing(items,page))
+        elif detail:
+            pid,page=detail.groups();page=_catalog_page_number(page)
+            items=read_reseller_telegram_catalog(uid,'products')
+            product=next((item for item in items if item['product_id']==pid),None)
+            if product:text,markup=build_reseller_product_detail(product,page)
+            else:text,markup=build_reseller_products(items,page,'Product is no longer accessible. The current catalog is shown below.')
+        else:raise CatalogViewError('Invalid catalog link. Reopen Products or Pricing.')
+        await edit_or_send(q,text,markup)
+    except (PermissionError,CatalogViewError,PricingError) as exc:
+        await edit_or_send(q,'❌ '+html.escape(exc.message if isinstance(exc,PricingError) else str(exc)),InlineKeyboardMarkup([[InlineKeyboardButton('◀️ Reseller Center',callback_data='res_center')]]))
+    except Exception:
+        # Do not reveal internal master prices/rule values through engine errors.
+        log_error("Reseller catalog read failed",extra="category=catalog_read_error")
+        await edit_or_send(q,'❌ Catalog is temporarily unavailable. Please try again.',InlineKeyboardMarkup([[InlineKeyboardButton('◀️ Reseller Center',callback_data='res_center')]]))
+    return True
 
 
 MAX_ACTIVE_KEYS = 10  # sane cap per reseller (abuse control)
@@ -310,38 +576,258 @@ def build_webhook_secret_reveal(hook: dict, secret: str):
     ]])
 
 
-def build_reseller_api_docs():
-    """Safe Phase-3 developer overview; it deliberately documents no route or
-    response until the public reseller API gateway actually exists."""
-    text = (
-        "📚 <b>Reseller Developer Center</b>\n\n"
-        "🚧 <b>API availability: Coming soon</b>\n"
-        "No public reseller API endpoints are available yet.\n\n"
-        "<b>API version</b>\n"
-        "Coming soon\n\n"
-        "<b>Base API path</b>\n"
-        "Coming soon\n\n"
-        "<b>Authentication concept</b>\n"
-        "Requests will use your API Key ID together with its private API secret. "
-        "The authentication gateway and request format are <b>Coming soon</b>.\n\n"
-        "<b>Available environments</b>\n"
-        "🧪 <b>Test</b> — intended for developing and checking integrations "
-        "without live selling. API processing is <b>Coming soon</b>.\n\n"
-        "🚀 <b>Production</b> — intended for live integrations after the reseller "
-        "API launches. API processing is <b>Coming soon</b>.\n\n"
-        "<b>Basic security requirements</b>\n"
-        "• Keep API secrets on your secure server only\n"
-        "• Never put secrets in URLs, logs, chat messages, or frontend code\n"
-        "• Use HTTPS for every future API request\n"
-        "• Keep test and production credentials separate\n"
-        "• Rotate exposed credentials and revoke old keys immediately\n\n"
-        "Endpoint reference and examples: <b>Coming soon</b>"
+# Canonical public resource metadata used by rendering and route-coverage tests.
+# A focused quick-start, not a second router or a list of private admin actions.
+API_DOC_RESOURCES = (
+    ("Products", (("GET", "/api/v1/products"), ("GET", "/api/v1/products/{product_id}"), ("POST", "/api/v1/products/{product_id}/import"))),
+    ("My products", (("GET", "/api/v1/my-products"), ("GET", "/api/v1/my-products/{product_id}"), ("PATCH", "/api/v1/my-products/{product_id}"), ("DELETE", "/api/v1/my-products/{product_id}"))),
+    ("Pricing", (("GET", "/api/v1/pricing"), ("GET", "/api/v1/pricing/{product_id}"))),
+    ("Orders", (("POST", "/api/v1/orders"), ("GET", "/api/v1/orders"), ("GET", "/api/v1/orders/{order_id}"))),
+    ("Quote", (("POST", "/api/v1/orders/quote"),)),
+    ("Delivery", (("GET", "/api/v1/orders/{order_id}/delivery"),)),
+    ("Balance", (("GET", "/api/v1/balance"), ("GET", "/api/v1/wallet/summary"))),
+    ("Transactions", (("GET", "/api/v1/transactions"),)),
+    ("Refunds", (("GET", "/api/v1/refunds"), ("GET", "/api/v1/refunds/{refund_id}"))),
+    ("Invoices", (("GET", "/api/v1/invoices"), ("GET", "/api/v1/invoices/{invoice_id}"), ("GET", "/api/v1/invoices/{invoice_id}/document"))),
+    ("Statements", (("GET", "/api/v1/statements"), ("GET", "/api/v1/statements/{statement_id}"), ("GET", "/api/v1/statements/{statement_id}/document"))),
+    ("Usage", (("GET", "/api/v1/usage"),)),
+    ("Analytics", (("GET", "/api/v1/analytics/sales"),)),
+    ("Exports", (("GET", "/api/v1/exports/orders.csv"),)),
+    ("Webhooks", (("GET", "/api/v1/webhooks"), ("POST", "/api/v1/webhooks"), ("GET", "/api/v1/webhooks/analytics"), ("GET", "/api/v1/webhooks/{webhook_id}"), ("PATCH", "/api/v1/webhooks/{webhook_id}"), ("DELETE", "/api/v1/webhooks/{webhook_id}"), ("POST", "/api/v1/webhooks/{webhook_id}/test"), ("POST", "/api/v1/webhooks/{webhook_id}/rotate-secret"), ("POST", "/api/v1/webhooks/events/{outbox_id}/retry"), ("GET", "/api/v1/webhooks/{webhook_id}/deliveries"), ("POST", "/api/v1/webhooks/{webhook_id}/deliveries/{delivery_id}/retry"))),
+)
+
+
+def public_api_docs_base_url(raw):
+    """Presentation-only validation; no network requests or inferred hostname.
+
+    The operator must provide the verified public HTTPS URL. Syntax checks
+    reject obvious private/internal destinations, but do not attest to DNS or
+    deployment reachability. Unsafe raw configuration is never echoed.
+    """
+    import ipaddress
+    import re
+    from urllib.parse import urlsplit
+    if not isinstance(raw, str) or not raw or len(raw) > 240:
+        return None
+    if any(c.isspace() or ord(c) < 32 for c in raw):
+        return None
+    try:
+        parsed = urlsplit(raw)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if (parsed.scheme != "https" or parsed.username or parsed.password
+                or parsed.query or parsed.fragment or parsed.port not in (None, 443)
+                or parsed.path.rstrip("/") != "/api/v1"):
+            return None
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            if (not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", host)
+                    or "." not in host or ".." in host
+                    or host.endswith((".localhost", ".local", ".internal", ".invalid", ".test", ".example", ".lan", ".home", ".svc", ".cluster.local"))
+                    or host == "localhost" or re.fullmatch(r"[0-9.]+", host)
+                    or re.fullmatch(r"0x[0-9a-f]+",host)):
+                return None
+        else:
+            if not address.is_global:
+                return None
+        return raw.rstrip("/")
+    except (ValueError, TypeError):
+        return None
+
+
+def read_reseller_telegram_statistics(uid):
+    """Fresh authorized reads through the four authoritative API aggregators.
+
+    No HTTP/API-key impersonation and no parallel SQL. Only allowlisted numeric
+    summary fields leave this seam; endpoint/key/product breakdowns never do.
+    Read failures are unavailable, not fabricated zeroes. Reads are sequential,
+    as with separate API requests, rather than a promised snapshot transaction.
+    """
+    reseller = get_active_reseller(uid)
+    if not reseller:
+        raise PermissionError("Active reseller access required.")
+    rid = int(reseller["id"])
+    sources = (
+        ("usage", lambda: rdb.get_reseller_api_usage(rid), (
+            "requests_today", "requests_total", "orders_today", "orders_this_month",
+            "quota_daily", "quota_monthly", "quota_daily_remaining", "quota_monthly_remaining")),
+        ("sales", lambda: rdb.get_reseller_sales_analytics(rid, include_breakdowns=False), ("gross_sales", "net_sales", "currency")),
+        ("wallet", lambda: rdb.get_wallet_financial_summary(rid), ("balance", "currency")),
+        ("webhooks", lambda: rdb.get_reseller_webhook_analytics(rid), (
+            "window_days", "events_total", "delivered", "pending", "dead_lettered",
+            "delivery_attempts", "attempts_succeeded", "attempts_failed", "webhooks_configured", "webhooks_enabled")),
     )
+    output = {}
+    for name, read, fields in sources:
+        try:
+            source = read()
+            output[name] = {field: source[field] for field in fields if field in source}
+        except Exception:
+            # Do not pass exception text/tracebacks or source values to logs.
+            log_error("Reseller statistics read unavailable", extra=f"category={name}_read_error")
+            output[name] = None
+    current = get_active_reseller(uid)
+    if not current or int(current["id"]) != rid:
+        raise PermissionError("Active reseller access required.")
+    return output
+
+
+def _statistics_number(value, *, money=False):
+    """Bounded output from validated numeric summaries; missing != zero."""
+    from decimal import Decimal, InvalidOperation
+    if value is None or isinstance(value, bool):
+        return "Unavailable"
+    try:
+        if len(str(value)) > 40:
+            return "Unavailable"
+        amount = Decimal(str(value))
+        if not amount.is_finite() or abs(amount) >= Decimal("1e24"):
+            return "Unavailable"
+        if money:
+            # Services already produce their canonical two-decimal strings.
+            if amount != amount.quantize(Decimal("0.01")):
+                return "Unavailable"
+            return format(amount, ".2f")
+        if amount < 0 or amount != amount.to_integral_value():
+            return "Unavailable"
+        return str(int(amount))
+    except (InvalidOperation, ValueError, TypeError):
+        return "Unavailable"
+
+
+def build_reseller_statistics(metrics):
+    """Pure bounded HTML summary. No endpoint lists or misleading health grade."""
+    u = metrics.get("usage") or {}; sales = metrics.get("sales") or {}
+    wallet = metrics.get("wallet") or {}; wh = metrics.get("webhooks") or {}
+    n = _statistics_number
+    def quota(scope, used):
+        if (metrics.get("usage") is None or "quota_" + scope not in u
+                or "quota_" + scope + "_remaining" not in u):
+            return "Unavailable"
+        limit = u.get("quota_" + scope)
+        remaining = u.get("quota_" + scope + "_remaining")
+        return f"used {n(u.get(used))}; remaining {'Unlimited' if limit is None else n(remaining)}"
+    def currency(data):
+        return "USDT" if data.get("currency") == "USDT" else "(currency unavailable)"
+    text = (
+        "📊 <b>Reseller Statistics</b>\n\n"
+        f"<b>API requests</b>\nToday: {n(u.get('requests_today'))}\nTotal: {n(u.get('requests_total'))}\n\n"
+        f"<b>Orders / quota</b>\nOrders today: {n(u.get('orders_today'))}\nOrders this month: {n(u.get('orders_this_month'))}\n"
+        f"Daily quota: {quota('daily', 'orders_today')}\nMonthly quota: {quota('monthly', 'orders_this_month')}\n"
+        "Usage/quota follows the API's shop-clock boundaries.\n\n"
+        f"<b>Sales — rolling 30 days</b>\nGross sales: {n(sales.get('gross_sales'), money=True)} {currency(sales)}\n"
+        f"Net sales: {n(sales.get('net_sales'), money=True)} {currency(sales)}\n"
+        "Same default window and refund rules as Analytics.\n\n"
+        f"<b>Wallet</b>\nBalance: {n(wallet.get('balance'), money=True)} {currency(wallet)}\n\n"
+        "<b>Webhook health — rolling 30 days</b>\n"
+    )
+    if metrics.get("webhooks") is None:
+        text += "Unavailable\n"
+    else:
+        text += (
+            f"Configured: {n(wh.get('webhooks_configured'))}; enabled: {n(wh.get('webhooks_enabled'))}\n"
+            f"Events: {n(wh.get('events_total'))}; delivered: {n(wh.get('delivered'))}\n"
+            f"Pending: {n(wh.get('pending'))}; dead-lettered: {n(wh.get('dead_lettered'))}\n"
+            f"Attempts: {n(wh.get('delivery_attempts'))}; succeeded: {n(wh.get('attempts_succeeded'))}; failed: {n(wh.get('attempts_failed'))}\n"
+        )
+        if wh.get("webhooks_configured") == 0:
+            text += "No webhooks configured.\n"
+        elif wh.get("events_total") == 0 and wh.get("delivery_attempts") == 0:
+            text += "No recent delivery activity; health not yet established.\n"
+        text += "Failed attempts may later succeed; dead-lettered means exhausted/terminal events.\n"
+    text += "\nRefresh for current values; separate service reads are not one snapshot."
     return text, InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔑 Manage API Keys", callback_data="res_keys")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="res_stats")],
         [InlineKeyboardButton("◀️ Reseller Center", callback_data="res_center")],
         [back_button("home")],
     ])
+
+
+def build_reseller_api_docs(page=1, public_base_url=None):
+    """Pure four-page quick-start, using explicitly configured public v1 URL."""
+    page = min(max(_catalog_page_number(page), 1), 4)
+    base = public_api_docs_base_url(public_base_url)
+    heading = f"📚 <b>Reseller API v1 — {page}/4</b>\n\n"
+    if page == 1:
+        body = (
+            (f"<b>Public base URL</b>\n<code>{html.escape(base)}</code>\n\n" if base else
+             "<b>Public base URL unavailable</b>\nThe owner must configure a verified public v1 URL. No host is inferred.\n\n")
+            + "<b>Authentication</b>\n<code>Authorization: Bearer &lt;key_id&gt;.&lt;secret&gt;</code>\n"
+            "Keep credentials private on your server. Never post them in Telegram chats, support messages, source control or logs.\n\n"
+            "<b>Environments</b>\nThe API supports test (sandbox) and production. Use keys for the matching environment. "
+            "Each deployment must use its own database; the startup environment marker refuses mismatched databases. "
+            "Orders, stock, wallet balances, delivery records and ledger state are then separate.\n"
+            "Sandbox is a real order pipeline, not a mock: the owner must provide test products and balances. "
+            "Database separation does NOT automatically isolate external suppliers, payment addresses, Telegram or webhook destinations. "
+            "The owner must configure safe test integrations; do not send real funds or use live suppliers for testing.\n\n"
+            "Use the resource pages for public methods and paths."
+        )
+    elif page in (2, 3):
+        subset = API_DOC_RESOURCES[:8] if page == 2 else API_DOC_RESOURCES[8:]
+        body = "<b>Public resources</b>\nPaths below include /api/v1.\n\n"
+        for category, operations in subset:
+            body += f"<b>{html.escape(category)}</b>\n"
+            for method, path in operations:
+                body += f"<code>{method} {html.escape(path)}</code>\n"
+            body += "\n"
+        body += "Read-only financial resources do not permit withdrawals. See RESELLER_API.md for all filters, subresources and examples."
+    else:
+        body = (
+            "<b>Order idempotency</b>\nSend client_order_id on POST /api/v1/orders (printable ASCII, max 128). "
+            "It is unique per reseller account. A committed replay returns HTTP 200 with idempotent: true and the original order, "
+            "even if order parameters differ; it never changes the buyer email or charges twice. Use a fresh ID per logical order. "
+            "A conflicting internal wallet reference may return 409 idempotency_conflict; this is not a blanket payload-mismatch rejection for committed replays. "
+            "Without an ID, each request is new. No equivalent guarantee is implied for unrelated operations.\n\n"
+            "<b>Error envelope</b>\n<code>{\"ok\": false, \"error\": {\"code\": \"…\", \"message\": \"…\"}, \"request_id\": \"…\"}</code>\n"
+            "400 validation; 401 missing/invalid credentials or wrong environment; 402 insufficient balance; "
+            "403 denied; 404 missing/inaccessible resource; 409 conflict; 413 body too large; 415 non-JSON; "
+            "422 stock/business rule or missing required buyer email; 429 rate/quota; 500 sanitized internal error; 503 unavailable.\n\n"
+            "<b>Rate limiting</b>\nReseller-wide request buckets and endpoint categories apply across keys; limits depend on configuration. "
+            "After request-rate evaluation: RateLimit-Limit is the applicable limit; RateLimit-Remaining is available units; "
+            "RateLimit-Reset is seconds until reset. Rate denials include Retry-After (seconds); category denials also identify RateLimit-Category. "
+            "Authentication/early errors need not carry rate headers. Respect 429 and avoid immediate retries.\n\n"
+            "<b>Full reference</b>\nRESELLER_API.md is the project API guide; request the current copy from the owner. "
+            "No verified hosted documentation URL is configured. This guide names no private service or filesystem location."
+        )
+    rows = []
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("◀️ Previous", callback_data=f"res_api_docs:page:{page-1}"))
+    if page < 4:
+        nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"res_api_docs:page:{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows += [[InlineKeyboardButton("🔑 Manage API Keys", callback_data="res_keys")],
+             [InlineKeyboardButton("◀️ Reseller Center", callback_data="res_center")], [back_button("home")]]
+    return heading + body, InlineKeyboardMarkup(rows)
+
+
+async def _handle_reseller_stats_docs_callback(q, uid, data):
+    try:
+        if not get_active_reseller(uid):
+            raise PermissionError("Active reseller access required.")
+        if data == "res_stats":
+            text, markup = build_reseller_statistics(read_reseller_telegram_statistics(uid))
+        else:
+            import re
+            match = re.fullmatch(r"res_api_docs:page:(-?[0-9]{1,10})", data)
+            if data != "res_api_docs" and not match:
+                raise CatalogViewError("Invalid documentation link.")
+            import config
+            text, markup = build_reseller_api_docs(match.group(1) if match else 1,
+                                                   config.RESELLER_API_PUBLIC_BASE_URL)
+        # Mutable active/blocked state is checked again before message delivery.
+        if not get_active_reseller(uid):
+            raise PermissionError("Active reseller access required.")
+    except (PermissionError, CatalogViewError) as exc:
+        text = "❌ " + html.escape(str(exc))
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Reseller Center", callback_data="res_center")]])
+    except Exception:
+        log_error("Reseller statistics/documentation unavailable", extra="category=stats_docs_read_error")
+        text = "❌ This view is temporarily unavailable. Please try again."
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Reseller Center", callback_data="res_center")]])
+    await edit_or_send(q, text, markup)
+    return True
 
 
 async def reseller_command(update, context):
@@ -371,6 +857,12 @@ async def reseller_command(update, context):
 async def handle_reseller_callback(q, uid, data, context) -> bool:
     """All res_* callbacks. Returns True when handled."""
     try:
+        if data.startswith(("res_products", "res_pricing", "res_product:")):
+            return await _handle_reseller_catalog_callback(q,uid,data)
+
+        if data == "res_topup" or data.startswith("res_topup_"):
+            return await _handle_reseller_topup_callback(q,uid,data)
+
         if data == "res_center":
             text, markup = build_reseller_home(uid)
             await edit_or_send(q, text, markup)
@@ -772,16 +1264,12 @@ async def handle_reseller_callback(q, uid, data, context) -> bool:
             await edit_or_send(q, text, markup)
             return True
 
-        if data == "res_api_docs":
-            if not get_active_reseller(uid):
-                text, markup = build_reseller_home(uid)
-                await edit_or_send(q, text, markup)
-                return True
-            text, markup = build_reseller_api_docs()
-            await edit_or_send(q, text, markup)
-            return True
+        if data == "res_stats" or data == "res_api_docs" or data.startswith("res_api_docs:"):
+            return await _handle_reseller_stats_docs_callback(q, uid, data)
 
         if data == "res_wallet":
+            if str(user_state.get(uid,"" )).startswith("res_topup:"):
+                user_state.pop(uid,None);_topup_drafts.pop(uid,None)
             res = get_active_reseller(uid)   # server-side status re-check
             if not res:
                 text, markup = build_reseller_home(uid)
@@ -789,17 +1277,6 @@ async def handle_reseller_callback(q, uid, data, context) -> bool:
                 return True
             text, markup = build_reseller_wallet(res)
             await edit_or_send(q, text, markup)
-            return True
-
-        if data == "res_soon":
-            if not get_active_reseller(uid):  # server-side status re-check
-                # non-active callers never even reach the coming-soon surface
-                text, markup = build_reseller_home(uid)
-                await edit_or_send(q, text, markup)
-                return True
-            await q.answer(
-                "🚧 Coming soon — this section is being finalized.",
-                show_alert=True)
             return True
 
         return False
@@ -815,6 +1292,9 @@ async def handle_reseller_callback(q, uid, data, context) -> bool:
 async def handle_reseller_message(update, uid, text, state) -> bool:
     """Consumes res_* conversation states. Returns True when handled."""
     try:
+        if str(state).startswith("res_topup:"):
+            return await _handle_reseller_topup_message(update,uid,text,state)
+
         if state == "res_apply:name":
             name = text.strip()
             if not (2 <= len(name) <= 60):
