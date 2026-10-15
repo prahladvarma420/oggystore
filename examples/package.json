@@ -1,0 +1,16 @@
+{
+  "name": "oggy-reseller-webhook-reference",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local Express receiver and Postman validation for the reseller client kit",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "express": "5.3.0"
+  },
+  "devDependencies": {
+    "ajv-draft-04": "1.0.0",
+    "ajv-formats": "3.0.1"
+  }
+}

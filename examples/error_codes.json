@@ -1,0 +1,1389 @@
+[
+  {
+    "code": "adjustment_limit_exceeded",
+    "statuses": [
+      422
+    ],
+    "messages": [
+      "Amount exceeds the configured manual-adjustment limit."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:65"
+    ]
+  },
+  {
+    "code": "adjustment_not_found",
+    "statuses": [
+      404
+    ],
+    "messages": [
+      "Adjustment not found."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:109",
+      "reseller_api/services/adjustment_service.py:148",
+      "reseller_api/services/adjustment_service.py:162"
+    ]
+  },
+  {
+    "code": "adjustment_post_failed",
+    "statuses": [
+      500
+    ],
+    "messages": [
+      "Ledger posting failed: {value}"
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:191"
+    ]
+  },
+  {
+    "code": "already_imported",
+    "statuses": [
+      409
+    ],
+    "messages": [
+      "This product is already in your catalog."
+    ],
+    "sources": [
+      "reseller_api/services/product_import.py:133"
+    ]
+  },
+  {
+    "code": "api_disabled",
+    "statuses": [
+      403
+    ],
+    "messages": [
+      "API access is currently disabled for your account. Please contact support."
+    ],
+    "sources": [
+      "reseller_api/services/quota_service.py:38"
+    ]
+  },
+  {
+    "code": "api_unavailable",
+    "statuses": [
+      503
+    ],
+    "messages": [
+      "The reseller API is currently unavailable."
+    ],
+    "sources": [
+      "reseller_api/middleware/security_controls.py:9"
+    ]
+  },
+  {
+    "code": "authentication_failed",
+    "statuses": [
+      400,
+      401
+    ],
+    "messages": [
+      "Authentication credentials are missing or invalid.",
+      "Message depends on the validated request or operation."
+    ],
+    "sources": [
+      "reseller_api/middleware/authentication.py:116",
+      "reseller_api/middleware/authentication.py:94",
+      "reseller_api/middleware/authorization.py:17",
+      "reseller_api/services/order_delivery.py:83",
+      "reseller_api/services/product_catalog.py:141",
+      "reseller_api/services/product_catalog.py:229",
+      "reseller_api/services/product_import.py:52"
+    ]
+  },
+  {
+    "code": "authentication_required",
+    "statuses": [
+      401
+    ],
+    "messages": [
+      "Authentication required."
+    ],
+    "sources": [
+      "reseller_api/services/pricing.py:66"
+    ]
+  },
+  {
+    "code": "authorization_denied",
+    "statuses": [
+      403,
+      "not defined by service; caller maps transport"
+    ],
+    "messages": [
+      "Message depends on the validated request or operation.",
+      "This operation is not permitted."
+    ],
+    "sources": [
+      "reseller_api/middleware/authorization.py:35",
+      "reseller_api/middleware/rate_limit.py:19",
+      "reseller_api/services/order_delivery.py:87",
+      "reseller_api/services/pricing.py:119",
+      "reseller_api/services/pricing.py:86",
+      "reseller_api/services/product_import.py:160",
+      "reseller_api/services/product_import.py:189",
+      "reseller_api/services/product_import.py:263",
+      "reseller_api/services/product_import.py:327",
+      "reseller_api/services/product_import.py:77",
+      "reseller_api/services/wallet.py:56",
+      "reseller_api/services/wallet.py:60"
+    ]
+  },
+  {
+    "code": "bad_request",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "The request is invalid."
+    ],
+    "sources": [
+      "reseller_api/errors.py:35"
+    ]
+  },
+  {
+    "code": "balance_limit_exceeded",
+    "statuses": [
+      "not defined by service; caller maps transport"
+    ],
+    "messages": [
+      "The wallet balance limit would be exceeded."
+    ],
+    "sources": [
+      "reseller_api/services/wallet.py:41"
+    ]
+  },
+  {
+    "code": "buyer_email_required",
+    "statuses": [
+      422
+    ],
+    "messages": [
+      "buyer_email is required for this product."
+    ],
+    "sources": [
+      "reseller_api/services/order_validation.py:373"
+    ]
+  },
+  {
+    "code": "daily_order_quota_exceeded",
+    "statuses": [
+      429
+    ],
+    "messages": [
+      "Daily order quota ({value}) reached. Your quota resets at midnight UTC."
+    ],
+    "sources": [
+      "reseller_api/services/quota_service.py:58"
+    ]
+  },
+  {
+    "code": "delivery_error",
+    "statuses": [
+      500
+    ],
+    "messages": [
+      "Delivery could not be retrieved."
+    ],
+    "sources": [
+      "reseller_api/controllers/v1/orders.py:455"
+    ]
+  },
+  {
+    "code": "delivery_normalization_required",
+    "statuses": [
+      409
+    ],
+    "messages": [
+      "Presence-based status filters require owner-run empty-delivery normalization."
+    ],
+    "sources": [
+      "reseller_api/services/order_query.py:348"
+    ]
+  },
+  {
+    "code": "discrepancy_not_found",
+    "statuses": [
+      404
+    ],
+    "messages": [
+      "Discrepancy not found."
+    ],
+    "sources": [
+      "reseller_api/services/reconciliation.py:522"
+    ]
+  },
+  {
+    "code": "field_too_long",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "events array must not exceed {value} items.",
+      "{value} must not exceed {value} characters."
+    ],
+    "sources": [
+      "reseller_api/services/request_validator.py:107",
+      "reseller_api/services/request_validator.py:63"
+    ]
+  },
+  {
+    "code": "http_error",
+    "statuses": [
+      "HTTPException status (fallback)"
+    ],
+    "messages": [
+      "The request could not be processed."
+    ],
+    "sources": [
+      "reseller_api/errors.py:42"
+    ]
+  },
+  {
+    "code": "idempotency_conflict",
+    "statuses": [
+      409,
+      "not defined by service; caller maps transport"
+    ],
+    "messages": [
+      "Ledger reference conflict.",
+      "This reference was already used for a different wallet request.",
+      "Wallet reference already used with a different payload."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:188",
+      "reseller_api/services/order_service.py:452",
+      "reseller_api/services/wallet.py:43"
+    ]
+  },
+  {
+    "code": "import_failed",
+    "statuses": [
+      500
+    ],
+    "messages": [
+      "Import failed."
+    ],
+    "sources": [
+      "reseller_api/services/product_import.py:138"
+    ]
+  },
+  {
+    "code": "insufficient_balance",
+    "statuses": [
+      402
+    ],
+    "messages": [
+      "Insufficient wallet balance for this order."
+    ],
+    "sources": [
+      "reseller_api/services/order_service.py:446"
+    ]
+  },
+  {
+    "code": "insufficient_funds",
+    "statuses": [
+      402,
+      "not defined by service; caller maps transport"
+    ],
+    "messages": [
+      "The reseller wallet has insufficient funds."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:184",
+      "reseller_api/services/wallet.py:40"
+    ]
+  },
+  {
+    "code": "insufficient_stock",
+    "statuses": [
+      422
+    ],
+    "messages": [
+      "Only {value} unit(s) available for this product."
+    ],
+    "sources": [
+      "reseller_api/services/order_stock.py:309",
+      "reseller_api/services/order_stock.py:322",
+      "reseller_api/services/order_stock.py:349",
+      "reseller_api/services/order_stock.py:359",
+      "reseller_api/services/order_validation.py:414"
+    ]
+  },
+  {
+    "code": "internal_error",
+    "statuses": [
+      500
+    ],
+    "messages": [
+      "An unexpected error occurred."
+    ],
+    "sources": [
+      "reseller_api/errors.py:55"
+    ]
+  },
+  {
+    "code": "invalid_amount",
+    "statuses": [
+      400,
+      "not defined by service; caller maps transport"
+    ],
+    "messages": [
+      "Amount exceeds the supported wallet limit.",
+      "Amount must be a positive decimal value.",
+      "Amount must be greater than zero.",
+      "amount must be integer cents.",
+      "amount must be positive."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:212",
+      "reseller_api/services/adjustment_service.py:214",
+      "reseller_api/services/adjustment_service.py:61",
+      "reseller_api/services/adjustment_service.py:63",
+      "reseller_api/services/wallet.py:23",
+      "reseller_api/services/wallet.py:25",
+      "reseller_api/services/wallet.py:26",
+      "reseller_api/services/wallet.py:27"
+    ]
+  },
+  {
+    "code": "invalid_client_order_id",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "client_order_id may only contain printable ASCII characters (no spaces or control characters).",
+      "client_order_id must be a string.",
+      "client_order_id must not be empty when provided.",
+      "client_order_id must not exceed {value} characters."
+    ],
+    "sources": [
+      "reseller_api/services/order_validation.py:268",
+      "reseller_api/services/order_validation.py:274",
+      "reseller_api/services/order_validation.py:279",
+      "reseller_api/services/order_validation.py:284"
+    ]
+  },
+  {
+    "code": "invalid_description",
+    "statuses": [
+      "not defined by service; caller maps transport"
+    ],
+    "messages": [
+      "Description is too long."
+    ],
+    "sources": [
+      "reseller_api/services/wallet.py:38"
+    ]
+  },
+  {
+    "code": "invalid_enabled",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "'enabled' must be a boolean."
+    ],
+    "sources": [
+      "reseller_api/services/webhook_config.py:322"
+    ]
+  },
+  {
+    "code": "invalid_events",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "'events' must be a list of event type strings.",
+      "Each event type must be a string."
+    ],
+    "sources": [
+      "reseller_api/services/webhook_config.py:102",
+      "reseller_api/services/webhook_config.py:94"
+    ]
+  },
+  {
+    "code": "invalid_field",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "Field(s) are read-only or do not exist: {value}.",
+      "Unknown field(s): {value}.",
+      "custom_description must not exceed {value} characters.",
+      "custom_name must not exceed {value} characters.",
+      "enabled must be a boolean.",
+      "events must be an array.",
+      "reseller_sku must not exceed {value} characters.",
+      "{value} must be a date string (YYYY-MM-DD).",
+      "{value} must be a string.",
+      "{value} must be in YYYY-MM-DD format."
+    ],
+    "sources": [
+      "reseller_api/services/product_import.py:107",
+      "reseller_api/services/product_import.py:117",
+      "reseller_api/services/product_import.py:248",
+      "reseller_api/services/product_import.py:256",
+      "reseller_api/services/product_import.py:278",
+      "reseller_api/services/product_import.py:289",
+      "reseller_api/services/product_import.py:300",
+      "reseller_api/services/product_import.py:309",
+      "reseller_api/services/request_validator.py:105",
+      "reseller_api/services/request_validator.py:60",
+      "reseller_api/services/request_validator.py:96",
+      "reseller_api/services/request_validator.py:98"
+    ]
+  },
+  {
+    "code": "invalid_filter",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "This product filter is not supported.",
+      "availability must be 'in_stock' or 'out_of_stock'.",
+      "category must not exceed {value} characters.",
+      "client_order_id is too long.",
+      "client_order_id must not be empty.",
+      "date_from must be YYYY-MM-DD.",
+      "date_from must not be later than date_to.",
+      "date_to must be YYYY-MM-DD.",
+      "product_id must be a valid public product ID (PRD-...).",
+      "search must not exceed {value} characters.",
+      "status must be one of: processing, completed, failed, cancelled.",
+      "{value} must be a text value."
+    ],
+    "sources": [
+      "reseller_api/services/order_query.py:242",
+      "reseller_api/services/order_query.py:254",
+      "reseller_api/services/order_query.py:256",
+      "reseller_api/services/order_query.py:264",
+      "reseller_api/services/order_query.py:276",
+      "reseller_api/services/order_query.py:284",
+      "reseller_api/services/order_query.py:288",
+      "reseller_api/services/product_catalog.py:116",
+      "reseller_api/services/product_catalog.py:121",
+      "reseller_api/services/product_catalog.py:126",
+      "reseller_api/services/product_catalog.py:52",
+      "reseller_api/services/product_catalog.py:95"
+    ]
+  },
+  {
+    "code": "invalid_json",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "Request body is not valid JSON."
+    ],
+    "sources": [
+      "reseller_api/middleware/payload_guard.py:60"
+    ]
+  },
+  {
+    "code": "invalid_order_id",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "Order ID format is invalid. Expected ORD-XXXXXXXX."
+    ],
+    "sources": [
+      "reseller_api/services/order_delivery.py:24",
+      "reseller_api/services/order_query.py:87"
+    ]
+  },
+  {
+    "code": "invalid_pagination",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "Pagination offset must not exceed {value} records.",
+      "after_id must be a valid invoice ID.",
+      "after_id must be a valid order ID (ORD-XXXXXXXX).",
+      "after_id must be a valid refund ID.",
+      "after_id must be a valid statement ID.",
+      "invalid cursor.",
+      "limit must be a positive integer.",
+      "limit must not exceed 100.",
+      "limit must not exceed 500.",
+      "limit must not exceed {value}.",
+      "{value} must be a positive integer.",
+      "{value} must be between 1 and {value}."
+    ],
+    "sources": [
+      "reseller_api/controllers/v1/invoices.py:104",
+      "reseller_api/controllers/v1/invoices.py:106",
+      "reseller_api/controllers/v1/invoices.py:112",
+      "reseller_api/controllers/v1/invoices.py:116",
+      "reseller_api/controllers/v1/refunds.py:49",
+      "reseller_api/controllers/v1/refunds.py:51",
+      "reseller_api/controllers/v1/refunds.py:59",
+      "reseller_api/controllers/v1/refunds.py:63",
+      "reseller_api/controllers/v1/statements.py:106",
+      "reseller_api/controllers/v1/statements.py:108",
+      "reseller_api/controllers/v1/statements.py:114",
+      "reseller_api/controllers/v1/statements.py:173",
+      "reseller_api/controllers/v1/statements.py:175",
+      "reseller_api/controllers/v1/statements.py:180",
+      "reseller_api/controllers/v1/transactions.py:126",
+      "reseller_api/controllers/v1/transactions.py:68",
+      "reseller_api/controllers/v1/transactions.py:70",
+      "reseller_api/services/order_query.py:217",
+      "reseller_api/services/order_query.py:220",
+      "reseller_api/services/order_query.py:231",
+      "reseller_api/services/product_catalog.py:108",
+      "reseller_api/services/product_catalog.py:73",
+      "reseller_api/services/product_catalog.py:78"
+    ]
+  },
+  {
+    "code": "invalid_parameter",
+    "statuses": [
+      400,
+      422
+    ],
+    "messages": [
+      "An unsupported query parameter was provided.",
+      "Duplicate query parameters are not allowed.",
+      "Identity and pricing fields are determined by the server.",
+      "Invalid sort field: {value}.",
+      "One or more request fields are determined by the server and must not be supplied by the client.",
+      "Reseller identity is determined by the authenticated API key.",
+      "This endpoint does not accept query parameters.",
+      "Unknown field(s): {value}.",
+      "Unknown or forbidden field(s): {value}.",
+      "Unsupported currency.",
+      "Unsupported filter field: {value}.",
+      "Unsupported invoice status.",
+      "Unsupported period type.",
+      "Unsupported query parameter(s): {value}",
+      "Unsupported refund kind.",
+      "Unsupported statement status.",
+      "Unsupported transaction type.",
+      "buyer_email must be a valid email address of at most 254 characters.",
+      "buyer_email must not be included in client_order_id.",
+      "direction must be debit or credit.",
+      "not accepted for this product",
+      "order_id must be a valid ORD-* identifier.",
+      "per_page must be an integer.",
+      "per_page must be at least 1.",
+      "per_page must not exceed {value}.",
+      "product_id must be a valid PRD-* identifier.",
+      "sort must be a string.",
+      "type must be credit or debit.",
+      "{value} must be YYYY-MM-DD."
+    ],
+    "sources": [
+      "reseller_api/controllers/v1/analytics.py:34",
+      "reseller_api/controllers/v1/analytics.py:46",
+      "reseller_api/controllers/v1/exports.py:49",
+      "reseller_api/controllers/v1/invoices.py:121",
+      "reseller_api/controllers/v1/invoices.py:130",
+      "reseller_api/controllers/v1/invoices.py:138",
+      "reseller_api/controllers/v1/my_catalog.py:87",
+      "reseller_api/controllers/v1/product_import.py:46",
+      "reseller_api/controllers/v1/refunds.py:54",
+      "reseller_api/controllers/v1/statements.py:119",
+      "reseller_api/controllers/v1/statements.py:122",
+      "reseller_api/controllers/v1/statements.py:131",
+      "reseller_api/controllers/v1/statements.py:139",
+      "reseller_api/controllers/v1/transactions.py:102",
+      "reseller_api/controllers/v1/transactions.py:77",
+      "reseller_api/controllers/v1/transactions.py:84",
+      "reseller_api/controllers/v1/transactions.py:94",
+      "reseller_api/services/adjustment_service.py:59",
+      "reseller_api/services/order_query.py:201",
+      "reseller_api/services/order_query.py:207",
+      "reseller_api/services/order_validation.py:167",
+      "reseller_api/services/order_validation.py:367",
+      "reseller_api/services/order_validation.py:377",
+      "reseller_api/services/order_validation.py:381",
+      "reseller_api/services/product_catalog.py:101",
+      "reseller_api/services/product_catalog.py:210",
+      "reseller_api/services/product_catalog.py:214",
+      "reseller_api/services/product_catalog.py:63",
+      "reseller_api/services/product_catalog.py:90",
+      "reseller_api/services/request_validator.py:73",
+      "reseller_api/services/request_validator.py:74",
+      "reseller_api/services/request_validator.py:75",
+      "reseller_api/services/request_validator.py:81",
+      "reseller_api/services/request_validator.py:84",
+      "reseller_api/services/request_validator.py:90"
+    ]
+  },
+  {
+    "code": "invalid_payload",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "Invalid numeric value at {value}: NaN and Infinity are not allowed.",
+      "Request body must be a JSON object."
+    ],
+    "sources": [
+      "reseller_api/middleware/payload_guard.py:18",
+      "reseller_api/middleware/payload_guard.py:21",
+      "reseller_api/middleware/payload_guard.py:62"
+    ]
+  },
+  {
+    "code": "invalid_period",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "Unsupported period type.",
+      "end_date must not precede start_date.",
+      "month must be YYYY-MM.",
+      "period_end must not precede period_start.",
+      "period_start cannot be in the future.",
+      "period_type must be monthly, weekly, custom, or invoice.",
+      "{value} must be YYYY-MM-DD."
+    ],
+    "sources": [
+      "reseller_api/services/invoice_service.py:169",
+      "reseller_api/services/invoice_service.py:172",
+      "reseller_api/services/invoice_service.py:45",
+      "reseller_api/services/statement_service.py:115",
+      "reseller_api/services/statement_service.py:47",
+      "reseller_api/services/statement_service.py:58",
+      "reseller_api/services/statement_service.py:68",
+      "reseller_api/services/statement_service.py:72",
+      "reseller_api/services/statement_service.py:95"
+    ]
+  },
+  {
+    "code": "invalid_quantity",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "Fractional quantities are not supported.",
+      "This product allows a maximum of {value} per order.",
+      "This product allows one unit per order.",
+      "quantity must be a positive integer.",
+      "quantity must be greater than zero.",
+      "quantity must not exceed {value}."
+    ],
+    "sources": [
+      "reseller_api/services/financial_abuse_guard.py:73",
+      "reseller_api/services/financial_abuse_guard.py:79",
+      "reseller_api/services/financial_abuse_guard.py:85",
+      "reseller_api/services/order_validation.py:215",
+      "reseller_api/services/order_validation.py:221",
+      "reseller_api/services/order_validation.py:229",
+      "reseller_api/services/order_validation.py:234",
+      "reseller_api/services/order_validation.py:241",
+      "reseller_api/services/order_validation.py:246",
+      "reseller_api/services/order_validation.py:349",
+      "reseller_api/services/order_validation.py:371"
+    ]
+  },
+  {
+    "code": "invalid_reason",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "A reason is required.",
+      "Reason is too long."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:217",
+      "reseller_api/services/adjustment_service.py:70",
+      "reseller_api/services/adjustment_service.py:72"
+    ]
+  },
+  {
+    "code": "invalid_reference",
+    "statuses": [
+      400,
+      "not defined by service; caller maps transport"
+    ],
+    "messages": [
+      "A safe idempotency reference is required."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:76",
+      "reseller_api/services/wallet.py:31"
+    ]
+  },
+  {
+    "code": "invalid_refund_amount",
+    "statuses": [
+      "not defined by service; caller maps transport"
+    ],
+    "messages": [
+      "Refund must match the original debit."
+    ],
+    "sources": [
+      "reseller_api/services/wallet.py:52"
+    ]
+  },
+  {
+    "code": "invalid_request",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "'enabled' must be a boolean.",
+      "'url' is required and must be a string.",
+      "A JSON object request body is required.",
+      "A valid JSON request body with Content-Type: application/json is required.",
+      "Nothing to update.",
+      "Request body must be a JSON object.",
+      "The balance endpoint does not accept query parameters.",
+      "delivery_id must be a positive integer.",
+      "outbox_id must be an integer."
+    ],
+    "sources": [
+      "reseller_api/controllers/v1/balance.py:20",
+      "reseller_api/controllers/v1/my_catalog.py:80",
+      "reseller_api/controllers/v1/my_catalog.py:83",
+      "reseller_api/controllers/v1/orders.py:145",
+      "reseller_api/controllers/v1/orders.py:320",
+      "reseller_api/controllers/v1/webhooks.py:104",
+      "reseller_api/controllers/v1/webhooks.py:112",
+      "reseller_api/controllers/v1/webhooks.py:118",
+      "reseller_api/controllers/v1/webhooks.py:188",
+      "reseller_api/controllers/v1/webhooks.py:298",
+      "reseller_api/controllers/v1/webhooks.py:424",
+      "reseller_api/services/order_validation.py:444"
+    ]
+  },
+  {
+    "code": "invalid_reseller",
+    "statuses": [
+      "not defined by service; caller maps transport"
+    ],
+    "messages": [
+      "A valid reseller is required."
+    ],
+    "sources": [
+      "reseller_api/services/wallet.py:17",
+      "reseller_api/services/wallet.py:19",
+      "reseller_api/services/wallet.py:20"
+    ]
+  },
+  {
+    "code": "invalid_transition",
+    "statuses": [
+      409
+    ],
+    "messages": [
+      "Adjustment must be approved before completion.",
+      "Adjustment was already completed.",
+      "Cannot move {value} → {value}.",
+      "Invoice cannot be voided from its current state.",
+      "Statement cannot be finalized from its current state."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:114",
+      "reseller_api/services/adjustment_service.py:169",
+      "reseller_api/services/adjustment_service.py:197",
+      "reseller_api/services/invoice_service.py:267",
+      "reseller_api/services/reconciliation.py:531",
+      "reseller_api/services/statement_service.py:281"
+    ]
+  },
+  {
+    "code": "invalid_webhook_id",
+    "statuses": [
+      404
+    ],
+    "messages": [
+      "The webhook ID is invalid."
+    ],
+    "sources": [
+      "reseller_api/services/webhook_config.py:78"
+    ]
+  },
+  {
+    "code": "invalid_webhook_url",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "Message depends on the validated request or operation."
+    ],
+    "sources": [
+      "reseller_api/services/webhook_config.py:178",
+      "reseller_api/services/webhook_config.py:303"
+    ]
+  },
+  {
+    "code": "invoice_not_found",
+    "statuses": [
+      404
+    ],
+    "messages": [
+      "Invoice not found."
+    ],
+    "sources": [
+      "reseller_api/controllers/v1/invoices.py:45",
+      "reseller_api/controllers/v1/invoices.py:53",
+      "reseller_api/services/invoice_service.py:261",
+      "reseller_api/services/statement_service.py:89"
+    ]
+  },
+  {
+    "code": "mapping_not_found",
+    "statuses": [
+      404
+    ],
+    "messages": [
+      "Mapping not found."
+    ],
+    "sources": [
+      "reseller_api/services/product_import.py:155",
+      "reseller_api/services/product_import.py:168",
+      "reseller_api/services/product_import.py:185",
+      "reseller_api/services/product_import.py:198",
+      "reseller_api/services/product_import.py:204",
+      "reseller_api/services/product_import.py:243",
+      "reseller_api/services/product_import.py:269",
+      "reseller_api/services/product_import.py:318"
+    ]
+  },
+  {
+    "code": "method_not_allowed",
+    "statuses": [
+      405
+    ],
+    "messages": [
+      "The HTTP method is not allowed for this resource."
+    ],
+    "sources": [
+      "reseller_api/errors.py:37"
+    ]
+  },
+  {
+    "code": "missing_field",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "product_id is required.",
+      "quantity is required.",
+      "{value} is required.",
+      "{value} must not be empty."
+    ],
+    "sources": [
+      "reseller_api/services/order_validation.py:187",
+      "reseller_api/services/order_validation.py:210",
+      "reseller_api/services/request_validator.py:57",
+      "reseller_api/services/request_validator.py:65"
+    ]
+  },
+  {
+    "code": "monthly_order_quota_exceeded",
+    "statuses": [
+      429
+    ],
+    "messages": [
+      "Monthly order quota ({value}) reached. Resets at the start of next month."
+    ],
+    "sources": [
+      "reseller_api/services/quota_service.py:64"
+    ]
+  },
+  {
+    "code": "no_fields_provided",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "No updatable fields were provided."
+    ],
+    "sources": [
+      "reseller_api/services/webhook_config.py:287",
+      "reseller_api/services/webhook_config.py:336"
+    ]
+  },
+  {
+    "code": "not_found",
+    "statuses": [
+      404
+    ],
+    "messages": [
+      "Delivery {value} not found.",
+      "The requested API resource was not found.",
+      "Webhook event {value} not found.",
+      "Webhook not found.",
+      "Webhook {value} not found."
+    ],
+    "sources": [
+      "reseller_api/controllers/v1/webhooks.py:308",
+      "reseller_api/controllers/v1/webhooks.py:335",
+      "reseller_api/controllers/v1/webhooks.py:344",
+      "reseller_api/controllers/v1/webhooks.py:429",
+      "reseller_api/errors.py:36",
+      "reseller_api/services/webhook_config.py:419"
+    ]
+  },
+  {
+    "code": "not_retryable",
+    "statuses": [
+      409
+    ],
+    "messages": [
+      "Event {value} is not in a retryable state (must be 'failed').",
+      "This event is not in a retryable state. Only failed events can be retried."
+    ],
+    "sources": [
+      "reseller_api/controllers/v1/webhooks.py:312",
+      "reseller_api/controllers/v1/webhooks.py:434"
+    ]
+  },
+  {
+    "code": "nothing_to_refund",
+    "statuses": [
+      409
+    ],
+    "messages": [
+      "This order is already fully refunded."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:229"
+    ]
+  },
+  {
+    "code": "order_burst_limit",
+    "statuses": [
+      429
+    ],
+    "messages": [
+      "Too many orders for this product in a short window. Please wait a moment before trying again."
+    ],
+    "sources": [
+      "reseller_api/services/financial_abuse_guard.py:115"
+    ]
+  },
+  {
+    "code": "order_creation_failed",
+    "statuses": [
+      500
+    ],
+    "messages": [
+      "Order could not be created due to a database error."
+    ],
+    "sources": [
+      "reseller_api/services/order_service.py:584"
+    ]
+  },
+  {
+    "code": "order_not_found",
+    "statuses": [
+      404
+    ],
+    "messages": [
+      "Order not found."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:221",
+      "reseller_api/services/order_delivery.py:102",
+      "reseller_api/services/order_query.py:417"
+    ]
+  },
+  {
+    "code": "order_state_unavailable",
+    "statuses": [
+      503
+    ],
+    "messages": [
+      "Order delivery state cannot be verified."
+    ],
+    "sources": [
+      "reseller_api/errors.py:23"
+    ]
+  },
+  {
+    "code": "out_of_stock",
+    "statuses": [
+      422
+    ],
+    "messages": [
+      "This product is currently out of stock."
+    ],
+    "sources": [
+      "reseller_api/services/order_stock.py:343",
+      "reseller_api/services/order_validation.py:408",
+      "reseller_api/services/order_validation.py:472"
+    ]
+  },
+  {
+    "code": "payload_too_large",
+    "statuses": [
+      413
+    ],
+    "messages": [
+      "Request body exceeds maximum ({value} KB).",
+      "The request body is too large."
+    ],
+    "sources": [
+      "reseller_api/errors.py:38",
+      "reseller_api/middleware/payload_guard.py:51",
+      "reseller_api/middleware/payload_guard.py:56"
+    ]
+  },
+  {
+    "code": "pricing_error",
+    "statuses": [
+      500
+    ],
+    "messages": [
+      "A server-side pricing error occurred. Please contact support."
+    ],
+    "sources": [
+      "reseller_api/services/order_pricing.py:130"
+    ]
+  },
+  {
+    "code": "product_not_found",
+    "statuses": [
+      404
+    ],
+    "messages": [
+      "Product not found.",
+      "The requested product was not found."
+    ],
+    "sources": [
+      "reseller_api/services/order_pricing.py:120",
+      "reseller_api/services/order_validation.py:192",
+      "reseller_api/services/order_validation.py:305",
+      "reseller_api/services/order_validation.py:318",
+      "reseller_api/services/order_validation.py:328",
+      "reseller_api/services/pricing.py:91",
+      "reseller_api/services/pricing.py:98",
+      "reseller_api/services/product_catalog.py:219",
+      "reseller_api/services/product_catalog.py:236",
+      "reseller_api/services/product_catalog.py:246",
+      "reseller_api/services/product_catalog.py:254",
+      "reseller_api/services/product_import.py:72",
+      "reseller_api/services/product_import.py:85"
+    ]
+  },
+  {
+    "code": "product_not_initialized",
+    "statuses": [
+      409
+    ],
+    "messages": [
+      "Product identifiers need owner/API initialization before this view is available."
+    ],
+    "sources": [
+      "reseller_api/services/pricing.py:159"
+    ]
+  },
+  {
+    "code": "rate_limit_exceeded",
+    "statuses": [
+      429
+    ],
+    "messages": [
+      "Too many requests for this operation type. Category: {value}.",
+      "Too many requests."
+    ],
+    "sources": [
+      "reseller_api/errors.py:40",
+      "reseller_api/middleware/authentication.py:78",
+      "reseller_api/middleware/endpoint_rate_limit.py:55",
+      "reseller_api/middleware/rate_limit.py:28"
+    ]
+  },
+  {
+    "code": "reconciliation_failed",
+    "statuses": [
+      500
+    ],
+    "messages": [
+      "Ledger position at period end does not match the computed closing balance; the statement was not created."
+    ],
+    "sources": [
+      "reseller_api/services/statement_service.py:169"
+    ]
+  },
+  {
+    "code": "refund_exceeds_refundable",
+    "statuses": [
+      422
+    ],
+    "messages": [
+      "Refundable amount is {value} USDT."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:232"
+    ]
+  },
+  {
+    "code": "refund_not_eligible",
+    "statuses": [
+      "not defined by service; caller maps transport"
+    ],
+    "messages": [
+      "No matching wallet debit exists."
+    ],
+    "sources": [
+      "reseller_api/services/wallet.py:51"
+    ]
+  },
+  {
+    "code": "refund_not_found",
+    "statuses": [
+      404
+    ],
+    "messages": [
+      "Refund not found."
+    ],
+    "sources": [
+      "reseller_api/controllers/v1/refunds.py:82",
+      "reseller_api/controllers/v1/refunds.py:85"
+    ]
+  },
+  {
+    "code": "refund_post_failed",
+    "statuses": [
+      500
+    ],
+    "messages": [
+      "The refund could not be posted."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:262"
+    ]
+  },
+  {
+    "code": "reseller_not_found",
+    "statuses": [
+      404
+    ],
+    "messages": [
+      "Reseller not found."
+    ],
+    "sources": [
+      "reseller_api/services/adjustment_service.py:57",
+      "reseller_api/services/invoice_service.py:164",
+      "reseller_api/services/statement_service.py:112"
+    ]
+  },
+  {
+    "code": "resolution_reason_required",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "A reason is required.",
+      "A resolution reason is required."
+    ],
+    "sources": [
+      "reseller_api/services/reconciliation.py:498",
+      "reseller_api/services/reconciliation.py:506"
+    ]
+  },
+  {
+    "code": "secret_not_patchable",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "The webhook secret cannot be updated. Delete and recreate the webhook to rotate it."
+    ],
+    "sources": [
+      "reseller_api/services/webhook_config.py:267"
+    ]
+  },
+  {
+    "code": "service_unavailable",
+    "statuses": [
+      503
+    ],
+    "messages": [
+      "The API is temporarily unavailable."
+    ],
+    "sources": [
+      "reseller_api/middleware/rate_limit.py:23"
+    ]
+  },
+  {
+    "code": "statement_not_found",
+    "statuses": [
+      404
+    ],
+    "messages": [
+      "Statement not found."
+    ],
+    "sources": [
+      "reseller_api/controllers/v1/statements.py:47",
+      "reseller_api/controllers/v1/statements.py:55",
+      "reseller_api/services/statement_service.py:276"
+    ]
+  },
+  {
+    "code": "stock_reservation_failed",
+    "statuses": [
+      422
+    ],
+    "messages": [
+      "Stock could not be reserved. Please try again."
+    ],
+    "sources": [
+      "reseller_api/services/order_stock.py:327",
+      "reseller_api/services/order_stock.py:364"
+    ]
+  },
+  {
+    "code": "unexpected_fields",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "Unexpected fields in request: {value}."
+    ],
+    "sources": [
+      "reseller_api/services/request_validator.py:115"
+    ]
+  },
+  {
+    "code": "unknown_fields",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "Unknown field(s): {value}. Allowed: url, enabled, events."
+    ],
+    "sources": [
+      "reseller_api/services/webhook_config.py:276"
+    ]
+  },
+  {
+    "code": "unsupported_content_encoding",
+    "statuses": [
+      415
+    ],
+    "messages": [
+      "Compressed request bodies are not supported."
+    ],
+    "sources": [
+      "reseller_api/services/request_security.py:45"
+    ]
+  },
+  {
+    "code": "unsupported_event_type",
+    "statuses": [
+      400
+    ],
+    "messages": [
+      "Event type '{value}' is not supported. Supported types: {value}"
+    ],
+    "sources": [
+      "reseller_api/services/webhook_config.py:109"
+    ]
+  },
+  {
+    "code": "unsupported_media_type",
+    "statuses": [
+      415
+    ],
+    "messages": [
+      "A JSON request body is required."
+    ],
+    "sources": [
+      "reseller_api/errors.py:39",
+      "reseller_api/middleware/security.py:38"
+    ]
+  },
+  {
+    "code": "wallet_error",
+    "statuses": [
+      500
+    ],
+    "messages": [
+      "Wallet transaction failed: {value}"
+    ],
+    "sources": [
+      "reseller_api/services/order_service.py:458"
+    ]
+  },
+  {
+    "code": "webhook_create_failed",
+    "statuses": [
+      500
+    ],
+    "messages": [
+      "The webhook could not be created.",
+      "Webhook not found after creation."
+    ],
+    "sources": [
+      "reseller_api/services/webhook_config.py:202",
+      "reseller_api/services/webhook_config.py:214"
+    ]
+  },
+  {
+    "code": "webhook_disabled",
+    "statuses": [
+      422
+    ],
+    "messages": [
+      "This webhook is disabled. Enable it before testing."
+    ],
+    "sources": [
+      "reseller_api/controllers/v1/webhooks.py:507"
+    ]
+  },
+  {
+    "code": "webhook_limit_reached",
+    "statuses": [
+      422
+    ],
+    "messages": [
+      "Maximum of {value} webhooks per reseller."
+    ],
+    "sources": [
+      "reseller_api/services/webhook_config.py:168"
+    ]
+  },
+  {
+    "code": "webhook_not_found",
+    "statuses": [
+      404
+    ],
+    "messages": [
+      "Webhook not found."
+    ],
+    "sources": [
+      "reseller_api/controllers/v1/webhooks.py:515",
+      "reseller_api/services/webhook_config.py:250",
+      "reseller_api/services/webhook_config.py:295",
+      "reseller_api/services/webhook_config.py:316",
+      "reseller_api/services/webhook_config.py:363"
+    ]
+  },
+  {
+    "code": "webhook_update_failed",
+    "statuses": [
+      500
+    ],
+    "messages": [
+      "Update failed."
+    ],
+    "sources": [
+      "reseller_api/services/webhook_config.py:314"
+    ]
+  },
+  {
+    "code": "webhook_url_conflict",
+    "statuses": [
+      409
+    ],
+    "messages": [
+      "A webhook with this URL is already registered."
+    ],
+    "sources": [
+      "reseller_api/services/webhook_config.py:197",
+      "reseller_api/services/webhook_config.py:309"
+    ]
+  }
+]
