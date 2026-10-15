@@ -265,6 +265,11 @@ class _PgCursor:
         self._idx = 0
 
     @property
+    def description(self):
+        """DB-API column metadata, retained after our eager row buffering."""
+        return self._pg.description
+
+    @property
     def rowcount(self):
         try:
             return self._pg.rowcount
@@ -352,14 +357,12 @@ class _PgCursor:
 
     def _load(self):
         self._idx = 0
+        self._rows = []
         if self._pg.description:
             cols = self._cols()
-            try:
-                self._rows = [_Row(cols, r) for r in self._pg.fetchall()]
-            except Exception:
-                self._rows = []
-        else:
-            self._rows = []
+            # A failed fetch is NOT a valid empty result. Propagate so atomic
+            # operations/backup snapshots roll back rather than losing rows.
+            self._rows = [_Row(cols, r) for r in self._pg.fetchall()]
 
     def fetchone(self):
         if not self._rows or self._idx >= len(self._rows):
