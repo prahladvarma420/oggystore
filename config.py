@@ -19,6 +19,10 @@ USDT_BEP20_ADDRESS = os.getenv("USDT_BEP20_ADDRESS")
 STORE_NAME = "OGGY PREMIUM STORE"
 DB_PATH = "shopbot.db"
 
+# Optional operator-verified PUBLIC v1 URL for Telegram documentation only.
+# Never fall back to internal service hosts or request headers.
+RESELLER_API_PUBLIC_BASE_URL = os.getenv("RESELLER_API_PUBLIC_BASE_URL", "").strip()
+
 # ================== AUTO PAYMENT SETTINGS: RPC / WEB3 ==================
 # No private key needed. Never put private key in this bot.
 
