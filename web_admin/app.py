@@ -884,6 +884,34 @@ def owner_required(fn):
     return wrapper
 
 
+def _safe_admin_read(fn):
+    """Operational reads fail as safe JSON, not an HTML traceback / false zero.
+
+    This does not repair a database failure or suppress its HTTP500. Logs give
+    the operator a reference, operation, exception type and SQLSTATE only.
+    """
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        from werkzeug.exceptions import HTTPException
+        try:
+            return fn(*args, **kwargs)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            error_id = secrets.token_hex(8)
+            sqlstate = str(getattr(exc, "sqlstate", "") or "")
+            if not re.fullmatch(r"[0-9A-Z]{5}", sqlstate):
+                sqlstate = "unavailable"
+            app.logger.error("admin_read_failed error_id=%s operation=%s error_type=%s sqlstate=%s",
+                             error_id, fn.__name__, type(exc).__name__, sqlstate)
+            response = jsonify({"ok": False,
+                "error": "Internal server error. Check WebAdmin logs.", "error_id": error_id})
+            response.status_code = 500
+            response.headers["X-Error-ID"] = error_id
+            return response
+    return wrapped
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     store = getattr(config, "STORE_NAME", "Store")
@@ -3624,6 +3652,7 @@ def api_reseller_api_logs(pubid):
 @app.route("/api/resellers/<pubid>/webhooks")
 @login_required
 @owner_required
+@_safe_admin_read
 def api_reseller_webhooks(pubid):
     res = _resolve_reseller(pubid)
     if not res:
@@ -3999,6 +4028,7 @@ def api_reseller_keys(pubid):
 
 @app.route("/api/monitoring/webhook-analytics")
 @login_required
+@_safe_admin_read
 def api_monitoring_webhooks():
     """Owner webhook/delivery/fulfillment operational analytics
     (Phase 14 P6).  Aggregates the existing outbox + delivery log + orders;
@@ -4012,6 +4042,7 @@ def api_monitoring_webhooks():
 
 @app.route("/api/monitoring/product-analytics")
 @login_required
+@_safe_admin_read
 def api_monitoring_products():
     """Owner product/stock analytics (Phase 14 P5): per-product sales,
     inventory availability, adoption, category rollup.  ?days=1..90."""
@@ -4024,6 +4055,7 @@ def api_monitoring_products():
 
 @app.route("/api/monitoring/financials")
 @login_required
+@_safe_admin_read
 def api_monitoring_financials():
     """Owner financial analytics (Phase 14 P4): platform totals from the
     immutable ledger + per-reseller spending board.  Read-only."""
@@ -5081,6 +5113,7 @@ def api_invoice_document(public_id):
 
 @app.route("/api/monitoring/sales-analytics")
 @login_required
+@_safe_admin_read
 def api_monitoring_sales():
     """Owner sales analytics (Phase 14 P3): all-reseller or filtered by
     ?reseller=<RSR-*> / ?product=<PRD-*> / ?date_from / ?date_to.
@@ -5140,6 +5173,7 @@ def _analytics_since(default_days: int, cap_days: int = 90):
 
 @app.route("/api/monitoring/api-usage")
 @login_required
+@_safe_admin_read
 def api_monitoring_usage():
     """Owner API-usage analytics (Phase 14 P2): today/this-month totals,
     error rates, latency, top endpoints, top resellers, 7-day series.
@@ -5155,6 +5189,7 @@ def api_monitoring_usage():
 
 @app.route("/api/monitoring/api-health")
 @login_required
+@_safe_admin_read
 def api_monitoring_health():
     """Owner-only platform API health snapshot (Phase 13 P8).
 
