@@ -934,7 +934,7 @@ paths:
                 url: {type: string, format: uri, description: "HTTPS only; SSRF-validated"}
                 events:
                   type: array
-                  items: {$ref: "#/components/schemas/EventType"}
+                  items: {$ref: "#/components/schemas/SubscriptionEventType"}
                   description: Defaults to all supported events; [] subscribes to none
                 enabled: {type: boolean, default: true}
       responses:
@@ -953,7 +953,7 @@ paths:
                           webhook: {$ref: "#/components/schemas/WebhookWithSecret"}
                           supported_events:
                             type: array
-                            items: {$ref: "#/components/schemas/EventType"}
+                            items: {$ref: "#/components/schemas/SubscriptionEventType"}
         "400": {$ref: "#/components/responses/ValidationError"}
         "401": {$ref: "#/components/responses/Unauthorized"}
     get:
@@ -1025,7 +1025,7 @@ paths:
               properties:
                 url: {type: string, format: uri}
                 enabled: {type: boolean}
-                events: {type: array, items: {$ref: "#/components/schemas/EventType"}}
+                events: {type: array, items: {$ref: "#/components/schemas/SubscriptionEventType"}}
       responses:
         "200": {description: Updated, content: {application/json: {schema: {$ref: "#/components/schemas/Envelope"}}}}
         "400": {$ref: "#/components/responses/ValidationError"}
@@ -1547,6 +1547,23 @@ components:
               orders: {type: integer}
               gross_sales: {type: string}
     EventType:
+      description: "Delivered event types; test.ping is produced only by POST /webhooks/{webhook_id}/test, not a subscription option."
+      type: string
+      enum:
+        - order.created
+        - order.failed
+        - order.cancelled
+        - delivery.pending
+        - delivery.completed
+        - delivery.failed
+        - refund.created
+        - product.updated
+        - product.disabled
+        - product.enabled
+        - product.deleted
+        - stock.updated
+        - test.ping
+    SubscriptionEventType:
       type: string
       enum:
         - order.created
@@ -1567,7 +1584,7 @@ components:
         webhook_id: {type: string, example: "WHK-00000001"}
         url: {type: string, format: uri}
         enabled: {type: boolean}
-        events: {type: array, items: {$ref: "#/components/schemas/EventType"}}
+        events: {type: array, items: {$ref: "#/components/schemas/SubscriptionEventType"}}
         created_at: {type: string}
         updated_at: {type: string}
     WebhookAnalytics:
