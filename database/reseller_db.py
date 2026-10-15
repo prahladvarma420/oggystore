@@ -124,6 +124,30 @@ def from_cents(cents: int) -> str:
 
 # ------------------------------------------------------------------ schema
 
+def ensure_reseller_deposit_table():
+    """Additive deposit records; processed_txs remains the global payment claim."""
+    cur, conn = get_cursor(), get_conn()
+    cur.execute("""CREATE TABLE IF NOT EXISTS reseller_deposits(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reseller_id INTEGER NOT NULL REFERENCES resellers(id) ON DELETE RESTRICT,
+        method TEXT NOT NULL CHECK(method IN ('bep20','trc20','binance')),
+        amount REAL NOT NULL, expected_amount REAL NOT NULL, actual_amount REAL,
+        address TEXT NOT NULL, memo TEXT,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','paid','expired','cancelled')),
+        txid TEXT, expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+        confirmed_at TEXT, credited_amount_cents INTEGER,
+        ledger_transaction_id INTEGER REFERENCES reseller_wallet_transactions(id) ON DELETE RESTRICT,
+        audit_logged INTEGER NOT NULL DEFAULT 0,
+        notification_status TEXT
+    )""")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_reseller_deposits_status ON reseller_deposits(status)')
+    cur.execute('CREATE UNIQUE INDEX IF NOT EXISTS uq_reseller_deposits_tx ON reseller_deposits(method,txid)')
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_reseller_deposits_pending ON reseller_deposits(reseller_id) WHERE status='pending'")
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_reseller_deposits_memo ON reseller_deposits(memo)')
+    cur.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('payment.namespace.lock','1')")
+    conn.commit()
+
+
 def ensure_reseller_tables():
     """Create the 9 reseller tables + indexes. Idempotent; called from init_db().
 
@@ -312,6 +336,8 @@ def ensure_reseller_tables():
     ):
         cur.execute(stmt)
 
+    ensure_reseller_deposit_table()
+
     # Limits configuration columns (Phase 2) — additive, idempotent. These are
     # CONFIG only: the enforcement engine arrives with the public API.
     _safe_add_column("resellers", "rate_limit_per_min", "INTEGER NOT NULL DEFAULT 60")
@@ -445,17 +471,20 @@ def list_resellers(status=None, limit: int = 100, offset: int = 0):
     return _ds(_RESELLER_COLS, cur.fetchall())
 
 
-def set_reseller_status(reseller_id: int, status: str) -> bool:
-    """Activate/suspend/close. Rowcount-verified like the existing code."""
+def set_reseller_status(reseller_id: int, status: str, *, expected_status: str = None) -> bool:
+    """Activate/suspend/close; optional expected status is a conditional claim."""
     if status not in RESELLER_STATUSES:
         raise ValueError(f"invalid reseller status: {status}")
     conn, cur = get_conn(), get_cursor()
-    cur.execute(
-        "UPDATE resellers SET status=?, updated=? WHERE id=?",
-        (status, now_text(), reseller_id),
-    )
+    sql = "UPDATE resellers SET status=?, updated=? WHERE id=?"
+    params = (status, now_text(), reseller_id)
+    if expected_status is not None:
+        sql += " AND status=?"
+        params += (expected_status,)
+    cur.execute(sql, params)
+    changed = cur.rowcount > 0
     conn.commit()
-    return cur.rowcount > 0
+    return changed
 
 
 # ------------------------------------------------------------------ API keys
@@ -1827,7 +1856,7 @@ def _sales_analytics(where: str, params: tuple, refund_where: str,
 
 def get_reseller_sales_analytics(reseller_id: int, date_from: str = None,
                                  date_to: str = None, days: int = 30,
-                                 product_id: int = None) -> dict:
+                                 product_id: int = None, *, include_breakdowns: bool = True) -> dict:
     """Sales analytics for ONE reseller (reseller-safe, index-bounded).
 
     product_id (optional, server-resolved): drill down to one product.
@@ -1862,6 +1891,16 @@ def get_reseller_sales_analytics(reseller_id: int, date_from: str = None,
     out = _sales_analytics(where, tuple(params), "t.reseller_id=?", (rid,),
                            refund_window=(ref_lo, ref_hi))
 
+    # Display-ready summary is shared with the API. Telegram needs counts,
+    # not product identifiers: omit breakdowns to avoid the API's legacy
+    # public-ID self-healing writes in this strictly read-only view.
+    for k in ("gross_sales", "completed_sales", "net_sales", "avg_order_value"):
+        out[k] = from_cents(out[f"{k}_cents"])
+    out["refunds_total"] = from_cents(out["refunds_total_cents"])
+    out["currency"] = "USDT"
+    if not include_breakdowns:
+        return out
+
     cur = get_cursor()
     # top products by units sold (bounded scope)
     cur.execute(
@@ -1894,11 +1933,6 @@ def get_reseller_sales_analytics(reseller_id: int, date_from: str = None,
         {"date": str(d), "orders": int(c), "gross_sales": from_cents(int(g))}
         for d, c, g in cur.fetchall()
     ]
-    # display-ready money strings (existing convention)
-    for k in ("gross_sales", "completed_sales", "net_sales", "avg_order_value"):
-        out[k] = from_cents(out[f"{k}_cents"])
-    out["refunds_total"] = from_cents(out["refunds_total_cents"])
-    out["currency"] = "USDT"
     return out
 
 
@@ -2699,7 +2733,7 @@ def list_api_logs(reseller_id: int = None, limit: int = 50, offset: int = 0):
 
 
 def log_security_event(reseller_id, event_type: str, ip: str = None,
-                       user_agent: str = None, description: str = ""):
+                       user_agent: str = None, description: str = "", *, commit: bool = True):
     """Append-only security event log: auth failures, rate-limit hits,
     replay attempts, suspicious payloads, etc."""
     conn, cur = get_conn(), get_cursor()
@@ -2709,7 +2743,8 @@ def log_security_event(reseller_id, event_type: str, ip: str = None,
         "VALUES(?,?,?,?,?,?)",
         (reseller_id, event_type, ip, user_agent, description or "", now_text()),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return cur.lastrowid
 
 
@@ -2759,7 +2794,9 @@ def apply_reseller_action(reseller_id: int, action: str):
     current = row["status"]
     if current not in allowed_from:
         return False, f"Cannot {action} a reseller whose status is '{current}'.", current
-    set_reseller_status(reseller_id, target)
+    if not set_reseller_status(reseller_id, target, expected_status=current):
+        latest = get_reseller(reseller_id)
+        return False, "Reseller status changed; refresh and retry.", (latest or {}).get("status")
     return True, f"Reseller is now {target}.", target
 
 
