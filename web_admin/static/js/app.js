@@ -1299,6 +1299,13 @@ async function viewSettings() {
       </label>
       <p class="muted" style="margin:8px 0 0">Emergency kill switch for every protected reseller API request. Individual reseller controls still apply.</p>
     </div>
+    <div class="callout" style="margin-bottom:16px">
+      <label style="display:flex;align-items:center;gap:10px">
+        <input type="checkbox" id="set_reseller_api_owner_notify" style="width:auto" ${String(s.reseller_api_owner_notify ?? "1") === "1" ? "checked" : ""}>
+        <b>Reseller API owner order notifications</b>
+      </label>
+      <p class="muted">Best-effort Telegram alerts for new reseller orders, failures and cancellations. Does not affect reseller status notifications or API availability.</p>
+    </div>
     <div class="form-grid">${fields}</div>
     <div class="toolbar" style="margin-top:18px"><div class="grow"></div><button class="btn btn-glow" id="setSave"><span>Save Settings</span></button></div>
   </div>
@@ -1317,6 +1324,7 @@ async function viewSettings() {
     const body = {};
     Object.keys(SETTING_LABELS).forEach(k => body[k] = val("set_" + k));
     body.reseller_api_global_enabled = document.getElementById("set_reseller_api_global_enabled").checked ? "1" : "0";
+    body.reseller_api_owner_notify = document.getElementById("set_reseller_api_owner_notify").checked ? "1" : "0";
     const r = await post("/api/settings/update", body);
     if (r.ok) toast("Settings saved"); else toast("Failed", "err");
   };
