@@ -1,1 +1,0 @@
-python set_admin_password.py
