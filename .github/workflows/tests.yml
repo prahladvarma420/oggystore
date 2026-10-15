@@ -1,0 +1,49 @@
+name: Isolated Python tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: Install test dependencies (no production credentials)
+        run: python -m pip install -r requirements.txt pyyaml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: examples/package-lock.json
+      - name: Install locked receiver and schema-validation dependencies
+        run: npm ci --prefix examples --ignore-scripts
+      - name: Install local browser for WebAdmin regression tests
+        run: python -m playwright install --with-deps chromium
+      - name: Check generated client-kit artifacts
+        run: python tools/generate_client_kit.py --check
+      - name: Run every suite in an isolated process
+        run: python tools/run_tests.py
+      - name: Compile repository Python files
+        if: always()
+        run: python -m compileall .
+      - name: Check established patch markers
+        if: always()
+        run: python verify_patch.py
+      - name: Scan repository for likely committed credentials
+        if: always()
+        run: python tools/scan_secrets.py
+      - name: Preserve suite logs and structured results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-test-results
+          path: .test-results/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
