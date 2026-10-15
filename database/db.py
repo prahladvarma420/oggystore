@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import re as _re
 import sqlite3
+import math
 from config import DB_PATH, ADMIN_ID
 import os
 from utils.crypto import encrypt_text, decrypt_text
@@ -916,9 +917,28 @@ def get_balance(user_id: int) -> float:
 
 
 def add_balance(user_id: int, amount: float):
+    if isinstance(amount, bool):
+        raise ValueError("Amount must be finite")
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("Amount must be finite") from None
+    if not math.isfinite(amount):
+        raise ValueError("Amount must be finite")
     ensure_user_id(user_id)
-    cur.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, user_id))
-    conn.commit()
+    from database.pgcompat import atomic, use_postgres
+    with atomic(get_conn()):
+        sql = "SELECT balance FROM users WHERE user_id=?"
+        if use_postgres():
+            sql += " FOR UPDATE"
+        cur.execute(sql, (user_id,))
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            raise ValueError("Existing balance is invalid")
+        updated = float(row[0]) + amount
+        if not math.isfinite(updated):
+            raise ValueError("Resulting balance must be finite")
+        cur.execute("UPDATE users SET balance=? WHERE user_id=?", (updated, user_id))
 
 
 def is_owner(user_id: int) -> bool:
@@ -1744,16 +1764,27 @@ def get_referral_stats(user_id: int):
 
 
 def create_withdrawal_request(user_id: int, amount: float, wallet: str):
-    amount = float(amount)
-    cur.execute("SELECT COALESCE(referral_pending,0) FROM users WHERE user_id=?", (user_id,))
-    row = cur.fetchone()
-    pending = float(row[0] if row else 0)
-    if amount <= 0 or pending < amount:
+    # Referral withdrawal is separate from customer/reseller spend balances.
+    # Claim the available amount and insert the request in one existing atomic
+    # boundary; a process-local lock cannot protect multiple bot/admin workers.
+    if isinstance(amount, bool):
         return None
-    cur.execute("UPDATE users SET referral_pending=referral_pending-? WHERE user_id=?", (amount, user_id))
-    cur.execute("INSERT INTO withdrawal_requests(user_id, amount, wallet) VALUES(?,?,?)", (user_id, amount, encrypt_text(wallet)))
-    conn.commit()
-    return cur.lastrowid
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(amount) or amount <= 0:
+        return None
+    from database.pgcompat import atomic
+    with atomic(get_conn()):
+        cur.execute("UPDATE users SET referral_pending=COALESCE(referral_pending,0)-? "
+                    "WHERE user_id=? AND COALESCE(referral_pending,0)>=?",
+                    (amount, user_id, amount))
+        if cur.rowcount != 1:
+            return None
+        cur.execute("INSERT INTO withdrawal_requests(user_id, amount, wallet) VALUES(?,?,?)",
+                    (user_id, amount, encrypt_text(wallet)))
+        return cur.lastrowid
 
 
 def get_user_withdrawals(user_id: int, limit: int = 10):
@@ -1786,18 +1817,26 @@ def get_pending_withdrawals(limit: int = 20):
 
 
 def update_withdrawal_status(withdrawal_id: int, status: str, note: str = ""):
-    cur.execute("SELECT user_id, amount, status FROM withdrawal_requests WHERE id=?", (withdrawal_id,))
-    row = cur.fetchone()
-    if not row:
-        return None
-    user_id, amount, old_status = row
-    if old_status != "pending":
-        return (user_id, amount, old_status)
-    if status == "rejected":
-        cur.execute("UPDATE users SET referral_pending=COALESCE(referral_pending,0)+? WHERE user_id=?", (amount, user_id))
-    cur.execute("UPDATE withdrawal_requests SET status=?, admin_note=?, updated=? WHERE id=?", (status, note, now_text(), withdrawal_id))
-    conn.commit()
-    return (user_id, amount, old_status)
+    if status not in ("approved", "rejected"):
+        raise ValueError("Invalid withdrawal status")
+    from database.pgcompat import atomic
+    with atomic(get_conn()):
+        cur.execute("SELECT user_id, amount, status FROM withdrawal_requests WHERE id=?", (withdrawal_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        user_id, amount, old_status = row
+        if old_status != "pending":
+            return (user_id, amount, old_status)
+        cur.execute("UPDATE withdrawal_requests SET status=?, admin_note=?, updated=? "
+                    "WHERE id=? AND status='pending'", (status, note, now_text(), withdrawal_id))
+        if cur.rowcount != 1:
+            cur.execute("SELECT status FROM withdrawal_requests WHERE id=?", (withdrawal_id,))
+            latest = cur.fetchone()
+            return (user_id, amount, latest[0]) if latest else None
+        if status == "rejected":
+            cur.execute("UPDATE users SET referral_pending=COALESCE(referral_pending,0)+? WHERE user_id=?", (amount, user_id))
+        return (user_id, amount, "pending")
 
 
 def set_product_featured(product_id: int, featured: int):
