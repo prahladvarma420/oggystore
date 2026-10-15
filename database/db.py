@@ -1536,7 +1536,7 @@ def close_ticket(ticket_id: int):
 
 
 
-def _release_claims(stock_ids):
+def _release_claims(stock_ids, *, commit=True):
     """Undo our own claims when an order cannot be fully filled."""
     for sid in stock_ids:
         try:
@@ -1545,14 +1545,17 @@ def _release_claims(stock_ids):
                 (sid,),
             )
         except Exception:
+            if not commit:
+                raise
             pass
-    try:
-        conn.commit()
-    except Exception:
-        pass
+    if commit:
+        try:
+            conn.commit()
+        except Exception:
+            pass
 
 
-def reserve_stock_items(product_id: int, user_id: int, quantity: int):
+def reserve_stock_items(product_id: int, user_id: int, quantity: int, *, commit=True):
     """Atomically claim `quantity` unsold codes. Returns None if it cannot.
 
     FIX43 - the old version did SELECT ... WHERE sold=0 and then a blind
@@ -1621,13 +1624,14 @@ def reserve_stock_items(product_id: int, user_id: int, quantity: int):
         _threading.Event().wait(0.05 * stalls)
 
     if len(claimed) < quantity:
-        _release_claims([sid for sid, _d in claimed])
+        _release_claims([sid for sid, _d in claimed], commit=commit)
         return None
 
-    try:
-        conn.commit()
-    except Exception:
-        pass
+    if commit:
+        try:
+            conn.commit()
+        except Exception:
+            pass
     return [decrypt_text(d) for _sid, d in claimed]
 
 
@@ -2337,41 +2341,38 @@ def smart_dashboard_stats():
 
 def create_backup_zip():
     import zipfile
-    import shutil
+    import os
     from pathlib import Path
     from datetime import datetime
-    try:
-        from config import DB_PATH
-    except Exception:
-        DB_PATH = "shopbot.db"
+    from utils.backup import create_backup
 
     backup_dir = Path("backups")
-    backup_dir.mkdir(exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir.mkdir(exist_ok=True, mode=0o700)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     backup_path = backup_dir / f"shopbot_backup_{ts}.zip"
-
-    with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as z:
-        wrote_data = False
-        db_file = Path(DB_PATH)
-        if db_file.exists():
-            z.write(db_file, db_file.name)
-            wrote_data = True
-
-        # On Postgres there is no .db file -- embed a portable JSON snapshot
-        # instead, otherwise the zip contained no data at all.
-        if not wrote_data:
-            from utils.backup import create_backup
+    # Backend selection and WAL-safe copying belong to the shared helper.
+    # Never prefer a stale local .db over the live PostgreSQL connection.
+    fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as archive, zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
             snap = Path(create_backup())
             z.write(snap, snap.name)
-
-        for p in Path(".").glob(".env*"):
-            if p.is_file():
-                z.write(p, p.name)
-
+            # Preserve existing operator archive behavior: these files contain
+            # secrets and MUST remain private; configured web encryption fails
+            # closed instead of returning an unencrypted archive as success.
+            for p in Path(".").glob(".env*"):
+                if p.is_file():
+                    z.write(p, p.name)
+    except Exception:
+        backup_path.unlink(missing_ok=True)
+        raise
     return str(backup_path)
 
 
 def restore_backup_zip(zip_path: str):
+    from database.pgcompat import use_postgres
+    if use_postgres():
+        return False, "PostgreSQL restore requires the verified native database recovery procedure; this ZIP importer is SQLite-only."
     import zipfile
     from pathlib import Path
     try:
@@ -3605,3 +3606,11 @@ def assign_product_category(product_id, category_id):
         )
     conn.commit()
     return True
+
+
+def write_admin_action(action, details="", admin_id=0, *, cursor=None):
+    """Shared owner audit sink; caller controls the commit / recovery boundary."""
+    c = cursor if cursor is not None else get_cursor()
+    c.execute("INSERT INTO admin_logs(admin_id, action, details) VALUES(?,?,?)",
+              (admin_id, action, details))
+    return c.lastrowid
