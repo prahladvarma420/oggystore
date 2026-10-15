@@ -1225,6 +1225,13 @@ def _webhook_analytics(where: str, params: tuple, days: int,
     if since is None:
         since = (_now() - _td(days=max(1, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
 
+    # Stored times are TEXT on both supported backends. SQLite strftime is
+    # not a PostgreSQL function; preserve whole-second epoch semantics there.
+    latency_sql = ("FLOOR(EXTRACT(EPOCH FROM (processed_at)::timestamp)) "
+                   "- FLOOR(EXTRACT(EPOCH FROM (created_at)::timestamp))"
+                   if _pgcompat.use_postgres() else
+                   "CAST(strftime('%s', processed_at) AS INTEGER) "
+                   "- CAST(strftime('%s', created_at) AS INTEGER)")
     scope = f"{where} AND created_at >= ?"
     cur.execute(
         f"""
@@ -1234,8 +1241,7 @@ def _webhook_analytics(where: str, params: tuple, days: int,
          SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),
          SUM(CASE WHEN attempts > 1 THEN 1 ELSE 0 END),
          AVG(CASE WHEN status='delivered' AND processed_at IS NOT NULL
-             THEN CAST(strftime('%s', processed_at) AS INTEGER)
-                  - CAST(strftime('%s', created_at) AS INTEGER) END)
+             THEN {latency_sql} END)
         FROM webhook_outbox WHERE {scope}
         """,
         params + (since,),
