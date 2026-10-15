@@ -2245,9 +2245,20 @@ def api_user_detail(uid):
 @app.route("/api/users/<int:uid>/balance", methods=["POST"])
 @login_required
 def api_user_balance(uid):
-    d = request.get_json(force=True)
-    amount = float(d.get("amount") or 0)
-    botdb.add_balance(uid, amount)  # negative to remove
+    d = request.get_json(silent=True)
+    import math
+    if not isinstance(d, dict) or isinstance(d.get("amount"), bool):
+        return jsonify({"ok": False, "error": "Finite amount required"}), 400
+    try:
+        amount = float(d.get("amount", 0))
+    except (TypeError, ValueError, OverflowError):
+        return jsonify({"ok": False, "error": "Finite amount required"}), 400
+    if not math.isfinite(amount):
+        return jsonify({"ok": False, "error": "Finite amount required"}), 400
+    try:
+        botdb.add_balance(uid, amount)  # negative to remove
+    except ValueError:
+        return jsonify({"ok": False, "error": "Resulting balance must be finite"}), 400
     log_action("adjust_balance", "user {} {:+.2f}".format(uid, amount))
     if d.get("notify") and amount:
         verb = "added to" if amount > 0 else "removed from"
@@ -2606,10 +2617,13 @@ def api_withdrawal_action(wid):
     if status not in ("approved", "rejected"):
         return jsonify({"ok": False, "error": "bad status"}), 400
     res = botdb.update_withdrawal_status(wid, status, note)
-    if res:
-        uid, amount, old = res
-        tg_send(uid, "\U0001f4b8 <b>Withdrawal {}</b>\nAmount: ${}\n{}".format(
-            status, amount, note or ""))
+    if not res:
+        return jsonify({"ok": False, "error": "Withdrawal not found"}), 404
+    uid, amount, old = res
+    if old != "pending":
+        return jsonify({"ok": False, "error": "Withdrawal already processed", "status": old}), 409
+    tg_send(uid, "\U0001f4b8 <b>Withdrawal {}</b>\nAmount: ${}\n{}".format(
+        status, amount, html.escape(str(note or ""), quote=False)))
     log_action("withdrawal_" + status, "#{}".format(wid))
     return jsonify({"ok": True})
 
@@ -3155,6 +3169,15 @@ def api_analytics():
 @app.route("/api/security")
 @login_required
 def api_security():
+    backup_key = os.getenv("BACKUP_ENCRYPTION_KEY") or os.getenv("DATA_ENCRYPTION_KEY")
+    backup_key_valid = False
+    if backup_key:
+        try:
+            from cryptography.fernet import Fernet
+            Fernet(backup_key.encode())
+            backup_key_valid = True
+        except Exception:
+            pass  # Status only; never log the key or raw crypto exception.
     admin = get_web_admin_by_id(session.get("wa_id")) or {}
     logs = q("SELECT username, ip, user_agent, status, created FROM web_login_log "
              "ORDER BY id DESC LIMIT 25")
@@ -3173,7 +3196,7 @@ def api_security():
                     "rate_limit": RATE_LIMIT_MAX,
                     "recovery_remaining": rec,
                     "encrypted_at_rest": bool(os.getenv("DATA_ENCRYPTION_KEY")),
-                    "encrypted_backups": bool(os.getenv("BACKUP_ENCRYPTION_KEY") or os.getenv("DATA_ENCRYPTION_KEY")),
+                    "encrypted_backups": backup_key_valid,
                     "logs": logs})
 
 
