@@ -12,6 +12,9 @@ requires a separately verified provider or pg_dump/pg_restore procedure.
 """
 
 import gzip
+import html
+import logging
+import re
 import json
 import os
 import sqlite3
@@ -58,6 +61,7 @@ def _dump_postgres(backup_path: Path) -> str:
     from database.pgcompat import connect, atomic
     conn = connect(DB_PATH)
     created = False
+    stage = "begin_snapshot"
     try:
         cur = conn.cursor()
         # Existing atomic helper also disables pgcompat's single-statement
@@ -66,17 +70,28 @@ def _dump_postgres(backup_path: Path) -> str:
             cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             snapshot = {"_meta": {"created": datetime.now().isoformat(),
                                   "backend": "postgres", "version": 1}, "tables": {}}
-            for table in _list_tables(cur):
+            stage = "enumerate_tables"
+            tables = _list_tables(cur)
+            for table in tables:
+                stage = "read_table"
                 identifier = '"' + table.replace('"', '""') + '"'
                 cur.execute('SELECT * FROM ' + identifier)
                 rows = cur.fetchall()
                 cols = [d[0] for d in cur.description] if cur.description else []
                 snapshot["tables"][table] = {"columns": cols, "rows": [list(r) for r in rows]}
+        stage = "write_snapshot"
         fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         created = True
         with os.fdopen(fd, 'wb') as raw, gzip.open(raw, "wt", encoding="utf-8") as fh:
             json.dump(snapshot, fh, default=str)
-    except Exception:
+    except Exception as exc:
+        sqlstate = str(getattr(exc, "sqlstate", "") or "")
+        if not re.fullmatch(r"[0-9A-Z]{5}", sqlstate):
+            sqlstate = "unavailable"
+        # Never print DSNs, query parameters, table contents or raw exceptions.
+        logging.getLogger(__name__).error(
+            "backup_snapshot_failed stage=%s error_type=%s sqlstate=%s",
+            stage, type(exc).__name__, sqlstate)
         if created:
             try:
                 backup_path.unlink()
@@ -157,7 +172,7 @@ async def scheduled_backup(context):
             from config import ADMIN_ID
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
-                text="\u26a0\ufe0f <b>Automatic backup failed</b>\n\n<code>{}</code>".format(exc),
+                text="\u26a0\ufe0f <b>Automatic backup failed</b>\n\n<code>{}</code>".format(html.escape(str(exc))),
                 parse_mode="HTML",
             )
         except Exception:
