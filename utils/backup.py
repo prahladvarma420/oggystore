@@ -2,20 +2,21 @@
 
 Works with BOTH storage backends:
 
-- SQLite (no DATABASE_URL)  -> file copy of the .db, exactly like before.
+- SQLite (no DATABASE_URL)  -> consistent online backup including committed WAL.
 - PostgreSQL (DATABASE_URL) -> portable JSON snapshot of every table.
 
-The previous version only ever did shutil.copy2(DB_PATH). On Railway the bot
-runs on Postgres, so shopbot.db does not exist and create_backup() raised
-FileNotFoundError on every single run -- silently, because every caller wrapped
-it in a bare except. Backups had never worked in production.
+SQLite snapshots use the online backup API rather than copying only the main
+file. PostgreSQL exports include all public base tables in one consistent view.
+This helper does not establish native PostgreSQL restore/PITR coverage; that
+requires a separately verified provider or pg_dump/pg_restore procedure.
 """
 
 import gzip
 import json
 import os
-import shutil
+import sqlite3
 from datetime import datetime
+from contextlib import closing
 from pathlib import Path
 
 from config import DB_PATH, BACKUP_DIR, MAX_BACKUPS
@@ -29,7 +30,7 @@ except Exception:
 
 def _backup_dir() -> Path:
     d = Path(BACKUP_DIR)
-    d.mkdir(parents=True, exist_ok=True)
+    d.mkdir(parents=True, exist_ok=True, mode=0o700)
     return d
 
 
@@ -49,51 +50,67 @@ def _list_tables(cur):
 
 
 def _dump_postgres(backup_path: Path) -> str:
-    """Write a gzipped JSON snapshot of every table.
+    """Complete public-table snapshot from ONE read-only repeatable-read view.
 
-    Uses its own short-lived connection so it never shares the global cursor
-    with live bot traffic (the global cursor is not concurrency safe).
+    This is a data export, not a native PostgreSQL schema/PITR backup. Any table
+    failure aborts the artifact; callers must not accept an incomplete export.
     """
-    from database.pgcompat import connect
-
+    from database.pgcompat import connect, atomic
     conn = connect(DB_PATH)
+    created = False
     try:
         cur = conn.cursor()
-        snapshot = {
-            "_meta": {
-                "created": datetime.now().isoformat(),
-                "backend": "postgres",
-                "version": 1,
-            },
-            "tables": {},
-        }
-        for table in _list_tables(cur):
-            try:
-                cur.execute('SELECT * FROM "{}"'.format(table))
+        # Existing atomic helper also disables pgcompat's single-statement
+        # reconnect/retry while the complete consistent snapshot is in flight.
+        with atomic(conn):
+            cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            snapshot = {"_meta": {"created": datetime.now().isoformat(),
+                                  "backend": "postgres", "version": 1}, "tables": {}}
+            for table in _list_tables(cur):
+                identifier = '"' + table.replace('"', '""') + '"'
+                cur.execute('SELECT * FROM ' + identifier)
                 rows = cur.fetchall()
                 cols = [d[0] for d in cur.description] if cur.description else []
-                snapshot["tables"][table] = {
-                    "columns": cols,
-                    "rows": [list(r) for r in rows],
-                }
-            except Exception as exc:
-                snapshot["tables"][table] = {"error": str(exc)}
-
-        with gzip.open(backup_path, "wt", encoding="utf-8") as fh:
+                snapshot["tables"][table] = {"columns": cols, "rows": [list(r) for r in rows]}
+        fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+        with os.fdopen(fd, 'wb') as raw, gzip.open(raw, "wt", encoding="utf-8") as fh:
             json.dump(snapshot, fh, default=str)
+    except Exception:
+        if created:
+            try:
+                backup_path.unlink()
+            except OSError:
+                pass
+        raise RuntimeError("Database snapshot failed; no complete backup was produced.") from None
     finally:
         try:
             conn.close()
         except Exception:
             pass
-
     return str(backup_path)
+
+
+def _copy_sqlite_snapshot(source: Path, target: Path) -> None:
+    """Online backup API includes committed WAL frames, unlike copying .db."""
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
+    try:
+        with closing(sqlite3.connect(source.resolve().as_uri() + '?mode=ro', uri=True,
+                                     timeout=30)) as src, closing(sqlite3.connect(target)) as dst:
+            src.backup(dst)
+    except Exception:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        raise RuntimeError("Database snapshot failed; no complete backup was produced.") from None
 
 
 def create_backup() -> str:
     """Create a backup and return its path. Raises on genuine failure."""
     backup_dir = _backup_dir()
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
 
     if use_postgres():
         backup_path = backup_dir / "shopbot_backup_{}.json.gz".format(timestamp)
@@ -103,7 +120,7 @@ def create_backup() -> str:
         if not db_path.exists():
             raise FileNotFoundError("Database not found: {}".format(DB_PATH))
         backup_path = backup_dir / "shopbot_backup_{}.db".format(timestamp)
-        shutil.copy2(db_path, backup_path)
+        _copy_sqlite_snapshot(db_path, backup_path)
         result = str(backup_path)
 
     cleanup_old_backups()
