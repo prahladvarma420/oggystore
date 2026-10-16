@@ -84,13 +84,14 @@ class ResellerDepositTests(unittest.TestCase):
         d=self.deposit();uid=self.uid+2000000;db.ensure_user_id(uid);rs=rdb.create_reseller('Other',uid,'other');rdb.set_reseller_status(rs['id'],'active');other=self.deposit(uid=uid)
         self.assertEqual(self.credit(d)['result'],'posted');self.assertEqual(self.credit(other,tx=self.tx())['result'],'payment_used');self.assertEqual(rdb.get_wallet_balance_cents(rs['id']),0)
     def test_customer_then_reseller_collision(self):
-        d=self.deposit();uid,cid,amount,memo=self.customer(expected=d['expected_amount']);tx=self.tx()
+        d=self.deposit();uid,cid,amount,memo=self.customer();tx=self.tx()
         self.assertTrue(shared.settle_customer(cid,'trc20',tx,amount)['posted']);self.assertEqual(self.credit(d)['result'],'payment_used');self.assertEqual(db.get_balance(uid),10);self.assert_clean()
     def test_reseller_then_customer_collision(self):
-        d=self.deposit();uid,cid,amount,memo=self.customer(expected=d['expected_amount']);self.credit(d)
+        d=self.deposit();uid,cid,amount,memo=self.customer();self.credit(d)
         self.assertFalse(shared.settle_customer(cid,'trc20',self.tx(),amount)['posted']);self.assertEqual(db.get_balance(uid),0);self.assert_clean()
     def test_cross_table_concurrent_claim_one_winner(self):
-        d=self.deposit();uid,cid,amount,memo=self.customer(expected=d['expected_amount'])
+        d=self.deposit();uid,cid,amount,memo=self.customer()
+        # Distinct invoice amounts; deliberately reuse the TX ID to race the global claim.
         results=self.race([lambda:self.credit(d),lambda:shared.settle_customer(cid,'trc20',self.tx(),amount)])
         self.assertEqual(sum(v.get('posted',v.get('result')=='posted') for v in results),1)
         self.assertEqual(rdb.get_wallet_balance_cents(self.rid)+round(db.get_balance(uid)*100),1000);self.assert_clean()
