@@ -805,40 +805,9 @@ async def start_direct_checkout(q, uid: int, pid: int, quantity: int = 1, method
         return
 
     total_price = calculate_total_price(pid, float(price), quantity)
-    unique_amount = round(total_price + random.randint(100, 999) / 100000, 5)
-
-    note_code = None
-    if method == "binance":
-        # Binance Pay is matched by a unique NOTE code (not a padded amount),
-        # so charge the exact total.
-        unique_amount = round(total_price, 2)
-        import string as _string
-        for _ in range(25):
-            _code = "".join(random.choice(_string.ascii_uppercase + _string.digits) for _ in range(8))
-            cur.execute("SELECT 1 FROM deposits WHERE note_code=?", (_code,))
-            if not cur.fetchone():
-                note_code = _code
-                break
-        if not note_code:
-            note_code = "".join(random.choice(_string.ascii_uppercase + _string.digits) for _ in range(8))
-
-    # Cancel older pending direct checkout invoices for this user.
-    cur.execute(
-        "UPDATE deposits SET status='cancelled' WHERE user_id=? AND status='pending'",
-        (uid,)
-    )
-
-    cur.execute(
-        """
-        INSERT INTO deposits(user_id, amount, unique_amount, status, created, checkout_product_id, checkout_quantity, checkout_done, method, note_code)
-        VALUES(?,?,?,?,?,?,?,0,?,?)
-        """,
-        (uid, total_price, unique_amount, "pending", now_text(), pid, quantity, method, note_code)
-    )
-    conn.commit()
-
-    cur.execute("SELECT last_insert_rowid()")
-    invoice_id = cur.fetchone()[0]
+    from payments.deposit_settlement import customer_checkout_invoice
+    invoice_id, unique_amount, note_code = customer_checkout_invoice(
+        uid, total_price, method, pid, quantity)
 
     if method == "binance":
         from config import BINANCE_PAY_ID
