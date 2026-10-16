@@ -258,13 +258,13 @@ async def _recent_pay_transactions():
 
 
 async def check_binance_payments(context):
-    await reseller_deps.post_credit_actions(context)
+    await reseller_deps.post_credit_actions_safely(context)
     if not _config_ready():
         return
 
     pending = _pending_binance_deposits()
-    if not pending and not reseller_deps.has_receiving_records("binance"):
-        await reseller_deps.post_credit_actions(context)
+    if not pending and not reseller_deps.has_receiving_records_safely("binance"):
+        await reseller_deps.post_credit_actions_safely(context)
         return
 
     try:
@@ -279,7 +279,7 @@ async def check_binance_payments(context):
         try:
             if _is_usdt_only(tx): observations.append((str(tx.get("transactionId", "")), Decimal(str(tx.get("amount",0))), json.dumps(tx,default=str)))
         except Exception: pass
-    await reseller_deps.process_observations(context,"binance",observations)
+    await reseller_deps.process_observations_safely(context,"binance",observations)
 
     tol = Decimal(str(PAYMENT_AMOUNT_TOLERANCE))
 

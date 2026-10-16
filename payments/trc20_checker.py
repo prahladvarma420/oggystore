@@ -216,13 +216,13 @@ async def _deliver_trc20_checkout(context, deposit_id, user_id, base_amount, pai
 
 
 async def check_trc20_payments(context):
-    await reseller_deps.post_credit_actions(context)
+    await reseller_deps.post_credit_actions_safely(context)
     if not _config_ready():
         return
 
     pending = _pending_trc20_deposits()
-    if not pending and not reseller_deps.has_receiving_records("trc20"):
-        await reseller_deps.post_credit_actions(context)
+    if not pending and not reseller_deps.has_receiving_records_safely("trc20"):
+        await reseller_deps.post_credit_actions_safely(context)
         return
 
     try:
@@ -232,7 +232,7 @@ async def check_trc20_payments(context):
         log_error("TRC20 payment checker fetch error", extra="category=provider_unavailable")
         return
 
-    await reseller_deps.process_observations(context,"trc20",[(tx,paid,"") for tx,paid in transfers])
+    await reseller_deps.process_observations_safely(context,"trc20",[(tx,paid,"") for tx,paid in transfers])
 
     for deposit_id, user_id, base_amount, unique_amount, checkout_product_id, checkout_quantity, checkout_done in pending:
         for tx_id, paid_amount in transfers:

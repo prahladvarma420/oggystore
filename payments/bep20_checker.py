@@ -1,4 +1,4 @@
-from payments.deposit_settlement import settle_customer_safely as settle_customer
+from payments.deposit_settlement import settle_customer_safely as settle_customer, payment_id
 from payments import reseller_deposits as reseller_deps
 import html
 import time
@@ -251,8 +251,15 @@ def _get_recent_incoming_usdt_logs(context, w3: Web3):
                     continue
                 if not start <= int(entry["blockNumber"]) <= end:
                     continue
+                # One malformed RPC event must not abort all customer and
+                # reseller payments before either settlement loop is reached.
+                payment_id("bep20", _tx_hash_from_log(entry))
+                paid = _amount_from_log(entry)
+                if not paid.is_finite() or paid <= 0 or paid * (Decimal(10) ** USDT_DECIMALS) >= 2**256:
+                    continue
                 logs.append(entry)
-            except (ValueError, TypeError, KeyError):
+            except (ValueError, TypeError, KeyError, ArithmeticError):
+                log_error("BEP20 provider event ignored", extra="category=invalid_transfer_event")
                 continue
         scanned_to = end
         start = end + 1
@@ -336,7 +343,7 @@ async def _notify_admin_error(context, message: str):
 
 
 async def check_payments(context):
-    await reseller_deps.post_credit_actions(context)
+    await reseller_deps.post_credit_actions_safely(context)
     if not _config_ready():
         return
 
@@ -347,8 +354,8 @@ async def check_payments(context):
         log_error("Deposit expiry sweep failed", exc)
 
     pending = _pending_deposits()
-    if not pending and not reseller_deps.has_receiving_records("bep20"):
-        await reseller_deps.post_credit_actions(context)
+    if not pending and not reseller_deps.has_receiving_records_safely("bep20"):
+        await reseller_deps.post_credit_actions_safely(context)
         # Keep the wallet balance baseline fresh even while idle, so that a
         # payment sent immediately after invoice creation is detected by the
         # balance check on the very next cycle.
@@ -458,7 +465,7 @@ async def check_payments(context):
     except Exception as exc:
         log_error("Pending invoice re-read failed", exc)
 
-    reseller_scan_ok = await reseller_deps.process_observations(context,"bep20",[(_tx_hash_from_log(log),_amount_from_log(log),"") for log in logs])
+    reseller_scan_ok = await reseller_deps.process_observations_safely(context,"bep20",[(_tx_hash_from_log(log),_amount_from_log(log),"") for log in logs])
 
     credited_ids = set()
     for deposit_id, user_id, base_amount, unique_amount, checkout_product_id, checkout_quantity, checkout_done in pending:
@@ -475,7 +482,7 @@ async def check_payments(context):
 
             settled = settle_customer(deposit_id, 'bep20', tx_hash, paid_amount)
             if not settled["posted"]:
-                if settled.get("deferred"): reseller_scan_ok = False
+                if settled.get("deferred") or settled.get("review"): reseller_scan_ok = False
                 continue
 
             tx_link = f"https://bscscan.com/tx/{tx_hash}"

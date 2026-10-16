@@ -28,10 +28,13 @@ def payment_id(method,value,*,fallback=False):
     if method=='binance' and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9:_.-]{0,99}',v):return v
     raise ValueError('Invalid verified payment identifier.')
 
-def allocate(cur,amount,method):
+def allocate(cur,amount,method,*,checkout=False):
     """Same suffix/memo alphabet as customers; shared lock caller, no network."""
     for _ in range(25):
-        value=round(float(amount)+random.randint(1000,9999)/1000000,6)
+        # Direct checkout keeps its existing five-decimal payment display.
+        # Both workflows reserve the same namespace under the same DB lock.
+        value=(round(float(amount)+random.randint(100,999)/100000,5) if checkout
+               else round(float(amount)+random.randint(1000,9999)/1000000,6))
         # Disjoint tolerance windows prevent cross-invoice ambiguous matches.
         cutoff=(now()-timedelta(days=2)).strftime('%Y-%m-%d %H:%M:%S')
         # Keep identifiers reserved over the trusted feeds' existing 2-day
@@ -58,6 +61,38 @@ def matches(method,paid,expected,memo=None,notes=''):
     if method=='binance':return bool(memo and str(memo).upper() in str(notes).upper()) and paid>=expected-TOL
     return abs(paid-expected)<=TOL
 
+
+def payment_target_is_unique(cur, method, paid, notes, workflow, deposit_id):
+    """Fail closed for legacy collisions; caller holds payment.namespace.lock.
+
+    Never choose a wallet by scan order. Recent cancelled/expired/paid identifiers
+    also remain reserved over the providers' existing two-day lookback. No claim
+    or money mutation occurs when independently verified evidence is ambiguous.
+    """
+    cutoff=(now()-timedelta(days=2)).strftime('%Y-%m-%d %H:%M:%S')
+    cur.execute("""SELECT id,amount,unique_amount,note_code FROM deposits
+        WHERE (method=? OR (?='bep20' AND (method IS NULL OR method='')))
+          AND (status='pending' OR created>=?)""",(method,method,cutoff))
+    candidates=[('customer',r[0],r[1] if method=='binance' else r[2],r[3])
+                for r in cur.fetchall()]
+    cur.execute("""SELECT id,expected_amount,memo FROM reseller_deposits
+        WHERE method=? AND (status='pending' OR created_at>=?)""",(method,cutoff))
+    candidates += [('reseller',r[0],r[1],r[2]) for r in cur.fetchall()]
+    for namespace,other_id,expected,memo in candidates:
+        if (namespace,other_id)==(workflow,int(deposit_id)):continue
+        try:
+            ambiguous=matches(method,paid,expected,memo,notes)
+        except (ValueError, TypeError, ArithmeticError):
+            # Invalid historical matching data also needs review, not guessing.
+            ambiguous=True
+        if ambiguous:
+            import logging
+            logging.getLogger(__name__).warning(
+                "payment held category=ambiguous_payment_target workflow=%s deposit_id=%s method=%s",
+                workflow,deposit_id,method)
+            return False
+    return True
+
 def claim(cur,method,txid,deposit_id,user_id,paid):
     """Global raw-ID semantics retained; legacy rows without marker fail closed."""
     lookup='LOWER(tx_hash)=?' if method!='binance' else 'tx_hash=?'
@@ -79,6 +114,27 @@ def customer_invoice(uid,amount,method):
         c.execute("INSERT INTO deposits(user_id,amount,unique_amount,status,created,method,note_code) VALUES(?,?,?,'pending',?,?,?)",(uid,amount,value,now_text(),method,memo))
         return int(c.lastrowid),value,memo
 
+
+def customer_checkout_invoice(uid, amount, method, product_id, quantity):
+    """Customer-only orchestration; never writes reseller deposits or balances.
+
+    Preserve direct-checkout cancellation, price, and five-decimal chain amount
+    conventions while reserving identifiers across BOTH invoice tables atomically.
+    Allocation failure rolls back cancellation of the previous payable invoice.
+    """
+    if method not in METHODS:
+        raise ValueError('Unsupported payment method.')
+    with pgcompat.atomic(db.get_conn()):
+        c=db.get_cursor();namespace_lock(c)
+        c.execute("UPDATE deposits SET status='cancelled' WHERE user_id=? AND status='pending'",(uid,))
+        value,memo=allocate(c,amount,method,checkout=True)
+        if method=='binance':value=round(float(amount),2)
+        c.execute("""INSERT INTO deposits(user_id,amount,unique_amount,status,created,
+                     checkout_product_id,checkout_quantity,checkout_done,method,note_code)
+                     VALUES(?,?,?,'pending',?,?,?,0,?,?)""",
+                  (uid,amount,value,now_text(),product_id,quantity,method,memo))
+        return int(c.lastrowid),value,memo
+
 def settle_customer(depid,method,txid,paid,*,notes='',fallback=False):
     """Verify saved matching/eligibility again; credit OR deliver in one commit.
 
@@ -95,6 +151,8 @@ def settle_customer(depid,method,txid,paid,*,notes='',fallback=False):
         if st!='pending' or (saved_method or 'bep20')!=method or str(created)<(now()-timedelta(hours=DEPOSIT_EXPIRE_HOURS)).strftime('%Y-%m-%d %H:%M:%S'):
             return {'posted':False}
         if not matches(method,paid,base if method=='binance' else expected,memo,notes):return {'posted':False}
+        if not payment_target_is_unique(c,method,paid,notes,'customer',depid):
+            return {'posted':False,'review':True,'reason':'ambiguous_payment_target'}
         if fallback:
             # Without transaction evidence, pooled reseller funds cannot safely
             # be separated from customer funds. Hold for logs/owner review while
@@ -132,7 +190,11 @@ def settle_customer_safely(*args, **kwargs):
     """Checker-only isolation: one invoice failure must not kill the whole scan."""
     try:
         return settle_customer(*args, **kwargs)
-    except Exception:
+    except Exception as exc:
         import logging
-        logging.getLogger(__name__).warning("customer deposit settlement deferred deposit_id=%s", args[0])
+        state = str(getattr(exc, "sqlstate", "") or "")
+        state = state if re.fullmatch(r"[0-9A-Z]{5}", state) else "unavailable"
+        logging.getLogger(__name__).warning(
+            "customer deposit settlement deferred deposit_id=%s error_type=%s sqlstate=%s",
+            args[0] if args else "unknown", type(exc).__name__, state)
         return {"posted": False, "deferred": True}

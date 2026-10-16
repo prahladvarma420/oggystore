@@ -4,13 +4,15 @@ No client payment proof accepted. Scanners below consume the existing trusted
 provider feeds. Amount/expiry rules mirror customer helpers. Customer and reseller
 settlement share processed_txs and the same transaction namespace lock.
 """
+import asyncio
 import html,json,re
+import logging
 from datetime import timedelta
 from decimal import Decimal
 from database import db,pgcompat
 import database.reseller_db as rdb
 from utils.timezone import now,now_text
-from .deposit_settlement import METHODS,TOL,namespace_lock,allocate,payment_id,matches,claim
+from .deposit_settlement import METHODS,TOL,namespace_lock,allocate,payment_id,matches,claim,payment_target_is_unique
 
 COLS=('id','reseller_id','method','amount','expected_amount','actual_amount','address','memo','status','txid','expires_at','created_at','confirmed_at','credited_amount_cents','ledger_transaction_id','audit_logged','notification_status')
 class DepositError(ValueError):pass
@@ -128,6 +130,8 @@ def credit_verified(depid,method,txid,paid,*,address,notes=''):
             if saved['status']=='pending':c.execute("UPDATE reseller_deposits SET status='expired' WHERE id=?",(depid,))
             return {'result':'late_review'}
         if not matches(method,paid,saved['expected_amount'],saved['memo'],notes):return {'result':'unmatched'}
+        if not payment_target_is_unique(c,method,paid,notes,'reseller',depid):
+            return {'result':'ambiguous_review'}
         if not claim(c,method,txid,-int(depid),None,paid):return {'result':'payment_used'}
         reference=f'dep.{method}.{txid}'
         credited=min(paid,Decimal(str(saved['amount']))) if method=='binance' else Decimal(str(saved['amount']))
@@ -156,6 +160,7 @@ async def process_observations(context,method,observations):
             try:
                 if not matches(method,paid,saved['expected_amount'],saved['memo'],notes):continue
                 result=credit_verified(saved['id'],method,txid,paid,address=destination(method),notes=notes)
+                if result['result']=='ambiguous_review':complete=False
                 if result['result']=='late_review':
                     # Dedup review breadcrumbs in existing settings, not a credit.
                     key=f'deposit.review.{method}.{saved["id"]}.{payment_id(method,txid)}'
@@ -167,7 +172,7 @@ async def process_observations(context,method,observations):
                 import logging
                 logging.getLogger(__name__).warning('reseller deposit settlement deferred deposit_id=%s method=%s',saved['id'],method)
     # Defined by 17.2; no financial logic in Telegram handlers.
-    await post_credit_actions(context)
+    await post_credit_actions_safely(context)
     return complete
 
 async def post_credit_actions(context):
@@ -200,3 +205,48 @@ async def post_credit_actions(context):
         except Exception:
             import logging
             logging.getLogger(__name__).warning('deposit post-credit actions deferred deposit_id=%s',depid)
+
+
+# Scanner fault boundaries: shared verification/ownership still fails CLOSED in
+# deposit_settlement. An optional reseller sweep or notification failure must
+# never abort settlement of an independently verified customer payment.
+POST_CREDIT_BUDGET_SECONDS = 2.0
+
+
+def _log_checker_failure(stage, method, exc):
+    state = str(getattr(exc, "sqlstate", "") or "")
+    state = state if re.fullmatch(r"[0-9A-Z]{5}", state) else "unavailable"
+    logging.getLogger(__name__).warning(
+        "reseller checker deferred stage=%s method=%s error_type=%s sqlstate=%s",
+        stage, method, type(exc).__name__, state)
+
+
+async def post_credit_actions_safely(context):
+    """Bound optional Telegram work; already committed credits are untouched.
+
+    At-most-once notification claims retain the existing semantics: timeout or a
+    crash may lose an optional message, never the payment or owner audit record.
+    """
+    try:
+        await asyncio.wait_for(post_credit_actions(context), POST_CREDIT_BUDGET_SECONDS)
+    except Exception as exc:
+        _log_checker_failure("post_credit", "all", exc)
+
+
+def has_receiving_records_safely(method):
+    try:
+        return has_receiving_records(method)
+    except Exception as exc:
+        _log_checker_failure("pending_lookup", method, exc)
+        # Unknown is NOT idle: fetch the trusted feed and try both workflows.
+        return True
+
+
+async def process_observations_safely(context, method, observations):
+    try:
+        return await process_observations(context, method, observations)
+    except Exception as exc:
+        _log_checker_failure("settlement_sweep", method, exc)
+        # In particular BEP20 must not move its durable scan checkpoint over
+        # observations whose reseller settlement has not completed.
+        return False
