@@ -1,0 +1,548 @@
+[
+  {
+    "suite": "test_abuse_monitoring",
+    "exit": 0,
+    "tests": 25,
+    "seconds": 0.47
+  },
+  {
+    "suite": "test_api_authentication_service",
+    "exit": 5,
+    "tests": 0,
+    "seconds": 0.11
+  },
+  {
+    "suite": "test_api_authorization_service",
+    "exit": 0,
+    "tests": 14,
+    "seconds": 0.37
+  },
+  {
+    "suite": "test_api_balance_service",
+    "exit": 0,
+    "tests": 4,
+    "seconds": 0.37
+  },
+  {
+    "suite": "test_api_endpoint_rate_limit",
+    "exit": 0,
+    "tests": 22,
+    "seconds": 0.37
+  },
+  {
+    "suite": "test_api_observability_service",
+    "exit": 5,
+    "tests": 0,
+    "seconds": 0.06
+  },
+  {
+    "suite": "test_api_product_catalog_service",
+    "exit": 0,
+    "tests": 16,
+    "seconds": 0.37
+  },
+  {
+    "suite": "test_api_product_detail_service",
+    "exit": 0,
+    "tests": 12,
+    "seconds": 0.31
+  },
+  {
+    "suite": "test_api_product_performance",
+    "exit": 0,
+    "tests": 5,
+    "seconds": 0.42
+  },
+  {
+    "suite": "test_api_product_security_review",
+    "exit": 0,
+    "tests": 12,
+    "seconds": 0.57
+  },
+  {
+    "suite": "test_api_rate_limit",
+    "exit": 0,
+    "tests": 45,
+    "seconds": 0.72
+  },
+  {
+    "suite": "test_api_v1_balance",
+    "exit": 0,
+    "tests": 7,
+    "seconds": 0.52
+  },
+  {
+    "suite": "test_api_v1_delivery",
+    "exit": 0,
+    "tests": 6,
+    "seconds": 0.52
+  },
+  {
+    "suite": "test_api_v1_foundation",
+    "exit": 0,
+    "tests": 18,
+    "seconds": 0.42
+  },
+  {
+    "suite": "test_api_v1_products",
+    "exit": 0,
+    "tests": 14,
+    "seconds": 0.57
+  },
+  {
+    "suite": "test_api_v1_webhooks",
+    "exit": 0,
+    "tests": 44,
+    "seconds": 0.52
+  },
+  {
+    "suite": "test_auth_abuse_protection",
+    "exit": 0,
+    "tests": 20,
+    "seconds": 0.32
+  },
+  {
+    "suite": "test_event_generation",
+    "exit": 0,
+    "tests": 16,
+    "seconds": 0.11
+  },
+  {
+    "suite": "test_financial_abuse_protection",
+    "exit": 0,
+    "tests": 19,
+    "seconds": 0.37
+  },
+  {
+    "suite": "test_phase10_final",
+    "exit": 0,
+    "tests": 92,
+    "seconds": 0.62
+  },
+  {
+    "suite": "test_phase11_pricing",
+    "exit": 0,
+    "tests": 47,
+    "seconds": 0.42
+  },
+  {
+    "suite": "test_phase11_product_catalog",
+    "exit": 0,
+    "tests": 77,
+    "seconds": 0.47
+  },
+  {
+    "suite": "test_phase11_product_customization",
+    "exit": 0,
+    "tests": 71,
+    "seconds": 0.92
+  },
+  {
+    "suite": "test_phase11_product_import",
+    "exit": 0,
+    "tests": 48,
+    "seconds": 0.42
+  },
+  {
+    "suite": "test_phase11_stock",
+    "exit": 0,
+    "tests": 39,
+    "seconds": 0.72
+  },
+  {
+    "suite": "test_phase11_sync",
+    "exit": 0,
+    "tests": 48,
+    "seconds": 0.42
+  },
+  {
+    "suite": "test_phase11_webhooks",
+    "exit": 0,
+    "tests": 53,
+    "seconds": 0.42
+  },
+  {
+    "suite": "test_phase12_concurrency_idempotency",
+    "exit": 0,
+    "tests": 19,
+    "seconds": 2.12
+  },
+  {
+    "suite": "test_phase12_failure_recovery",
+    "exit": 0,
+    "tests": 24,
+    "seconds": 0.92
+  },
+  {
+    "suite": "test_phase12_final_regression",
+    "exit": 0,
+    "tests": 9,
+    "seconds": 0.92
+  },
+  {
+    "suite": "test_phase12_order_creation",
+    "exit": 0,
+    "tests": 21,
+    "seconds": 0.82
+  },
+  {
+    "suite": "test_phase12_order_lifecycle",
+    "exit": 0,
+    "tests": 9,
+    "seconds": 0.62
+  },
+  {
+    "suite": "test_phase12_order_mapping",
+    "exit": 0,
+    "tests": 15,
+    "seconds": 0.82
+  },
+  {
+    "suite": "test_phase12_order_security_audit",
+    "exit": 0,
+    "tests": 18,
+    "seconds": 0.77
+  },
+  {
+    "suite": "test_phase12_quotes",
+    "exit": 0,
+    "tests": 13,
+    "seconds": 0.72
+  },
+  {
+    "suite": "test_phase12_wallet_integration",
+    "exit": 0,
+    "tests": 13,
+    "seconds": 0.77
+  },
+  {
+    "suite": "test_phase13_api_security_audit",
+    "exit": 0,
+    "tests": 10,
+    "seconds": 1.07
+  },
+  {
+    "suite": "test_phase13_documentation",
+    "exit": 0,
+    "tests": 8,
+    "seconds": 0.72
+  },
+  {
+    "suite": "test_phase13_final_readiness",
+    "exit": 0,
+    "tests": 11,
+    "seconds": 0.87
+  },
+  {
+    "suite": "test_phase13_key_lifecycle",
+    "exit": 0,
+    "tests": 14,
+    "seconds": 0.57
+  },
+  {
+    "suite": "test_phase13_reliability",
+    "exit": 0,
+    "tests": 11,
+    "seconds": 1.17
+  },
+  {
+    "suite": "test_phase13_response_standardization",
+    "exit": 0,
+    "tests": 14,
+    "seconds": 0.87
+  },
+  {
+    "suite": "test_phase13_sandbox",
+    "exit": 0,
+    "tests": 8,
+    "seconds": 0.72
+  },
+  {
+    "suite": "test_phase13_usage_monitoring",
+    "exit": 0,
+    "tests": 8,
+    "seconds": 0.87
+  },
+  {
+    "suite": "test_phase13_versioning",
+    "exit": 0,
+    "tests": 9,
+    "seconds": 0.72
+  },
+  {
+    "suite": "test_phase14_analytics_audit",
+    "exit": 0,
+    "tests": 7,
+    "seconds": 0.97
+  },
+  {
+    "suite": "test_phase14_dashboards",
+    "exit": 0,
+    "tests": 7,
+    "seconds": 1.02
+  },
+  {
+    "suite": "test_phase14_exports",
+    "exit": 0,
+    "tests": 9,
+    "seconds": 0.77
+  },
+  {
+    "suite": "test_phase14_financial_analytics",
+    "exit": 0,
+    "tests": 6,
+    "seconds": 0.72
+  },
+  {
+    "suite": "test_phase14_product_analytics",
+    "exit": 0,
+    "tests": 4,
+    "seconds": 0.67
+  },
+  {
+    "suite": "test_phase14_sales_analytics",
+    "exit": 0,
+    "tests": 6,
+    "seconds": 0.67
+  },
+  {
+    "suite": "test_phase14_usage_analytics",
+    "exit": 0,
+    "tests": 6,
+    "seconds": 0.67
+  },
+  {
+    "suite": "test_phase14_webhook_analytics",
+    "exit": 0,
+    "tests": 5,
+    "seconds": 0.77
+  },
+  {
+    "suite": "test_phase15_adjustments",
+    "exit": 0,
+    "tests": 14,
+    "seconds": 0.62
+  },
+  {
+    "suite": "test_phase15_final",
+    "exit": 0,
+    "tests": 10,
+    "seconds": 0.72
+  },
+  {
+    "suite": "test_phase15_financial_security_audit",
+    "exit": 0,
+    "tests": 10,
+    "seconds": 0.97
+  },
+  {
+    "suite": "test_phase15_invoice_statement_api",
+    "exit": 0,
+    "tests": 8,
+    "seconds": 0.77
+  },
+  {
+    "suite": "test_phase15_invoices",
+    "exit": 0,
+    "tests": 15,
+    "seconds": 0.77
+  },
+  {
+    "suite": "test_phase15_ledger_integration",
+    "exit": 0,
+    "tests": 12,
+    "seconds": 0.72
+  },
+  {
+    "suite": "test_phase15_reconciliation",
+    "exit": 0,
+    "tests": 14,
+    "seconds": 0.67
+  },
+  {
+    "suite": "test_phase15_statements",
+    "exit": 0,
+    "tests": 13,
+    "seconds": 0.77
+  },
+  {
+    "suite": "test_phase15_webadmin_financial",
+    "exit": 0,
+    "tests": 9,
+    "seconds": 0.72
+  },
+  {
+    "suite": "test_phase16_admin_cancel_order",
+    "exit": 0,
+    "tests": 28,
+    "seconds": 1.02
+  },
+  {
+    "suite": "test_phase16_admin_fail_order",
+    "exit": 0,
+    "tests": 10,
+    "seconds": 0.82
+  },
+  {
+    "suite": "test_phase16_email_products",
+    "exit": 0,
+    "tests": 35,
+    "seconds": 1.72
+  },
+  {
+    "suite": "test_phase16_final",
+    "exit": 0,
+    "tests": 29,
+    "seconds": 7.18
+  },
+  {
+    "suite": "test_phase16_fulfillment_wiring",
+    "exit": 0,
+    "tests": 37,
+    "seconds": 8.54
+  },
+  {
+    "suite": "test_phase16_manual_delivery",
+    "exit": 0,
+    "tests": 27,
+    "seconds": 0.97
+  },
+  {
+    "suite": "test_phase16_refund_quarantine",
+    "exit": 0,
+    "tests": 5,
+    "seconds": 0.67
+  },
+  {
+    "suite": "test_phase16_security_audit",
+    "exit": 0,
+    "tests": 33,
+    "seconds": 2.67
+  },
+  {
+    "suite": "test_phase16_status_truthfulness",
+    "exit": 0,
+    "tests": 31,
+    "seconds": 1.12
+  },
+  {
+    "suite": "test_phase16_supplier_fulfillment",
+    "exit": 0,
+    "tests": 40,
+    "seconds": 2.27
+  },
+  {
+    "suite": "test_phase17_reseller_deposits",
+    "exit": 0,
+    "tests": 29,
+    "seconds": 1.77
+  },
+  {
+    "suite": "test_phase17_telegram_catalog",
+    "exit": 0,
+    "tests": 23,
+    "seconds": 0.82
+  },
+  {
+    "suite": "test_phase17_telegram_stats_docs",
+    "exit": 0,
+    "tests": 28,
+    "seconds": 0.82
+  },
+  {
+    "suite": "test_phase17_topup_flow",
+    "exit": 0,
+    "tests": 24,
+    "seconds": 1.67
+  },
+  {
+    "suite": "test_request_validation",
+    "exit": 0,
+    "tests": 39,
+    "seconds": 0.42
+  },
+  {
+    "suite": "test_reseller_api_infrastructure",
+    "exit": 0,
+    "tests": 8,
+    "seconds": 0.52
+  },
+  {
+    "suite": "test_reseller_quotas",
+    "exit": 0,
+    "tests": 15,
+    "seconds": 0.37
+  },
+  {
+    "suite": "test_reseller_wallet_concurrency",
+    "exit": 0,
+    "tests": 7,
+    "seconds": 0.47
+  },
+  {
+    "suite": "test_reseller_wallet_idempotency",
+    "exit": 0,
+    "tests": 7,
+    "seconds": 0.31
+  },
+  {
+    "suite": "test_reseller_wallet_security_review",
+    "exit": 0,
+    "tests": 10,
+    "seconds": 0.37
+  },
+  {
+    "suite": "test_reseller_wallet_service",
+    "exit": 0,
+    "tests": 9,
+    "seconds": 0.37
+  },
+  {
+    "suite": "test_reseller_wallet_web_admin",
+    "exit": 0,
+    "tests": 7,
+    "seconds": 0.32
+  },
+  {
+    "suite": "test_security_audit",
+    "exit": 0,
+    "tests": 63,
+    "seconds": 0.47
+  },
+  {
+    "suite": "test_webhook_delivery_worker",
+    "exit": 0,
+    "tests": 26,
+    "seconds": 0.26
+  },
+  {
+    "suite": "test_webhook_idempotency",
+    "exit": 0,
+    "tests": 25,
+    "seconds": 0.26
+  },
+  {
+    "suite": "test_webhook_management_api",
+    "exit": 0,
+    "tests": 48,
+    "seconds": 0.57
+  },
+  {
+    "suite": "test_webhook_outbox",
+    "exit": 0,
+    "tests": 29,
+    "seconds": 0.16
+  },
+  {
+    "suite": "test_webhook_retry",
+    "exit": 0,
+    "tests": 36,
+    "seconds": 0.31
+  },
+  {
+    "suite": "test_webhook_signature",
+    "exit": 0,
+    "tests": 32,
+    "seconds": 0.11
+  }
+]
