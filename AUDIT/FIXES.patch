@@ -1,0 +1,1399 @@
+--- a/database/db.py
++++ b/database/db.py
+@@ -1,6 +1,7 @@
+ from datetime import datetime, timedelta
+ import re as _re
+ import sqlite3
++import math
+ from config import DB_PATH, ADMIN_ID
+ import os
+ from utils.crypto import encrypt_text, decrypt_text
+@@ -916,9 +917,28 @@
+ 
+ 
+ def add_balance(user_id: int, amount: float):
++    if isinstance(amount, bool):
++        raise ValueError("Amount must be finite")
++    try:
++        amount = float(amount)
++    except (TypeError, ValueError, OverflowError):
++        raise ValueError("Amount must be finite") from None
++    if not math.isfinite(amount):
++        raise ValueError("Amount must be finite")
+     ensure_user_id(user_id)
+-    cur.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, user_id))
+-    conn.commit()
++    from database.pgcompat import atomic, use_postgres
++    with atomic(get_conn()):
++        sql = "SELECT balance FROM users WHERE user_id=?"
++        if use_postgres():
++            sql += " FOR UPDATE"
++        cur.execute(sql, (user_id,))
++        row = cur.fetchone()
++        if not row or row[0] is None:
++            raise ValueError("Existing balance is invalid")
++        updated = float(row[0]) + amount
++        if not math.isfinite(updated):
++            raise ValueError("Resulting balance must be finite")
++        cur.execute("UPDATE users SET balance=? WHERE user_id=?", (updated, user_id))
+ 
+ 
+ def is_owner(user_id: int) -> bool:
+@@ -1744,16 +1764,27 @@
+ 
+ 
+ def create_withdrawal_request(user_id: int, amount: float, wallet: str):
+-    amount = float(amount)
+-    cur.execute("SELECT COALESCE(referral_pending,0) FROM users WHERE user_id=?", (user_id,))
+-    row = cur.fetchone()
+-    pending = float(row[0] if row else 0)
+-    if amount <= 0 or pending < amount:
++    # Referral withdrawal is separate from customer/reseller spend balances.
++    # Claim the available amount and insert the request in one existing atomic
++    # boundary; a process-local lock cannot protect multiple bot/admin workers.
++    if isinstance(amount, bool):
+         return None
+-    cur.execute("UPDATE users SET referral_pending=referral_pending-? WHERE user_id=?", (amount, user_id))
+-    cur.execute("INSERT INTO withdrawal_requests(user_id, amount, wallet) VALUES(?,?,?)", (user_id, amount, encrypt_text(wallet)))
+-    conn.commit()
+-    return cur.lastrowid
++    try:
++        amount = float(amount)
++    except (TypeError, ValueError, OverflowError):
++        return None
++    if not math.isfinite(amount) or amount <= 0:
++        return None
++    from database.pgcompat import atomic
++    with atomic(get_conn()):
++        cur.execute("UPDATE users SET referral_pending=COALESCE(referral_pending,0)-? "
++                    "WHERE user_id=? AND COALESCE(referral_pending,0)>=?",
++                    (amount, user_id, amount))
++        if cur.rowcount != 1:
++            return None
++        cur.execute("INSERT INTO withdrawal_requests(user_id, amount, wallet) VALUES(?,?,?)",
++                    (user_id, amount, encrypt_text(wallet)))
++        return cur.lastrowid
+ 
+ 
+ def get_user_withdrawals(user_id: int, limit: int = 10):
+@@ -1786,18 +1817,26 @@
+ 
+ 
+ def update_withdrawal_status(withdrawal_id: int, status: str, note: str = ""):
+-    cur.execute("SELECT user_id, amount, status FROM withdrawal_requests WHERE id=?", (withdrawal_id,))
+-    row = cur.fetchone()
+-    if not row:
+-        return None
+-    user_id, amount, old_status = row
+-    if old_status != "pending":
+-        return (user_id, amount, old_status)
+-    if status == "rejected":
+-        cur.execute("UPDATE users SET referral_pending=COALESCE(referral_pending,0)+? WHERE user_id=?", (amount, user_id))
+-    cur.execute("UPDATE withdrawal_requests SET status=?, admin_note=?, updated=? WHERE id=?", (status, note, now_text(), withdrawal_id))
+-    conn.commit()
+-    return (user_id, amount, old_status)
++    if status not in ("approved", "rejected"):
++        raise ValueError("Invalid withdrawal status")
++    from database.pgcompat import atomic
++    with atomic(get_conn()):
++        cur.execute("SELECT user_id, amount, status FROM withdrawal_requests WHERE id=?", (withdrawal_id,))
++        row = cur.fetchone()
++        if not row:
++            return None
++        user_id, amount, old_status = row
++        if old_status != "pending":
++            return (user_id, amount, old_status)
++        cur.execute("UPDATE withdrawal_requests SET status=?, admin_note=?, updated=? "
++                    "WHERE id=? AND status='pending'", (status, note, now_text(), withdrawal_id))
++        if cur.rowcount != 1:
++            cur.execute("SELECT status FROM withdrawal_requests WHERE id=?", (withdrawal_id,))
++            latest = cur.fetchone()
++            return (user_id, amount, latest[0]) if latest else None
++        if status == "rejected":
++            cur.execute("UPDATE users SET referral_pending=COALESCE(referral_pending,0)+? WHERE user_id=?", (amount, user_id))
++        return (user_id, amount, "pending")
+ 
+ 
+ def set_product_featured(product_id: int, featured: int):
+--- a/database/pgcompat.py
++++ b/database/pgcompat.py
+@@ -265,6 +265,11 @@
+         self._idx = 0
+ 
+     @property
++    def description(self):
++        """DB-API column metadata, retained after our eager row buffering."""
++        return self._pg.description
++
++    @property
+     def rowcount(self):
+         try:
+             return self._pg.rowcount
+@@ -352,14 +357,12 @@
+ 
+     def _load(self):
+         self._idx = 0
++        self._rows = []
+         if self._pg.description:
+             cols = self._cols()
+-            try:
+-                self._rows = [_Row(cols, r) for r in self._pg.fetchall()]
+-            except Exception:
+-                self._rows = []
+-        else:
+-            self._rows = []
++            # A failed fetch is NOT a valid empty result. Propagate so atomic
++            # operations/backup snapshots roll back rather than losing rows.
++            self._rows = [_Row(cols, r) for r in self._pg.fetchall()]
+ 
+     def fetchone(self):
+         if not self._rows or self._idx >= len(self._rows):
+--- a/database/reseller_db.py
++++ b/database/reseller_db.py
+@@ -1225,6 +1225,13 @@
+     if since is None:
+         since = (_now() - _td(days=max(1, int(days)))).strftime("%Y-%m-%d %H:%M:%S")
+ 
++    # Stored times are TEXT on both supported backends. SQLite strftime is
++    # not a PostgreSQL function; preserve whole-second epoch semantics there.
++    latency_sql = ("FLOOR(EXTRACT(EPOCH FROM (processed_at)::timestamp)) "
++                   "- FLOOR(EXTRACT(EPOCH FROM (created_at)::timestamp))"
++                   if _pgcompat.use_postgres() else
++                   "CAST(strftime('%s', processed_at) AS INTEGER) "
++                   "- CAST(strftime('%s', created_at) AS INTEGER)")
+     scope = f"{where} AND created_at >= ?"
+     cur.execute(
+         f"""
+@@ -1234,8 +1241,7 @@
+          SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),
+          SUM(CASE WHEN attempts > 1 THEN 1 ELSE 0 END),
+          AVG(CASE WHEN status='delivered' AND processed_at IS NOT NULL
+-             THEN CAST(strftime('%s', processed_at) AS INTEGER)
+-                  - CAST(strftime('%s', created_at) AS INTEGER) END)
++             THEN {latency_sql} END)
+         FROM webhook_outbox WHERE {scope}
+         """,
+         params + (since,),
+--- a/utils/backup.py
++++ b/utils/backup.py
+@@ -12,6 +12,9 @@
+ """
+ 
+ import gzip
++import html
++import logging
++import re
+ import json
+ import os
+ import sqlite3
+@@ -58,6 +61,7 @@
+     from database.pgcompat import connect, atomic
+     conn = connect(DB_PATH)
+     created = False
++    stage = "begin_snapshot"
+     try:
+         cur = conn.cursor()
+         # Existing atomic helper also disables pgcompat's single-statement
+@@ -66,17 +70,28 @@
+             cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+             snapshot = {"_meta": {"created": datetime.now().isoformat(),
+                                   "backend": "postgres", "version": 1}, "tables": {}}
+-            for table in _list_tables(cur):
++            stage = "enumerate_tables"
++            tables = _list_tables(cur)
++            for table in tables:
++                stage = "read_table"
+                 identifier = '"' + table.replace('"', '""') + '"'
+                 cur.execute('SELECT * FROM ' + identifier)
+                 rows = cur.fetchall()
+                 cols = [d[0] for d in cur.description] if cur.description else []
+                 snapshot["tables"][table] = {"columns": cols, "rows": [list(r) for r in rows]}
++        stage = "write_snapshot"
+         fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+         created = True
+         with os.fdopen(fd, 'wb') as raw, gzip.open(raw, "wt", encoding="utf-8") as fh:
+             json.dump(snapshot, fh, default=str)
+-    except Exception:
++    except Exception as exc:
++        sqlstate = str(getattr(exc, "sqlstate", "") or "")
++        if not re.fullmatch(r"[0-9A-Z]{5}", sqlstate):
++            sqlstate = "unavailable"
++        # Never print DSNs, query parameters, table contents or raw exceptions.
++        logging.getLogger(__name__).error(
++            "backup_snapshot_failed stage=%s error_type=%s sqlstate=%s",
++            stage, type(exc).__name__, sqlstate)
+         if created:
+             try:
+                 backup_path.unlink()
+@@ -157,7 +172,7 @@
+             from config import ADMIN_ID
+             await context.bot.send_message(
+                 chat_id=ADMIN_ID,
+-                text="\u26a0\ufe0f <b>Automatic backup failed</b>\n\n<code>{}</code>".format(exc),
++                text="\u26a0\ufe0f <b>Automatic backup failed</b>\n\n<code>{}</code>".format(html.escape(str(exc))),
+                 parse_mode="HTML",
+             )
+         except Exception:
+--- a/web_admin/app.py
++++ b/web_admin/app.py
+@@ -882,6 +882,34 @@
+             return jsonify({"ok": False, "error": "Owner permission required"}), 403
+         return fn(*a, **kw)
+     return wrapper
++
++
++def _safe_admin_read(fn):
++    """Operational reads fail as safe JSON, not an HTML traceback / false zero.
++
++    This does not repair a database failure or suppress its HTTP500. Logs give
++    the operator a reference, operation, exception type and SQLSTATE only.
++    """
++    @wraps(fn)
++    def wrapped(*args, **kwargs):
++        from werkzeug.exceptions import HTTPException
++        try:
++            return fn(*args, **kwargs)
++        except HTTPException:
++            raise
++        except Exception as exc:
++            error_id = secrets.token_hex(8)
++            sqlstate = str(getattr(exc, "sqlstate", "") or "")
++            if not re.fullmatch(r"[0-9A-Z]{5}", sqlstate):
++                sqlstate = "unavailable"
++            app.logger.error("admin_read_failed error_id=%s operation=%s error_type=%s sqlstate=%s",
++                             error_id, fn.__name__, type(exc).__name__, sqlstate)
++            response = jsonify({"ok": False,
++                "error": "Internal server error. Check WebAdmin logs.", "error_id": error_id})
++            response.status_code = 500
++            response.headers["X-Error-ID"] = error_id
++            return response
++    return wrapped
+ 
+ 
+ @app.route("/login", methods=["GET", "POST"])
+@@ -2245,9 +2273,20 @@
+ @app.route("/api/users/<int:uid>/balance", methods=["POST"])
+ @login_required
+ def api_user_balance(uid):
+-    d = request.get_json(force=True)
+-    amount = float(d.get("amount") or 0)
+-    botdb.add_balance(uid, amount)  # negative to remove
++    d = request.get_json(silent=True)
++    import math
++    if not isinstance(d, dict) or isinstance(d.get("amount"), bool):
++        return jsonify({"ok": False, "error": "Finite amount required"}), 400
++    try:
++        amount = float(d.get("amount", 0))
++    except (TypeError, ValueError, OverflowError):
++        return jsonify({"ok": False, "error": "Finite amount required"}), 400
++    if not math.isfinite(amount):
++        return jsonify({"ok": False, "error": "Finite amount required"}), 400
++    try:
++        botdb.add_balance(uid, amount)  # negative to remove
++    except ValueError:
++        return jsonify({"ok": False, "error": "Resulting balance must be finite"}), 400
+     log_action("adjust_balance", "user {} {:+.2f}".format(uid, amount))
+     if d.get("notify") and amount:
+         verb = "added to" if amount > 0 else "removed from"
+@@ -2606,10 +2645,13 @@
+     if status not in ("approved", "rejected"):
+         return jsonify({"ok": False, "error": "bad status"}), 400
+     res = botdb.update_withdrawal_status(wid, status, note)
+-    if res:
+-        uid, amount, old = res
+-        tg_send(uid, "\U0001f4b8 <b>Withdrawal {}</b>\nAmount: ${}\n{}".format(
+-            status, amount, note or ""))
++    if not res:
++        return jsonify({"ok": False, "error": "Withdrawal not found"}), 404
++    uid, amount, old = res
++    if old != "pending":
++        return jsonify({"ok": False, "error": "Withdrawal already processed", "status": old}), 409
++    tg_send(uid, "\U0001f4b8 <b>Withdrawal {}</b>\nAmount: ${}\n{}".format(
++        status, amount, html.escape(str(note or ""), quote=False)))
+     log_action("withdrawal_" + status, "#{}".format(wid))
+     return jsonify({"ok": True})
+ 
+@@ -3155,6 +3197,15 @@
+ @app.route("/api/security")
+ @login_required
+ def api_security():
++    backup_key = os.getenv("BACKUP_ENCRYPTION_KEY") or os.getenv("DATA_ENCRYPTION_KEY")
++    backup_key_valid = False
++    if backup_key:
++        try:
++            from cryptography.fernet import Fernet
++            Fernet(backup_key.encode())
++            backup_key_valid = True
++        except Exception:
++            pass  # Status only; never log the key or raw crypto exception.
+     admin = get_web_admin_by_id(session.get("wa_id")) or {}
+     logs = q("SELECT username, ip, user_agent, status, created FROM web_login_log "
+              "ORDER BY id DESC LIMIT 25")
+@@ -3173,7 +3224,7 @@
+                     "rate_limit": RATE_LIMIT_MAX,
+                     "recovery_remaining": rec,
+                     "encrypted_at_rest": bool(os.getenv("DATA_ENCRYPTION_KEY")),
+-                    "encrypted_backups": bool(os.getenv("BACKUP_ENCRYPTION_KEY") or os.getenv("DATA_ENCRYPTION_KEY")),
++                    "encrypted_backups": backup_key_valid,
+                     "logs": logs})
+ 
+ 
+@@ -3520,6 +3571,119 @@
+         },
+         "usage": usage,
+     })
++
++
++# Reseller-detail operational reads. Owner sessions are checked independently of
++# public API keys; no financial/lifecycle writes, delivery content or supplier HTTP.
++def _reseller_read_window(default_limit=25, clamp_limit=False):
++    try:
++        limit = int(request.args.get("limit", default_limit))
++        if clamp_limit:
++            limit = min(limit, 200)
++        offset = int(request.args.get("offset", 0))
++        if not 1 <= limit <= 200 or not 0 <= offset <= 2147483647:
++            raise ValueError
++        return limit, offset
++    except (TypeError, ValueError):
++        raise ValueError("limit must be 1–200 and offset must be non-negative") from None
++
++
++def _reseller_read_page(rows, limit, offset):
++    more = len(rows) > limit
++    return rows[:limit], {"has_more": more, "next_offset": offset + limit if more else None,
++                          "limit": limit, "offset": offset}
++
++
++@app.route("/api/resellers/<pubid>/orders")
++@login_required
++@owner_required
++def api_reseller_orders(pubid):
++    res = _resolve_reseller(pubid)
++    if not res:
++        return jsonify({"ok": False, "error": "Reseller not found"}), 404
++    from types import SimpleNamespace
++    from reseller_api.services.order_query import parse_order_list_params, get_order_list, OrderQueryError
++    from reseller_api.services.order_status import OrderStatusUnavailable
++    try:
++        params = parse_order_list_params(request.args)
++        # The shared read service uses ONLY reseller_id. This scope is supplied
++        # after owner authorization, not a forged reseller authentication context.
++        orders, pagination = get_order_list(SimpleNamespace(reseller_id=res["id"]), params)
++    except OrderQueryError as exc:
++        return jsonify({"ok": False, "error": exc.message}), exc.status
++    except OrderStatusUnavailable:
++        return jsonify({"ok": False, "error": "Order status is temporarily unavailable"}), 503
++    # Add historical display names for ONLY the returned scoped page. The
++    # public serializer intentionally omits names; reuse its status/money logic.
++    if orders:
++        order_ids = [int(row["order_id"].split("-", 1)[1]) for row in orders]
++        placeholders = ",".join("?" for _ in order_ids)
++        names = {int(row["id"]): row["product_name"] for row in q(
++            "SELECT id, product_name FROM orders WHERE reseller_id=? "
++            "AND source='reseller_api' AND id IN (" + placeholders + ")",
++            (res["id"], *order_ids))}
++        for row in orders:
++            row["product_name"] = names.get(int(row["order_id"].split("-", 1)[1]), "")
++    return jsonify({"ok": True, "orders": orders, "pagination": pagination})
++
++
++@app.route("/api/resellers/<pubid>/api-logs")
++@login_required
++@owner_required
++def api_reseller_api_logs(pubid):
++    res = _resolve_reseller(pubid)
++    if not res:
++        return jsonify({"ok": False, "error": "Reseller not found"}), 404
++    try:
++        limit, offset = _reseller_read_window()
++    except ValueError as exc:
++        return jsonify({"ok": False, "error": str(exc)}), 400
++    from reseller_api.services.observability import sanitize_log_text
++    rows = rdb.list_api_logs(reseller_id=res["id"], limit=limit + 1, offset=offset)
++    rows, pagination = _reseller_read_page(rows, limit, offset)
++    # Metadata allow-list: no key IDs, headers, body, IP, user agent or raw query.
++    logs = [{"id": r["id"], "method": sanitize_log_text(r.get("method"), 12),
++             "endpoint": sanitize_log_text(str(r.get("endpoint") or "").split("?", 1)[0].split("#", 1)[0], 300),
++             "status_code": r.get("status_code"), "response_ms": r.get("response_ms"),
++             "created": r.get("created")} for r in rows]
++    return jsonify({"ok": True, "logs": logs, "pagination": pagination})
++
++
++@app.route("/api/resellers/<pubid>/webhooks")
++@login_required
++@owner_required
++@_safe_admin_read
++def api_reseller_webhooks(pubid):
++    res = _resolve_reseller(pubid)
++    if not res:
++        return jsonify({"ok": False, "error": "Reseller not found"}), 404
++    try:
++        limit, offset = _reseller_read_window()
++    except ValueError as exc:
++        return jsonify({"ok": False, "error": str(exc)}), 400
++    from urllib.parse import urlsplit
++    rows = q("SELECT id, url, enabled, created, updated FROM reseller_webhooks "
++             "WHERE reseller_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
++             (res["id"], limit + 1, offset))
++    rows, pagination = _reseller_read_page(rows, limit, offset)
++    hooks = []
++    for row in rows:
++        # Legacy destinations may contain credentials in userinfo/path/query.
++        # Display the origin only, never the stored URL/signing secret.
++        try:
++            parts = urlsplit(row["url"])
++            host = parts.hostname or ""
++            if parts.scheme != "https" or not host:
++                raise ValueError
++            host = "[" + host + "]" if ":" in host else host
++            origin = "https://" + host + ((":" + str(parts.port)) if parts.port else "")
++        except ValueError:
++            origin = "Unavailable destination"
++        hooks.append({"webhook_id": "WHK-{:08d}".format(row["id"]),
++                      "destination_origin": origin, "enabled": bool(row["enabled"]),
++                      "created": row["created"], "updated": row["updated"]})
++    return jsonify({"ok": True, "webhooks": hooks, "pagination": pagination,
++                    "health": rdb.get_reseller_webhook_analytics(res["id"], days=30)})
+ 
+ 
+ @app.route("/api/resellers/<pubid>/wallet")
+@@ -3864,6 +4028,7 @@
+ 
+ @app.route("/api/monitoring/webhook-analytics")
+ @login_required
++@_safe_admin_read
+ def api_monitoring_webhooks():
+     """Owner webhook/delivery/fulfillment operational analytics
+     (Phase 14 P6).  Aggregates the existing outbox + delivery log + orders;
+@@ -3877,6 +4042,7 @@
+ 
+ @app.route("/api/monitoring/product-analytics")
+ @login_required
++@_safe_admin_read
+ def api_monitoring_products():
+     """Owner product/stock analytics (Phase 14 P5): per-product sales,
+     inventory availability, adoption, category rollup.  ?days=1..90."""
+@@ -3889,6 +4055,7 @@
+ 
+ @app.route("/api/monitoring/financials")
+ @login_required
++@_safe_admin_read
+ def api_monitoring_financials():
+     """Owner financial analytics (Phase 14 P4): platform totals from the
+     immutable ledger + per-reseller spending board.  Read-only."""
+@@ -4946,6 +5113,7 @@
+ 
+ @app.route("/api/monitoring/sales-analytics")
+ @login_required
++@_safe_admin_read
+ def api_monitoring_sales():
+     """Owner sales analytics (Phase 14 P3): all-reseller or filtered by
+     ?reseller=<RSR-*> / ?product=<PRD-*> / ?date_from / ?date_to.
+@@ -5005,6 +5173,7 @@
+ 
+ @app.route("/api/monitoring/api-usage")
+ @login_required
++@_safe_admin_read
+ def api_monitoring_usage():
+     """Owner API-usage analytics (Phase 14 P2): today/this-month totals,
+     error rates, latency, top endpoints, top resellers, 7-day series.
+@@ -5020,6 +5189,7 @@
+ 
+ @app.route("/api/monitoring/api-health")
+ @login_required
++@_safe_admin_read
+ def api_monitoring_health():
+     """Owner-only platform API health snapshot (Phase 13 P8).
+ 
+@@ -5203,27 +5373,26 @@
+     rid = res["id"]
+     try:
+         event_type = request.args.get("event_type") or None
+-        limit  = min(int(request.args.get("limit",  50)), 200)
+-        offset = max(int(request.args.get("offset",  0)),   0)
+-    except (TypeError, ValueError):
+-        return jsonify({"ok": False, "error": "Invalid pagination parameter"}), 400
+-
+-    events = rdb.list_security_events(
+-        reseller_id=rid, event_type=event_type,
+-        limit=limit, offset=offset,
+-    )
+-    # Strip any residual sensitive-looking long strings — defence in depth.
++        limit, offset = _reseller_read_window(default_limit=50, clamp_limit=True)
++    except ValueError as exc:
++        return jsonify({"ok": False, "error": str(exc)}), 400
++
++    events = rdb.list_security_events(reseller_id=rid, event_type=event_type,
++                                      limit=limit + 1, offset=offset)
++    events, pagination = _reseller_read_page(events, limit, offset)
++    summary = request.args.get("summary") == "1"
++    from reseller_api.services.observability import sanitize_log_text
+     safe_events = []
+     for ev in events:
+-        safe_events.append({
+-            "id":          ev.get("id"),
+-            "event_type":  ev.get("event_type"),
+-            "ip":          ev.get("ip"),
+-            "description": (ev.get("description") or "")[:500],
+-            "created":     ev.get("created"),
+-        })
++        item = {"id": ev.get("id"), "event_type": sanitize_log_text(ev.get("event_type"), 100),
++                "created": ev.get("created")}
++        if not summary:
++            # Preserve the existing response fields for legacy consumers.
++            item.update({"ip": ev.get("ip"),
++                         "description": (ev.get("description") or "")[:500]})
++        safe_events.append(item)
+     return jsonify({"ok": True, "reseller_id": pubid, "events": safe_events,
+-                    "count": len(safe_events)})
++                    "count": len(safe_events), "pagination": pagination})
+ 
+ if __name__ == "__main__":
+     port = int(os.getenv("WEB_ADMIN_PORT", "5000"))
+--- a/web_admin/static/js/app.js
++++ b/web_admin/static/js/app.js
+@@ -7,6 +7,9 @@
+ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => (
+   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
++// HTML escaping alone is not JavaScript-string escaping: entities are decoded
++// before inline handlers execute. Serialize one JS argument, then escape HTML.
++const jsArg = (s) => esc(JSON.stringify(String(s == null ? "" : s)));
+ const stripTg = (s) => String(s == null ? "" : s).replace(/<tg-emoji emoji-id="\d+">([\s\S]*?)<\/tg-emoji>/g, "$1");
+ const escName = (s) => esc(stripTg(s));
+ const money = (n) => "$" + Number(n || 0).toFixed(2);
+@@ -26,11 +29,17 @@
+   let res;
+   try { res = await fetch(path, { ...opts, headers }); }
+   catch (e) { throw new Error("Network error. Check your connection and try again."); }
+-  if (res.status === 401) { location.href = "/login"; return {}; }
++  if (res.status === 401) { location.href = "/login"; throw new Error("Session expired. Please sign in again."); }
+   if (res.headers.get("content-type", "").includes("text/csv")) return res;
+   let data;
+-  try { data = await res.json(); } catch (e) { data = { ok: false, error: "Bad response" }; }
+-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
++  try { data = await res.json(); }
++  catch (e) { throw new Error(`Server returned a non-JSON response (HTTP ${res.status}). Check WebAdmin logs and deployment.`); }
++  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(`Invalid JSON response (HTTP ${res.status}).`);
++  if (!res.ok || data.ok === false) {
++    const message = typeof data.error === "string" ? data.error : (data.error?.message || `Request failed (${res.status})`);
++    const reference = /^[A-Za-z0-9_-]{1,64}$/.test(data.error_id || "") ? ` (reference: ${data.error_id})` : "";
++    throw new Error(message + reference);
++  }
+   return data;
+ }
+ const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body || {}) });
+@@ -548,7 +557,7 @@
+         <button class="btn btn-sm btn-orange" onclick="flashSale(${p.id})"><span>Flash</span></button>
+         <button class="btn btn-sm btn-ghost" onclick="toggleProduct(${p.id},'active')">${p.active ? "Hide" : "Show"}</button>
+         <button class="btn btn-sm btn-ghost" onclick="toggleProduct(${p.id},'featured')">${p.featured ? "Unfeature" : "Feature"}</button>
+-        <button class="btn btn-sm btn-red" onclick="delProduct(${p.id},'${escName(p.name)}')"><span>Del</span></button>
++        <button class="btn btn-sm btn-red" onclick="delProduct(${p.id},${jsArg(stripTg(p.name))})"><span>Del</span></button>
+       </div></td></tr>`;
+   }).join("");
+   $("#content").innerHTML = `
+@@ -658,7 +667,7 @@
+       <button class="btn btn-sm btn-ghost" onclick="moveCategory(${c.id},'up')" ${i === 0 ? "disabled" : ""}>\u2b06</button>
+       <button class="btn btn-sm btn-ghost" onclick="moveCategory(${c.id},'down')" ${i === cats.length - 1 ? "disabled" : ""}>\u2b07</button>
+       <button class="btn btn-sm btn-ghost" onclick="toggleCategory(${c.id},${c.active ? 0 : 1})">${c.active ? "Deactivate" : "Activate"}</button>
+-      <button class="btn btn-sm btn-red" onclick="delCategory(${c.id},'${esc(c.name).replace(/'/g, "\\'")}')"><span>Del</span></button>
++      <button class="btn btn-sm btn-red" onclick="delCategory(${c.id},${jsArg(c.name)})"><span>Del</span></button>
+     </div></td></tr>`).join("");
+   openModal("🗂 Product Categories", `
+     <p class="muted">Categories organize the 🛍 shop menu in the bot (in this order). Products without a category appear under 📦 <b>Other</b>. Deleting a category never deletes products — they move back to Uncategorized.</p>
+@@ -1011,7 +1020,7 @@
+     <td>${u.blocked ? '<span class="badge off">Blocked</span>' : '<span class="badge on">Active</span>'}</td>
+     <td><div class="row-actions">
+       <button class="btn btn-sm btn-glow" onclick="userDetail(${u.user_id})"><span>View</span></button>
+-      <button class="btn btn-sm btn-green" onclick="adjustBalance(${u.user_id},'${esc(u.first_name)}')"><span>Balance</span></button>
++      <button class="btn btn-sm btn-green" onclick="adjustBalance(${u.user_id},${jsArg(u.first_name)})"><span>Balance</span></button>
+       <button class="btn btn-sm ${u.blocked ? "btn-green" : "btn-red"}" onclick="blockUser(${u.user_id},${u.blocked ? 0 : 1})"><span>${u.blocked ? "Unblock" : "Block"}</span></button>
+     </div></td></tr>`).join("");
+   const pgBar = (d.pages || 1) > 1 ? `<div class="toolbar" style="margin-top:12px">
+@@ -1074,8 +1083,8 @@
+     <td>${c.expires_at ? fmtDate(c.expires_at) : '<span class="muted">never</span>'}</td>
+     <td>${c.active ? '<span class="badge on">Active</span>' : '<span class="badge off">Off</span>'}</td>
+     <td><div class="row-actions">
+-      <button class="btn btn-sm btn-ghost" onclick="toggleCoupon('${esc(c.code)}')">${c.active ? "Disable" : "Enable"}</button>
+-      <button class="btn btn-sm btn-red" onclick="delCoupon('${esc(c.code)}')"><span>Del</span></button>
++      <button class="btn btn-sm btn-ghost" onclick="toggleCoupon(${jsArg(c.code)})">${c.active ? "Disable" : "Enable"}</button>
++      <button class="btn btn-sm btn-red" onclick="delCoupon(${jsArg(c.code)})"><span>Del</span></button>
+     </div></td></tr>`).join("");
+   $("#content").innerHTML = `<div class="panel glass">
+     <div class="toolbar"><div class="grow"></div><button class="btn btn-glow" onclick="addCoupon()"><span>\u2795 New Coupon</span></button></div>
+@@ -1139,7 +1148,7 @@
+     <div class="panel glass">
+       <h3>\u270f\ufe0f ${esc(t.title)} <span class="muted" style="font-size:12px">(${esc(t.key)})</span></h3>
+       <textarea class="inp" id="tpl_${t.key}" style="min-height:120px">${esc(t.body)}</textarea>
+-      <div class="toolbar" style="margin-top:10px"><div class="grow"></div><button class="btn btn-glow" onclick="saveTemplate('${t.key}')"><span>Save</span></button></div>
++      <div class="toolbar" style="margin-top:10px"><div class="grow"></div><button class="btn btn-glow" onclick="saveTemplate(${jsArg(t.key)})"><span>Save</span></button></div>
+     </div>`).join("") || empty("No templates");
+ }
+ async function saveTemplate(key) {
+@@ -1387,7 +1396,7 @@
+   const d = await api("/api/backup/list");
+   const rows = (d.backups || []).map(b => `<tr>
+     <td class="mono">${esc(b.name)}</td><td>${(b.size / 1024).toFixed(1)} KB</td><td class="muted">${esc(b.modified)}</td>
+-    <td><a class="btn btn-sm btn-ghost" href="/api/backup/download/${encodeURIComponent(b.name)}">\u2b07 Download</a> <button class="btn btn-sm btn-red" onclick="deleteBackup('${b.name}')"><span>\ud83d\uddd1 Delete</span></button></td></tr>`).join("");
++    <td><a class="btn btn-sm btn-ghost" href="/api/backup/download/${encodeURIComponent(b.name)}">\u2b07 Download</a> <button class="btn btn-sm btn-red" onclick="deleteBackup(${jsArg(b.name)})"><span>\ud83d\uddd1 Delete</span></button></td></tr>`).join("");
+   $("#content").innerHTML = `<div class="panel glass">
+     <div class="toolbar"><div class="grow"></div><button class="btn btn-glow" id="bkCreate"><span>\ud83d\udcbe Create Backup</span></button></div>
+     ${(d.backups || []).length ? `<div class="tbl-wrap"><table><thead><tr><th>File</th><th>Size</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No backups yet", "\ud83d\udcbe")}</div>`;
+@@ -1493,7 +1502,7 @@
+     </div>`;
+   }
+   const sessList = (sess.sessions || []);
+-  const sessRows = sessList.map(s => `<tr><td>${s.current ? '<span class="badge on">This device</span> ' : ''}<span class="muted mono">${esc(s.ip || "?")}</span></td><td class="muted" title="${esc(s.user_agent || "")}">${esc((s.user_agent || "").slice(0, 42)) || "-"}</td><td class="muted">${fmtDate(s.last_seen)}</td><td>${s.current ? '<span class="muted">-</span>' : `<button class="btn btn-sm btn-red" onclick="revokeSession('${esc(s.sid)}')"><span>Revoke</span></button>`}</td></tr>`).join("");
++  const sessRows = sessList.map(s => `<tr><td>${s.current ? '<span class="badge on">This device</span> ' : ''}<span class="muted mono">${esc(s.ip || "?")}</span></td><td class="muted" title="${esc(s.user_agent || "")}">${esc((s.user_agent || "").slice(0, 42)) || "-"}</td><td class="muted">${fmtDate(s.last_seen)}</td><td>${s.current ? '<span class="muted">-</span>' : `<button class="btn btn-sm btn-red" onclick="revokeSession(${jsArg(s.sid)})"><span>Revoke</span></button>`}</td></tr>`).join("");
+   const warn = d.force_2fa && !d.twofa_enabled
+     ? `<div class="alert error" style="margin-bottom:12px">\u26a0\ufe0f 2FA is mandatory but not set up yet. Please enable it now.</div>` : "";
+   $("#content").innerHTML = `
+@@ -1507,7 +1516,7 @@
+         <div class="kv"><span>Login alerts to Telegram</span>${dot(d.bot_alerts)}</div>
+         <div class="kv"><span>HTTPS secure cookies</span>${dot(d.https)}</div>
+         <div class="kv"><span>Data encrypted at rest</span>${dot(d.encrypted_at_rest)}</div>
+-        <div class="kv"><span>Encrypted backups</span>${dot(d.encrypted_backups)}</div>
++        <div class="kv"><span>WebAdmin backup encryption</span>${dot(d.encrypted_backups)}</div>
+         <div class="kv"><span>Brute-force lockout</span>${dot(true)}</div>
+         <div class="kv"><span>CSRF protection</span>${dot(true)}</div>
+         <div class="kv"><span>CSP + security headers</span>${dot(true)}</div>
+@@ -1563,7 +1572,7 @@
+     <p class="muted">Store these somewhere safe. Each code works once if you ever lose your authenticator. They will NOT be shown again.</p>
+     <div style="text-align:center;margin:12px 0;background:rgba(255,255,255,.04);padding:12px;border-radius:12px">${list || "<span class='muted'>None</span>"}</div>
+     <div class="toolbar" style="margin-top:14px"><div class="grow"></div>
+-      <button class="btn btn-ghost" onclick="copyRecovery('${(codes || []).join(" ")}')">Copy</button>
++      <button class="btn btn-ghost" onclick="copyRecovery(${jsArg((codes || []).join(" "))})">Copy</button>
+       <button class="btn btn-glow" onclick="closeModal(); render();"><span>Done</span></button></div>`);
+ }
+ function copyRecovery(text) { try { navigator.clipboard.writeText(text); toast("Copied"); } catch (e) { toast("Copy failed", "err"); } }
+@@ -1684,6 +1693,7 @@
+ 
+ async function viewResellers() {
+   const d = await api(`/api/resellers?search=${encodeURIComponent(resellersSearchTerm)}&status=${encodeURIComponent(resellersStatus)}&page=${resellersPage}&per_page=25`);
++  if (currentView !== "resellers") return; // Ignore a list response after opening a detail card.
+   const rows = (d.resellers || []).map(r => `<tr>
+     <td class="mono"><b>${esc(r.public_id)}</b></td>
+     <td>${esc(r.name || "-")}${r.username ? ` <span class="muted">@${esc(r.username)}</span>` : ""}</td>
+@@ -1693,7 +1703,7 @@
+     <td>${r.keys_count}</td>
+     <td>${r.orders_count}</td>
+     <td class="muted">${fmtDate(r.last_activity || r.created)}</td>
+-    <td><button class="btn btn-sm btn-glow" onclick="openReseller('${r.public_id}')"><span>Manage</span></button></td></tr>`).join("");
++    <td><button class="btn btn-sm btn-glow" onclick="openReseller(${jsArg(r.public_id)})"><span>Manage</span></button></td></tr>`).join("");
+   const pgBar = (d.pages || 1) > 1 ? `<div class="toolbar" style="margin-top:12px">
+       <button class="btn btn-sm btn-ghost" onclick="resellersGo(-1)" ${d.page <= 1 ? "disabled" : ""}>◀ Prev</button>
+       <span class="muted">Page ${d.page}/${d.pages} · ${d.total} resellers</span>
+@@ -1717,17 +1727,18 @@
+ /* -------------------------------------------------- reseller detail page */
+ let currentResellerPub = null, resellerActiveTab = "overview";
+ let resWalletSearch = "", resWalletType = "", resWalletPage = 1, resWalletTimer = null;
+-function openReseller(pub) { currentResellerPub = pub; resellerActiveTab = "overview"; currentView = "reseller_detail"; render(); }
++function openReseller(pub) { clearTimeout(resellersSearchTimer); resellersBoxFocused = false; resDetailReadState = {}; currentResellerPub = pub; resellerActiveTab = "overview"; currentView = "reseller_detail"; render(); }
+ 
+ const RESELLER_TABS = [
+   ["overview", "📋 Overview"], ["products", "📦 Products"], ["pricing", "🏷️ Pricing"],
+   ["keys", "🔑 API Keys"], ["wallet", "👛 Wallet"], ["financial", "💰 Financial"], ["orders", "🛒 Orders"],
+   ["apilogs", "🧾 API Logs"], ["secevents", "🛡️ Security Events"],
+-  ["webhooks", "��� Webhooks"], ["limits", "⏱️ Limits"],
++  ["webhooks", "🪝 Webhooks"], ["limits", "⏱️ Limits"],
+ ];
+ 
+ async function viewResellerDetail(pub) {
+   const d = await api(`/api/resellers/${encodeURIComponent(pub)}`);
++  if (currentView !== "reseller_detail" || currentResellerPub !== pub) return;
+   if (!d.ok) { toast(d.error || "Not found", "err"); currentView = "resellers"; await render(); return; }
+   const r = d.reseller || {};
+   const st = d.api_stats || {};
+@@ -1738,7 +1749,7 @@
+     closed: [["reactivate", "♻️ Reactivate", "btn-green"]],
+   };
+   const btns = (actionsByStatus[r.status] || []).map(([a, label, cls]) =>
+-    `<button class="btn btn-sm ${cls}" onclick="resellerAction('${esc(r.public_id)}','${a}')"><span>${label}</span></button>`).join(" ");
++    `<button class="btn btn-sm ${cls}" onclick="resellerAction(${jsArg(r.public_id)},'${a}')"><span>${label}</span></button>`).join(" ");
+   const tabs = RESELLER_TABS.map(([key, label]) =>
+     `<button class="pill-tab ${resellerActiveTab === key ? "active" : ""}" onclick="resellerTab('${key}')">${label}</button>`).join("");
+   const statCard = (label, val) => `<div class="kv"><span>${label}</span><b>${val}</b></div>`;
+@@ -1766,9 +1777,10 @@
+     body = `<div id="resKeysWrap"><div class="muted">Loading API keys…</div></div>`;
+   } else if (resellerActiveTab === "limits") {
+     body = `<div id="resLimitsWrap"><div class="muted">Loading limits…</div></div>`;
++  } else if (["orders", "apilogs", "secevents", "webhooks"].includes(resellerActiveTab)) {
++    body = `<div id="resDetailReadWrap" aria-live="polite"><div class="muted">Loading current records…</div></div>`;
+   } else {
+-    const names = { orders: "Reseller orders", apilogs: "API logs", secevents: "Security events", webhooks: "Webhooks" };
+-    body = empty(`${names[resellerActiveTab] || "This section"} management arrives in a later Phase-2 prompt.`, "🚧");
++    body = empty("Unknown reseller section", "⚠️");
+   }
+   $("#content").innerHTML = `<div class="panel glass">
+     <div class="toolbar">
+@@ -1794,8 +1806,79 @@
+   if (resellerActiveTab === "limits") loadResellerLimits(pub);
+   if (resellerActiveTab === "wallet") loadResellerWallet(pub);
+   if (resellerActiveTab === "financial") loadResellerFinancial(pub);
++  if (["orders", "apilogs", "secevents", "webhooks"].includes(resellerActiveTab)) {
++    await loadResellerReadTab(pub, resellerActiveTab);
++  }
+ }
+ function resellerTab(key) { resellerActiveTab = key; render(); }
++
++// Each subtab reads a bounded, reseller-scoped server page. No supplier HTTP,
++// financial write, secret rotation or webhook retry is performed here.
++let resDetailReadState = {};
++function resDetailState(pub, tab) {
++  const key = pub + ":" + tab;
++  return resDetailReadState[key] || (resDetailReadState[key] = { offset: 0, after_id: null, history: [], next: null });
++}
++function resellerReadPage(delta) {
++  const state = resDetailState(currentResellerPub, resellerActiveTab);
++  if (delta > 0 && state.next != null) {
++    state.history.push({ offset: state.offset, after_id: state.after_id });
++    if (resellerActiveTab === "orders") state.after_id = state.next;
++    else state.offset = state.next;
++  } else if (delta < 0 && state.history.length) Object.assign(state, state.history.pop());
++  render();
++}
++function openResellerMasterOrder(publicId) {
++  const match = /^ORD-(\d{8})$/.exec(String(publicId));
++  if (!match) return toast("Invalid order ID", "err");
++  orderFilters = { source: "reseller_api", order_id: String(Number(match[1])) };
++  orderPage = 1; setView("orders");
++}
++async function loadResellerReadTab(pub, tab) {
++  const wrap = $("#resDetailReadWrap");
++  if (!wrap) return;
++  const state = resDetailState(pub, tab);
++  const paths = { orders: "orders", apilogs: "api-logs", secevents: "security-events", webhooks: "webhooks" };
++  const params = new URLSearchParams({ limit: "25" });
++  if (tab === "orders" && state.after_id) params.set("after_id", state.after_id);
++  if (tab !== "orders") params.set("offset", String(state.offset));
++  if (tab === "secevents") params.set("summary", "1");
++  try {
++    const data = await api(`/api/resellers/${encodeURIComponent(pub)}/${paths[tab]}?${params}`);
++    // A delayed response for a previous reseller/tab must never replace current data.
++    if (currentView !== "reseller_detail" || currentResellerPub !== pub || resellerActiveTab !== tab || !wrap.isConnected) return;
++    const meta = data.pagination || {};
++    state.next = meta.has_more ? (tab === "orders" ? meta.next_after_id : meta.next_offset) : null;
++    let heads, rows, note = "", noData;
++    if (tab === "orders") {
++      heads = ["Order", "Product", "Quantity", "Total (USDT)", "Status", "Created", ""];
++      rows = (data.orders || []).map(o => `<tr><td class="mono">${esc(o.order_id)}</td><td>${esc(o.product_name)}</td><td>${esc(o.quantity)}</td><td>${esc(o.total)}</td><td>${esc(o.status)}</td><td>${esc(fmtDate(o.created_at))}</td><td><button class="btn btn-sm btn-ghost" onclick="openResellerMasterOrder(${jsArg(o.order_id)})">Open order</button></td></tr>`);
++      note = "Current reseller API orders. Open an order to use the existing authorized lifecycle workflows.";
++      noData = "No reseller API orders yet.";
++    } else if (tab === "apilogs") {
++      heads = ["ID", "Method", "Endpoint", "HTTP status", "Latency (ms)", "Created"];
++      rows = (data.logs || []).map(l => `<tr><td>${esc(l.id)}</td><td>${esc(l.method)}</td><td><code>${esc(l.endpoint)}</code></td><td>${esc(l.status_code ?? "—")}</td><td>${esc(l.response_ms ?? "—")}</td><td>${esc(fmtDate(l.created))}</td></tr>`);
++      note = "Request metadata only. Query strings, credentials, headers and request bodies are not displayed.";
++      noData = "No API requests recorded yet.";
++    } else if (tab === "secevents") {
++      heads = ["ID", "Event", "Created"];
++      rows = (data.events || []).map(e => `<tr><td>${esc(e.id)}</td><td>${esc(e.event_type)}</td><td>${esc(fmtDate(e.created))}</td></tr>`);
++      note = "Security event metadata. Free-text descriptions are omitted to protect credentials and buyer data.";
++      noData = "No security events recorded yet.";
++    } else {
++      heads = ["Webhook", "Destination origin", "Enabled", "Created", "Updated"];
++      rows = (data.webhooks || []).map(w => `<tr><td class="mono">${esc(w.webhook_id)}</td><td>${esc(w.destination_origin)}</td><td>${w.enabled ? "Yes" : "No"}</td><td>${esc(fmtDate(w.created))}</td><td>${esc(fmtDate(w.updated))}</td></tr>`);
++      const h = data.health || {};
++      note = `Read-only subscriptions; URL paths, query parameters and signing secrets are hidden. Last ${Number(h.window_days) || 30} days: ${Number(h.delivered) || 0} delivered, ${Number(h.pending) || 0} pending, ${Number(h.dead_lettered) || 0} dead-lettered.`;
++      noData = "No webhook destinations configured yet.";
++    }
++    const table = rows.length ? `<div class="tbl-wrap"><table><thead><tr>${heads.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>` : empty(noData);
++    wrap.innerHTML = `<p class="muted">${esc(note)}</p>${table}<div class="toolbar" style="margin-top:12px"><button class="btn btn-sm btn-ghost" onclick="resellerReadPage(-1)" ${state.history.length ? "" : "disabled"}>Previous</button><button class="btn btn-sm btn-ghost" onclick="resellerReadPage(1)" ${state.next != null ? "" : "disabled"}>Next</button><div class="grow"></div><button class="btn btn-sm btn-ghost" onclick="render()">Refresh records</button></div>`;
++  } catch (e) {
++    if (currentView !== "reseller_detail" || currentResellerPub !== pub || resellerActiveTab !== tab || !wrap.isConnected) return;
++    wrap.innerHTML = `<div class="res-detail-error" role="alert">${esc(e.message || "Unable to load records")}</div><button class="btn btn-sm btn-ghost" onclick="render()">Retry</button>`;
++  }
++}
+ 
+ async function loadResellerWallet(pub) {
+   const d = await api(`/api/resellers/${encodeURIComponent(pub)}/wallet?search=${encodeURIComponent(resWalletSearch)}&type=${encodeURIComponent(resWalletType)}&page=${resWalletPage}&per_page=25`);
+@@ -1808,16 +1891,16 @@
+     <td>${esc(t.description || "-")}</td><td>${fmtDate(t.created)}</td></tr>`).join("");
+   $("#resWalletWrap").innerHTML = `
+     <div class="toolbar"><div class="kv"><span>Balance</span><b style="font-size:20px">$${esc(d.balance.balance)}</b></div><div class="grow"></div>
+-      ${ADMIN_ROLE === "owner" ? `<button class="btn btn-green" onclick="resellerCreditModal('${esc(pub)}')"><span>➕ Credit wallet</span></button>` : ""}</div>
+-    <div class="toolbar" style="margin:12px 0"><input class="inp" placeholder="Search reference, order or reason…" value="${esc(resWalletSearch)}" oninput="clearTimeout(resWalletTimer);resWalletSearch=this.value;resWalletPage=1;resWalletTimer=setTimeout(()=>loadResellerWallet('${esc(pub)}'),300)">
+-      <select class="inp" onchange="resWalletType=this.value;resWalletPage=1;loadResellerWallet('${esc(pub)}')">${typeOptions}</select></div>
++      ${ADMIN_ROLE === "owner" ? `<button class="btn btn-green" onclick="resellerCreditModal(${jsArg(pub)})"><span>➕ Credit wallet</span></button>` : ""}</div>
++    <div class="toolbar" style="margin:12px 0"><input class="inp" placeholder="Search reference, order or reason…" value="${esc(resWalletSearch)}" oninput="clearTimeout(resWalletTimer);resWalletSearch=this.value;resWalletPage=1;resWalletTimer=setTimeout(()=>loadResellerWallet(${jsArg(pub)}),300)">
++      <select class="inp" onchange="resWalletType=this.value;resWalletPage=1;loadResellerWallet(${jsArg(pub)})">${typeOptions}</select></div>
+     ${rows ? `<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>Type</th><th>Amount</th><th>Balance after</th><th>Reference</th><th>Related order</th><th>Reason</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("No wallet transactions", "👛")}
+-    <div class="toolbar" style="margin-top:10px"><button class="btn btn-sm btn-ghost" ${d.page <= 1 ? "disabled" : ""} onclick="resWalletPage--;loadResellerWallet('${esc(pub)}')">◀ Prev</button><span class="muted">Page ${d.page}/${d.pages} · ${d.total} transactions</span><button class="btn btn-sm btn-ghost" ${d.page >= d.pages ? "disabled" : ""} onclick="resWalletPage++;loadResellerWallet('${esc(pub)}')">Next ▶</button></div>`;
++    <div class="toolbar" style="margin-top:10px"><button class="btn btn-sm btn-ghost" ${d.page <= 1 ? "disabled" : ""} onclick="resWalletPage--;loadResellerWallet(${jsArg(pub)})">◀ Prev</button><span class="muted">Page ${d.page}/${d.pages} · ${d.total} transactions</span><button class="btn btn-sm btn-ghost" ${d.page >= d.pages ? "disabled" : ""} onclick="resWalletPage++;loadResellerWallet(${jsArg(pub)})">Next ▶</button></div>`;
+ }
+ 
+ function resellerCreditModal(pub) {
+   if (ADMIN_ROLE !== "owner") return toast("Owner permission required", "err");
+-  openModal("Credit reseller wallet", `<div class="form-grid"><label>Amount (USDT)<input class="inp" id="rw_amount" inputmode="decimal" placeholder="20.00"></label><label>Unique reference<input class="inp" id="rw_reference" maxlength="128" placeholder="manual-credit-2026-001"></label><label class="full">Reason<textarea class="inp" id="rw_reason" maxlength="500" placeholder="Required audit reason"></textarea></label></div><div class="toolbar" style="margin-top:14px"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-green" onclick="resellerCreditSubmit('${esc(pub)}')">Confirm credit</button></div>`);
++  openModal("Credit reseller wallet", `<div class="form-grid"><label>Amount (USDT)<input class="inp" id="rw_amount" inputmode="decimal" placeholder="20.00"></label><label>Unique reference<input class="inp" id="rw_reference" maxlength="128" placeholder="manual-credit-2026-001"></label><label class="full">Reason<textarea class="inp" id="rw_reason" maxlength="500" placeholder="Required audit reason"></textarea></label></div><div class="toolbar" style="margin-top:14px"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-green" onclick="resellerCreditSubmit(${jsArg(pub)})">Confirm credit</button></div>`);
+ }
+ async function resellerCreditSubmit(pub) {
+   try {
+@@ -1959,15 +2042,15 @@
+     <td>${p.active ? '<span class="badge on">active</span>' : '<span class="badge off">hidden</span>'}</td>
+     <td>${p.access_enabled ? '<span class="badge on">🔓 enabled</span>' : '<span class="muted">—</span>'}</td>
+     <td>${p.access_enabled
+-      ? `<button class="btn btn-sm btn-red" onclick="resellerToggleAccess('${esc(pub)}',${p.id},0)"><span>Disable</span></button>`
+-      : `<button class="btn btn-sm btn-green" onclick="resellerToggleAccess('${esc(pub)}',${p.id},1)" ${p.active ? "" : "disabled"}><span>Enable</span></button>`}</td>
++      ? `<button class="btn btn-sm btn-red" onclick="resellerToggleAccess(${jsArg(pub)},${p.id},0)"><span>Disable</span></button>`
++      : `<button class="btn btn-sm btn-green" onclick="resellerToggleAccess(${jsArg(pub)},${p.id},1)" ${p.active ? "" : "disabled"}><span>Enable</span></button>`}</td>
+   </tr>`).join("");
+   wrap.innerHTML = `
+     <div class="toolbar">
+       <input class="inp" id="resProdBox" placeholder="🔎 Search products..." value="${esc(resProdSearch)}" style="max-width:280px"
+-        oninput="clearTimeout(resProdTimer);resProdSearch=this.value;resProdTimer=setTimeout(()=>loadResellerProducts('${esc(pub)}'),300)"
++        oninput="clearTimeout(resProdTimer);resProdSearch=this.value;resProdTimer=setTimeout(()=>loadResellerProducts(${jsArg(pub)}),300)"
+         onfocus="resProdFocused=true" onblur="resProdFocused=false">
+-      <select class="inp" style="max-width:150px" onchange="resProdFilter=this.value;loadResellerProducts('${esc(pub)}')">
++      <select class="inp" style="max-width:150px" onchange="resProdFilter=this.value;loadResellerProducts(${jsArg(pub)})">
+         <option value="" ${resProdFilter === "" ? "selected" : ""}>All products</option>
+         <option value="enabled" ${resProdFilter === "enabled" ? "selected" : ""}>Enabled only</option>
+         <option value="disabled" ${resProdFilter === "disabled" ? "selected" : ""}>Disabled only</option>
+@@ -2002,15 +2085,15 @@
+     <td>${hasRule ? `${esc(p.rule_label)} ${ruleOn ? '<span class="badge on">on</span>' : '<span class="badge off">off</span>'}` : '<span class="muted">—</span>'}</td>
+     <td><b>$${p.effective_unit}</b> <span class="muted">${p.source === "master" ? "" : `(${esc(p.source)})`}</span></td>
+     <td><div class="row-actions">
+-      <button class="btn btn-sm btn-glow" onclick='resellerPriceModal(${JSON.stringify("PUB")},${p.id},${JSON.stringify("NAME")},${JSON.stringify(hasRule ? p.rule_type : "fixed_price")},${JSON.stringify(hasRule ? (p.rule_type === "fixed_price" ? p.master_unit && p.value_cents !== null ? (p.value_cents / 100).toFixed(2) : "" : ((p.value_bps || 0) / 100).toString()) : "")},${hasRule && p.rule_enabled ? 1 : 0})'><span>${hasRule ? "Edit" : "Set price"}</span></button>
+-      ${hasRule ? `<button class="btn btn-sm ${ruleOn ? "btn-orange" : "btn-green"}" onclick='resellerPriceToggle(${JSON.stringify("PUB")},${p.id},${JSON.stringify(p.rule_type)},${JSON.stringify(p.rule_type === "fixed_price" ? ((p.value_cents || 0) / 100).toFixed(2) : ((p.value_bps || 0) / 100).toString())},${ruleOn ? 0 : 1})'><span>${ruleOn ? "Disable" : "Enable"}</span></button>
+-      <button class="btn btn-sm btn-red" onclick='resellerPriceDelete(${JSON.stringify("PUB")},${p.id},${JSON.stringify("NAME")})'><span>Remove</span></button>` : ""}
++      <button class="btn btn-sm btn-glow" onclick='resellerPriceModal(${jsArg(pub)},${p.id},${jsArg(p.name)},${JSON.stringify(hasRule ? p.rule_type : "fixed_price")},${JSON.stringify(hasRule ? (p.rule_type === "fixed_price" ? p.master_unit && p.value_cents !== null ? (p.value_cents / 100).toFixed(2) : "" : ((p.value_bps || 0) / 100).toString()) : "")},${hasRule && p.rule_enabled ? 1 : 0})'><span>${hasRule ? "Edit" : "Set price"}</span></button>
++      ${hasRule ? `<button class="btn btn-sm ${ruleOn ? "btn-orange" : "btn-green"}" onclick='resellerPriceToggle(${jsArg(pub)},${p.id},${JSON.stringify(p.rule_type)},${JSON.stringify(p.rule_type === "fixed_price" ? ((p.value_cents || 0) / 100).toFixed(2) : ((p.value_bps || 0) / 100).toString())},${ruleOn ? 0 : 1})'><span>${ruleOn ? "Disable" : "Enable"}</span></button>
++      <button class="btn btn-sm btn-red" onclick='resellerPriceDelete(${jsArg(pub)},${p.id},${jsArg(p.name)})'><span>Remove</span></button>` : ""}
+     </div></td></tr>`;
+   }).join("");
+   wrap.innerHTML = `
+     <div class="toolbar">
+       <input class="inp" id="resPriceBox" placeholder="🔎 Search products..." value="${esc(resPriceSearch)}" style="max-width:280px"
+-        oninput="clearTimeout(resPriceTimer);resPriceSearch=this.value;resPriceTimer=setTimeout(()=>loadResellerPricing('${esc(pub)}'),300)"
++        oninput="clearTimeout(resPriceTimer);resPriceSearch=this.value;resPriceTimer=setTimeout(()=>loadResellerPricing(${jsArg(pub)}),300)"
+         onfocus="resPriceFocused=true" onblur="resPriceFocused=false">
+       <div class="grow"></div>
+       <span class="muted">Prices are computed server-side; the API never accepts client prices.</span>
+@@ -2072,7 +2155,7 @@
+     <td class="muted">${k.revoked_at ? fmtDate(k.revoked_at) : "—"}</td>
+     <td class="muted">${u.total || 0} req · ${u.errors || 0} err · ${u.avg_ms || 0} ms</td>
+     <td>${k.status === "active"
+-      ? `<button class="btn btn-sm btn-red" onclick="resellerRevokeKey('${esc(pub)}','${esc(k.key_id)}')"><span>Revoke</span></button>`
++      ? `<button class="btn btn-sm btn-red" onclick="resellerRevokeKey(${jsArg(pub)},${jsArg(k.key_id)})"><span>Revoke</span></button>`
+       : ""}</td>
+   </tr>`;
+   }).join("");
+@@ -2117,7 +2200,7 @@
+     <p class="muted" style="margin:0 0 10px">Enforced server-side by the reseller API. A limit of 0 means none allowed.</p>
+     ${fields}
+     <div class="toolbar" style="margin-top:16px"><div class="grow"></div>
+-      <button class="btn btn-glow" onclick="resellerSaveLimits('${esc(pub)}')"><span>Save limits</span></button></div>`;
++      <button class="btn btn-glow" onclick="resellerSaveLimits(${jsArg(pub)})"><span>Save limits</span></button></div>`;
+ }
+ 
+ async function resellerSaveLimits(pub) {
+--- a/web_admin/templates/index.html
++++ b/web_admin/templates/index.html
+@@ -93,6 +93,6 @@
+ <!-- TOAST -->
+ <div class="toast-wrap" id="toastWrap" aria-live="polite" aria-atomic="true"></div>
+ 
+-<script src="/static/js/app.js?v=33"></script>
++<script src="/static/js/app.js?v=36"></script>
+ </body>
+ </html>
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -23,6 +23,8 @@
+           cache-dependency-path: examples/package-lock.json
+       - name: Install locked receiver and schema-validation dependencies
+         run: npm ci --prefix examples --ignore-scripts
++      - name: Install local browser for WebAdmin regression tests
++        run: python -m playwright install --with-deps chromium
+       - name: Check generated client-kit artifacts
+         run: python tools/generate_client_kit.py --check
+       - name: Run every suite in an isolated process
+--- /dev/null
++++ b/tests/test_whole_project_browser.py
+@@ -0,0 +1,93 @@
++"""Real local Chromium/Flask WebAdmin probes; external connections blocked.
++Set OGGY_AUDIT_EVIDENCE_DIR outside checkout to retain screenshots/navigation.
++No genuine Telegram/payment/provider call or actual owner-login/2FA rehearsal.
++"""
++import json,os,shutil,tempfile,threading,unittest
++from pathlib import Path
++from unittest.mock import patch
++from werkzeug.serving import make_server
++from playwright.sync_api import sync_playwright
++import tests.test_phase16_admin_fail_order as fixture
++from database import db,reseller_db as rdb
++ROOT=Path(__file__).resolve().parents[1]
++
++class WholeProjectBrowserTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        import web_admin.app as wa
++        cls.wa=wa;wa.DB_PATH=fixture._db_path;wa.app.config['TESTING']=False
++        cls.server=make_server('127.0.0.1',0,wa.app,threaded=True)
++        cls.thread=threading.Thread(target=cls.server.serve_forever,daemon=True);cls.thread.start()
++        cls.base=f'http://127.0.0.1:{cls.server.server_port}'
++        cls.play=sync_playwright().start()
++        cls.browser=cls.play.chromium.launch(executable_path=shutil.which('chromium'),headless=True,args=['--no-sandbox'])
++    @classmethod
++    def tearDownClass(cls):
++        cls.browser.close();cls.play.stop();cls.server.shutdown();cls.thread.join(timeout=5)
++    def setUp(self):
++        self.context=self.browser.new_context(viewport={'width':1280,'height':900})
++        self.addCleanup(self.context.close)
++        self.context.route('**/*',lambda route:route.continue_() if route.request.url.startswith(self.base) else route.abort())
++        client=fixture.Phase16AdminFailOrderTests()._owner()
++        self.context.add_cookies([{'name':'session','value':client.get_cookie('session').value,'url':self.base}])
++        self.page=self.context.new_page();self.errors=[];self.page.on('pageerror',lambda e:self.errors.append(str(e)))
++        self.page.goto(self.base);self.page.locator("#content .loader").wait_for(state="hidden")
++    def test_untrusted_customer_name_cannot_execute_balance_handler_code(self):
++        uid=8_860_000+fixture._n();attack="');window.__auditInjected=1;//"
++        db.ensure_user_id(uid);db.cur.execute('UPDATE users SET first_name=? WHERE user_id=?',(attack,uid));db.conn.commit()
++        self.page.evaluate("setView('users')");self.page.locator("#usersSearchBox").wait_for()
++        self.page.locator('#usersSearchBox').fill(str(uid));self.page.wait_for_timeout(600)
++        self.page.locator('button[onclick^="adjustBalance"]').click()
++        self.assertIsNone(self.page.evaluate('window.__auditInjected'))
++        self.assertIn(attack,self.page.locator('#modalTitle').inner_text())
++        self.assertEqual(self.errors,[])
++    def test_product_name_apostrophe_and_unicode_delete_confirmation_is_safe(self):
++        name="O'Reilly \"☃\" <test>";db.cur.execute("INSERT INTO products(name,price,stock,delivery,active) VALUES(?,1,0,'',1)",(name,));pid=db.cur.lastrowid;db.conn.commit()
++        self.page.evaluate("setView('products')");self.page.locator('button[onclick^="delProduct"]').first.wait_for()
++        self.page.evaluate('window.__deleteArgs=null;window.delProduct=(...args)=>window.__deleteArgs=args')
++        self.page.locator(f'button[onclick^="delProduct({pid},"]').click()
++        self.assertEqual(self.page.evaluate('window.__deleteArgs'),[pid,name]);self.assertEqual(self.errors,[])
++    def test_pricing_button_uses_real_reseller_and_name_and_saves_rule(self):
++        uid=8_870_000+fixture._n();db.ensure_user_id(uid);rs=rdb.create_reseller('browser reseller',uid,'testbrowser');rdb.set_reseller_status(rs['id'],'active')
++        name="Price's test";db.cur.execute("INSERT INTO products(name,price,stock,delivery,active) VALUES(?,10,5,'manual',1)",(name,));pid=db.cur.lastrowid;db.conn.commit();rdb.set_product_access(rs['id'],pid,True)
++        self.page.evaluate("document.querySelector('#content').innerHTML='<div id=\"resPriceWrap\"></div>'")
++        self.page.evaluate('(pub)=>loadResellerPricing(pub)',rs['public_id'])
++        self.page.locator(f'button[onclick^="resellerPriceModal"]').filter(has_text='Set price').first.click()
++        # Catalog may have older fixture products; target the newly-created row.
++        self.page.evaluate('closeModal()')
++        target=self.page.locator(f'tr').filter(has_text=name);target.locator('button').first.click()
++        self.assertIn(name,self.page.locator('#modalTitle').inner_text())
++        self.page.locator('#rp_value').fill('8.50');self.page.locator('#rpSave').click()
++        self.page.wait_for_timeout(400)
++        value,_=rdb.resolve_reseller_price_cents(rs['id'],pid)
++        self.assertEqual(value,850)
++    def test_api_application_failure_never_resolves_as_success(self):
++        self.page.route('**/api/audit-only-failure',lambda r:r.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':False,'error':'test-only failure'})))
++        result=self.page.evaluate("async()=>{try{await post('/api/audit-only-failure',{});return 'resolved'}catch(e){return e.message}}")
++        self.assertEqual(result,'test-only failure')
++    def test_expired_session_api_rejects_instead_of_resolving_empty_success(self):
++        self.page.route('**/api/audit-only-expired',lambda r:r.fulfill(status=401,content_type='application/json',body='{"ok":false,"error":"expired"}'))
++        # Prevent test document navigation while observing promise behavior.
++        self.page.route('**/login',lambda r:r.abort())
++        result=self.page.evaluate("async()=>{try{await api('/api/audit-only-expired');return 'resolved'}catch(e){return e.message}}")
++        self.assertNotEqual(result,'resolved')
++    def test_all_twenty_views_render_desktop_and_mobile_without_page_errors(self):
++        views=self.page.locator('.nav-item').evaluate_all('(els)=>els.map(e=>e.dataset.view)');self.assertEqual(len(views),20)
++        records=[]
++        for width,height in [(1280,900),(390,844)]:
++            self.page.set_viewport_size({'width':width,'height':height})
++            for view in views:
++                self.page.evaluate('(v)=>setView(v)',view)
++                self.page.locator("#content .loader").wait_for(state="hidden")
++                body=self.page.locator('#content').inner_text()
++                records.append({'view':view,'viewport':[width,height],'failed_load':body.startswith('Failed to load:'),'text_length':len(body)})
++            folder=os.environ.get('OGGY_AUDIT_EVIDENCE_DIR')
++            if folder:
++                p=Path(folder);p.mkdir(parents=True,exist_ok=True)
++                self.page.screenshot(path=str(p/f'navigation-{width}.png'),full_page=True)
++        self.assertEqual(self.errors,[])
++        self.assertEqual([r for r in records if r['failed_load']],[])
++        folder=os.environ.get('OGGY_AUDIT_EVIDENCE_DIR')
++        if folder:(Path(folder)/'navigation.json').write_text(json.dumps(records,indent=2)+'\n')
++
++if __name__=='__main__':unittest.main()
+--- /dev/null
++++ b/tests/test_whole_project_financial_support.py
+@@ -0,0 +1,122 @@
++"""Whole-project batch1: customer money and real support/WebAdmin services.
++Temporary SQLite, real route/service logic, Telegram send mocked only.
++"""
++import math,threading,unittest
++from concurrent.futures import ThreadPoolExecutor
++from unittest.mock import patch
++import tests.test_phase16_admin_fail_order as fixture
++from database import db
++
++class WholeProjectFinancialSupportTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        import web_admin.app as wa
++        cls.wa=wa;wa.app.config['TESTING']=True;wa.DB_PATH=fixture._db_path
++    def setUp(self):
++        self.uid=8_850_000+fixture._n();db.ensure_user_id(self.uid)
++        db.cur.execute('UPDATE users SET balance=25,referral_pending=100 WHERE user_id=?',(self.uid,));db.conn.commit()
++        self.client=fixture.Phase16AdminFailOrderTests()._owner()
++    def scalar(self,sql,params=()):db.cur.execute(sql,params);return db.cur.fetchone()[0]
++    def test_customer_balance_nonfinite_rejected_before_mutation(self):
++        for amount in ('NaN','Infinity','-Infinity',True,[],{}):
++            response=self.client.post(f'/api/users/{self.uid}/balance',json={'amount':amount},headers={'X-CSRF-Token':'test-csrf'})
++            self.assertEqual(response.status_code,400,str(amount));self.assertEqual(db.get_balance(self.uid),25)
++    def test_balance_service_rejects_nan_and_infinity(self):
++        for amount in (float('nan'),float('inf'),-float('inf')):
++            with self.assertRaises(ValueError):db.add_balance(self.uid,amount)
++            self.assertEqual(db.get_balance(self.uid),25)
++    def test_finite_credit_cannot_overflow_existing_customer_balance(self):
++        db.cur.execute('UPDATE users SET balance=1e308 WHERE user_id=?',(self.uid,));db.conn.commit()
++        with self.assertRaises(ValueError):db.add_balance(self.uid,1e308)
++        self.assertEqual(db.get_balance(self.uid),1e308)
++    def test_balance_valid_positive_negative_and_zero_preserved(self):
++        for amount in (5,-3,0):db.add_balance(self.uid,amount)
++        self.assertEqual(db.get_balance(self.uid),27)
++    def test_withdrawal_nonfinite_does_not_mutate_or_insert(self):
++        for amount in (float('nan'),float('inf'),-float('inf')):
++            self.assertIsNone(db.create_withdrawal_request(self.uid,amount,'test-wallet'))
++            self.assertEqual(self.scalar('SELECT referral_pending FROM users WHERE user_id=?',(self.uid,)),100)
++            self.assertEqual(self.scalar('SELECT COUNT(*) FROM withdrawal_requests WHERE user_id=?',(self.uid,)),0)
++    def concurrent(self,callback,prefix):
++        barrier=threading.Barrier(2)
++        def work():
++            actual=db.get_cursor()
++            class Tap:
++                def execute(self,sql,*args):self.sql=sql;return actual.execute(sql,*args)
++                def fetchone(self):
++                    value=actual.fetchone()
++                    if self.sql.startswith(prefix) and not db.get_conn().in_transaction:barrier.wait(timeout=5)
++                    return value
++                def __getattr__(self,name):return getattr(actual,name)
++            db._tls.cur=Tap()
++            try:return callback()
++            finally:db.close_thread_connection()
++        with ThreadPoolExecutor(max_workers=2) as pool:return list(pool.map(lambda _:work(),range(2)))
++    def test_concurrent_withdrawal_cannot_overdraw_pending_referral(self):
++        results=self.concurrent(lambda:db.create_withdrawal_request(self.uid,80,'test-wallet'),'SELECT COALESCE(referral_pending')
++        self.assertEqual(sum(x is not None for x in results),1)
++        self.assertEqual(self.scalar('SELECT referral_pending FROM users WHERE user_id=?',(self.uid,)),20)
++        self.assertEqual(self.scalar('SELECT COUNT(*) FROM withdrawal_requests WHERE user_id=?',(self.uid,)),1)
++    def test_concurrent_rejection_refunds_pending_exactly_once(self):
++        wid=db.create_withdrawal_request(self.uid,80,'test-wallet')
++        self.concurrent(lambda:db.update_withdrawal_status(wid,'rejected'),'SELECT user_id, amount, status')
++        self.assertEqual(self.scalar('SELECT referral_pending FROM users WHERE user_id=?',(self.uid,)),100)
++        self.assertEqual(self.scalar('SELECT status FROM withdrawal_requests WHERE id=?',(wid,)),'rejected')
++    def test_withdrawal_insert_failure_rolls_back_pending_amount(self):
++        db.cur.execute("CREATE TEMP TRIGGER audit_abort_withdraw BEFORE INSERT ON withdrawal_requests BEGIN SELECT RAISE(ABORT,'test-only injected failure'); END");db.conn.commit()
++        try:
++            with self.assertRaises(Exception):db.create_withdrawal_request(self.uid,80,'test-wallet')
++            self.assertEqual(self.scalar('SELECT referral_pending FROM users WHERE user_id=?',(self.uid,)),100)
++        finally:db.get_conn().rollback();db.cur.execute('DROP TRIGGER audit_abort_withdraw');db.conn.commit()
++    def test_repeated_web_withdrawal_action_no_false_notification(self):
++        wid=db.create_withdrawal_request(self.uid,20,'test-wallet')
++        with patch.object(self.wa,'tg_send',return_value=(True,'test-only')) as send:
++            for status,expected in [('approved',200),('rejected',409)]:
++                result=self.client.post(f'/api/withdrawals/{wid}/action',json={'status':status},headers={'X-CSRF-Token':'test-csrf'})
++                self.assertEqual(result.status_code,expected)
++            self.assertEqual(send.call_count,1)
++        self.assertEqual(self.scalar('SELECT status FROM withdrawal_requests WHERE id=?',(wid,)),'approved')
++    def test_registered_api_get_routes_reject_anonymous_and_inventory_runtime(self):
++        import json,re
++        from reseller_api import create_app
++        api=create_app({'TESTING':True,'API_ENVIRONMENT':'test','INIT_DATABASE':False})
++        rows=[]
++        for label,app in [('webadmin',self.wa.app),('reseller',api)]:
++            client=app.test_client()
++            for rule in app.url_map.iter_rules():
++                methods=sorted(rule.methods-{'OPTIONS','HEAD'})
++                row={'app':label,'path':rule.rule,'methods':methods,'endpoint':rule.endpoint}
++                if 'GET' in methods and rule.rule.startswith('/api/'):
++                    path=re.sub(r'<(?:[^:>]+:)?([^>]+)>',lambda m:'1' if '<int:'+m.group(1)+'>' in rule.rule else 'missing-test-id',rule.rule)
++                    # Use independent synthetic source IPs so this auth matrix does not
++                    # exhaust one anonymous budget; rate-limit suites stay intact.
++                    response=client.get(path,environ_base={'REMOTE_ADDR':f'127.0.0.{len(rows)+1}'})
++                    row['anonymous_status']=response.status_code
++                    self.assertEqual(response.status_code,401,(label,path,response.get_data(as_text=True)[:300]))
++                rows.append(row)
++        print('ROUTE_EVIDENCE '+json.dumps(rows),flush=True)
++    def test_security_backup_indicator_validates_actual_key_not_presence(self):
++        import os
++        from cryptography.fernet import Fernet
++        for key,expected in [('test-invalid-key',False),(Fernet.generate_key().decode(),True),('',False)]:
++            with patch.dict(os.environ,{'BACKUP_ENCRYPTION_KEY':key,'DATA_ENCRYPTION_KEY':''}):
++                response=self.client.get('/api/security')
++            self.assertEqual(response.status_code,200)
++            self.assertIs(response.get_json()['encrypted_backups'],expected)
++    def test_support_same_id_customer_reply_close_and_foreign_denial(self):
++        tid=db.create_ticket(self.uid,'<support>','opening')
++        with patch.object(self.wa,'tg_send',return_value=(True,'test-only')) as send:
++            response=self.client.post(f'/api/tickets/{tid}/reply',json={'reply':'admin response'},headers={'X-CSRF-Token':'test-csrf'})
++            self.assertEqual(response.status_code,200)
++            db.add_user_ticket_reply(tid,self.uid,'same thread followup')
++            with self.assertRaises(ValueError):db.add_user_ticket_reply(tid,self.uid+1000,'foreign')
++            messages,_=db.get_ticket_messages(tid,100)
++            self.assertEqual([m[4] for m in messages],['opening','admin response','same thread followup'])
++            for _ in range(2):self.assertEqual(self.client.post(f'/api/tickets/{tid}/close',json={},headers={'X-CSRF-Token':'test-csrf'}).status_code,200)
++            self.assertEqual(send.call_count,2)
++            with self.assertRaises(ValueError):db.add_user_ticket_reply(tid,self.uid,'after close')
++            self.assertEqual(self.client.post(f'/api/tickets/{tid}/reply',json={'reply':'after close'},headers={'X-CSRF-Token':'test-csrf'}).status_code,409)
++        self.assertEqual(db.get_ticket(tid)[6],'closed')
++        messages,_=db.get_ticket_messages(tid,100);self.assertEqual(messages[-1][4],db.SUPPORT_RESOLUTION_MESSAGE)
++
++if __name__=='__main__':unittest.main()
+--- /dev/null
++++ b/tests/test_whole_project_reseller_tabs.py
+@@ -0,0 +1,126 @@
++"""Real WebAdmin reseller subtab routes/UI. Temporary SQLite; no external HTTP.
++Owner reads are distinct from public reseller API authentication. No mutation UI
++or supplier/webhook delivery calls are introduced by this repair.
++"""
++import json, os, unittest
++from pathlib import Path
++from utils.crypto import encrypt_text
++import tests.test_phase16_admin_fail_order as fixture
++import tests.test_whole_project_browser as browser_fixture
++from database import db, reseller_db as rdb
++
++def seed():
++    n=fixture._n();res=rdb.create_reseller(f'Tab reseller {n}')
++    rdb.set_reseller_status(res['id'],'active')
++    db.cur.execute("INSERT INTO products(name,price,stock,delivery,active) VALUES(?,7.25,0,'',1)",(f'Tab product {n}',));pid=db.cur.lastrowid
++    ids=[]
++    for i in range(3):
++        db.cur.execute("INSERT INTO orders(user_id,product_id,product_name,price,source,reseller_id,quantity,unit_price_cents,delivery,master_status) VALUES(0,?,?,7.25,'reseller_api',?,1,725,?,?)",(pid,f'Tab product {n}',res['id'],encrypt_text('test-private-delivery') if i==0 else None,'failed' if i==1 else None));ids.append(db.cur.lastrowid)
++    db.conn.commit()
++    rdb.log_api_request(res['id'],None,'/api/v1/orders?api_secret=test-private-value','GET',200,request_id=f'tab-request-{n}',response_ms=12,key_id='test-private-key',user_agent='test-private-agent')
++    rdb.log_security_event(res['id'],'admin_order_fail',description='test-private-description buyer@example.test',ip='127.0.0.1')
++    db.cur.execute("INSERT INTO reseller_webhooks(reseller_id,url,secret_encrypted,enabled) VALUES(?,?,?,1)",(res['id'],'https://example.test/hook/test-private-path?token=test-private-query',encrypt_text('test-private-signing-secret')));db.conn.commit()
++    return res,ids
++
++class ResellerTabRouteTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        import web_admin.app as wa
++        cls.wa=wa;wa.DB_PATH=fixture._db_path;wa.app.config['TESTING']=True
++    def setUp(self):
++        self.res,self.ids=seed();self.other,self.other_ids=seed()
++        self.client=fixture.Phase16AdminFailOrderTests()._owner()
++        self.base='/api/resellers/'+self.res['public_id']
++    def get(self,section,query=''):return self.client.get(self.base+'/'+section+query)
++    def test_orders_scoped_real_status_and_no_delivery_or_buyer_data(self):
++        response=self.get('orders');self.assertEqual(response.status_code,200)
++        rows=response.get_json()['orders'];self.assertEqual({r['order_id'] for r in rows},{f'ORD-{i:08d}' for i in self.ids})
++        self.assertEqual({r['status'] for r in rows},{'completed','failed','processing'});self.assertTrue(all(r['product_name'].startswith('Tab product ') for r in rows))
++        text=response.get_data(as_text=True);self.assertNotIn('test-private-delivery',text);self.assertNotIn('buyer_email',text)
++    def test_orders_cursor_has_no_omissions_or_duplicates(self):
++        first=self.get('orders','?limit=2').get_json();self.assertTrue(first['pagination']['has_more'])
++        second=self.get('orders','?limit=2&after_id='+first['pagination']['next_after_id']).get_json()
++        self.assertEqual(len(first['orders'])+len(second['orders']),3)
++        self.assertEqual(len({r['order_id'] for r in first['orders']+second['orders']}),3)
++    def test_api_logs_scoped_and_allowlisted(self):
++        response=self.get('api-logs');self.assertEqual(response.status_code,200)
++        data=response.get_json();self.assertEqual(len(data['logs']),1);self.assertEqual(data['logs'][0]['endpoint'],'/api/v1/orders')
++        for bad in ['test-private-value','test-private-key','test-private-agent','api_key_id','user_agent']:
++            self.assertNotIn(bad,response.get_data(as_text=True))
++    def test_security_summary_reuses_existing_route_without_free_text(self):
++        response=self.get('security-events','?summary=1&limit=2');self.assertEqual(response.status_code,200)
++        data=response.get_json();self.assertEqual(len(data['events']),1)
++        self.assertEqual(set(data['events'][0]),{'id','event_type','created'})
++        self.assertNotIn('test-private-description',response.get_data(as_text=True))
++    def test_webhooks_metadata_and_real_analytics_no_url_credentials(self):
++        response=self.get('webhooks');self.assertEqual(response.status_code,200)
++        data=response.get_json();self.assertEqual(data['webhooks'][0]['destination_origin'],'https://example.test')
++        self.assertEqual(data['health'],rdb.get_reseller_webhook_analytics(self.res['id'],days=30))
++        for bad in ['test-private-path','test-private-query','test-private-signing-secret','secret_encrypted']:
++            self.assertNotIn(bad,response.get_data(as_text=True))
++    def test_new_reads_require_login_owner_and_do_not_accept_api_identity(self):
++        anon=self.wa.app.test_client();admin=fixture.Phase16AdminFailOrderTests()._owner('admin')
++        for section in ['orders','api-logs','webhooks']:
++            path=self.base+'/'+section
++            self.assertEqual(anon.get(path).status_code,401)
++            self.assertEqual(anon.get(path,headers={'Authorization':'Bearer test-only-fake-token'}).status_code,401)
++            self.assertEqual(admin.get(path).status_code,403)
++    def test_missing_reseller_is_404(self):
++        for section in ['orders','api-logs','webhooks','security-events']:
++            self.assertEqual(self.client.get('/api/resellers/RES-MISSING/'+section).status_code,404)
++    def test_invalid_pagination_and_identity_injection_rejected(self):
++        for section in ['api-logs','webhooks','security-events']:
++            for query in ['?limit=-1','?limit=0','?limit=abc','?offset=-1','?offset=abc']:
++                self.assertEqual(self.get(section,query).status_code,400,(section,query))
++        self.assertEqual(self.get('orders','?reseller_id='+str(self.other['id'])).status_code,400)
++    def test_metadata_offset_pages_and_empty_results(self):
++        rdb.log_api_request(self.res['id'],None,'/api/v1/products','GET',404)
++        a=self.get('api-logs','?limit=1').get_json();b=self.get('api-logs','?limit=1&offset=1').get_json()
++        self.assertTrue(a['pagination']['has_more']);self.assertFalse(b['pagination']['has_more']);self.assertNotEqual(a['logs'][0]['id'],b['logs'][0]['id'])
++        empty=rdb.create_reseller('Empty tab test '+str(fixture._n()))
++        for section,key in [('orders','orders'),('api-logs','logs'),('webhooks','webhooks'),('security-events','events')]:
++            response=self.client.get('/api/resellers/'+empty['public_id']+'/'+section+'?summary=1' if section=='security-events' else '/api/resellers/'+empty['public_id']+'/'+section)
++            self.assertEqual(response.status_code,200);self.assertEqual(response.get_json()[key],[])
++
++class ResellerTabBrowserTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):browser_fixture.WholeProjectBrowserTests.setUpClass.__func__(cls)
++    @classmethod
++    def tearDownClass(cls):browser_fixture.WholeProjectBrowserTests.tearDownClass.__func__(cls)
++    def setUp(self):browser_fixture.WholeProjectBrowserTests.setUp(self)
++    def open_from_reseller_list(self, res):
++        self.page.locator('.nav-item[data-view="resellers"]').click()
++        self.page.locator('#resellersSearchBox').wait_for()
++        self.page.locator('#resellersSearchBox').fill(res['public_id'])
++        self.page.locator('#content tr').filter(has_text=res['public_id']).get_by_role('button',name='Manage',exact=True).click()
++        self.page.locator('#resellerTabBody').wait_for()
++        self.page.wait_for_timeout(500)  # A stale search debounce/response must not replace the detail.
++        self.assertTrue(self.page.locator('#resellerTabBody').is_visible())
++    def test_four_tabs_render_actual_seeded_rows_on_desktop_and_mobile(self):
++        res,ids=seed();self.open_from_reseller_list(res)
++        for width,height in [(1280,900),(390,844)]:
++            self.page.set_viewport_size({'width':width,'height':height})
++            for key,expected in [('orders',f'ORD-{ids[-1]:08d}'),('apilogs','/api/v1/orders'),('secevents','admin_order_fail'),('webhooks','https://example.test')]:
++                self.page.locator('#content').get_by_role('button',name={'orders':'🛒 Orders','apilogs':'🧾 API Logs','secevents':'🛡️ Security Events','webhooks':'🪝 Webhooks'}[key],exact=True).click()
++                self.page.locator('#resellerTabBody table').wait_for()
++                body=self.page.locator('#resellerTabBody').inner_text();self.assertIn(expected,body)
++                self.assertNotIn('later Phase',body);self.assertNotIn('test-private-',body)
++                folder=os.environ.get('OGGY_AUDIT_EVIDENCE_DIR')
++                if folder:
++                    p=Path(folder);p.mkdir(parents=True,exist_ok=True);self.page.screenshot(path=str(p/f'reseller-{key}-{width}.png'),full_page=True)
++        self.assertEqual(self.errors,[])
++    def test_order_link_opens_existing_filtered_master_order_view(self):
++        res,ids=seed();self.open_from_reseller_list(res)
++        self.page.locator('#content').get_by_role('button',name='🛒 Orders',exact=True).click()
++        self.page.locator('#resellerTabBody table').wait_for();self.page.locator('#resellerTabBody').get_by_role('button',name='Open order',exact=True).first.click()
++        self.page.locator('#content .loader').wait_for(state='hidden')
++        self.assertEqual(self.page.evaluate('orderFilters'),{'source':'reseller_api','order_id':str(ids[-1])})
++        self.assertEqual(self.page.evaluate('currentView'),'orders');self.assertEqual(self.errors,[])
++    def test_failed_read_shows_error_and_retry_not_empty_success(self):
++        res,_=seed();self.open_from_reseller_list(res)
++        self.page.route('**/api/resellers/*/api-logs?*',lambda r:r.fulfill(status=503,content_type='application/json',body=json.dumps({'ok':False,'error':'Temporary test outage'})))
++        self.page.get_by_role('button',name='🧾 API Logs',exact=True).click()
++        self.page.locator('#resellerTabBody .res-detail-error').wait_for();self.assertIn('Temporary test outage',self.page.locator('#resellerTabBody').inner_text())
++        self.assertTrue(self.page.locator('#resellerTabBody').get_by_role('button',name='Retry',exact=True).is_visible());self.assertEqual(self.errors,[])
++
++if __name__=='__main__':unittest.main()
+--- /dev/null
++++ b/tests/test_whole_project_postgres_backup_analytics.py
+@@ -0,0 +1,136 @@
++"""Real pgcompat/backup/analytics code; only the external PostgreSQL driver is a
++strict deterministic stand-in. This is NOT a live PostgreSQL integration test.
++Browser/Flask probes use isolated SQLite and no external services.
++"""
++import contextlib, gzip, json, logging, tempfile, threading, unittest
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import patch
++import tests.test_phase16_admin_fail_order as fixture
++import tests.test_whole_project_browser as browser_fixture
++from database import pgcompat, reseller_db as rdb
++from utils import backup
++
++class DriverFailure(RuntimeError):
++    sqlstate='42883'
++
++class RawDriver:
++    """DB-API boundary double: preserves real _PgConn/_PgCursor buffering."""
++    closed=False;broken=False
++    def __init__(self,fail_fetch=False):self.statements=[];self.fail_fetch=fail_fetch;self.depth=0;self.ends=[]
++    @contextlib.contextmanager
++    def transaction(self):
++        self.depth+=1
++        try:yield
++        except Exception:self.ends.append('rollback');raise
++        else:self.ends.append('commit')
++        finally:self.depth-=1
++    def cursor(self):return RawCursor(self)
++    def close(self):self.closed=True
++    def rollback(self):self.ends.append('rollback')
++
++class RawCursor:
++    def __init__(self,raw):self.raw=raw;self.description=None;self.rows=[];self.rowcount=0
++    def execute(self,sql,params=None):
++        self.raw.statements.append((sql,params));text=sql.lower()
++        if 'strftime(' in text:raise DriverFailure('test-only-private-driver-details')
++        if text.startswith('set transaction'):self.description=None;self.rows=[];return
++        if 'information_schema.tables' in text:cols=['table_name'];rows=[('resellers',),('reseller_deposits',),('future_table',)]
++        elif text.startswith('select *'):cols=['id','value'];rows=[(1,'test-fixture-row')]
++        elif 'avg(case when status=' in text:
++            cols=['total','delivered','pending','dead','retried','avg_latency'];rows=[(2,1,1,0,0,12.0)]
++        elif 'group by event_type' in text:cols=['event_type','count'];rows=[('delivery.completed',1),('delivery.pending',1)]
++        elif 'group by code' in text:cols=['code','count'];rows=[(200,1)]
++        elif 'from webhook_delivery_log' in text:cols=['total','ok','failed','retried'];rows=[(1,1,0,0)]
++        else:raise AssertionError('Unexpected test-driver SQL shape')
++        self.description=[(c,None,None,None,None,None,None) for c in cols];self.rows=rows;self.rowcount=len(rows)
++    def fetchall(self):
++        if self.raw.fail_fetch and self.description and self.description[0][0]=='id':raise DriverFailure('test-only-private-fetch-details')
++        return self.rows
++    def close(self):pass
++
++def connection(fail_fetch=False):
++    raw=RawDriver(fail_fetch);conn=pgcompat._PgConn.__new__(pgcompat._PgConn)
++    conn._pg=raw;conn._lock=threading.RLock();conn._transaction_depth=0
++    conn._psycopg=SimpleNamespace(OperationalError=ConnectionError,InterfaceError=ConnectionError)
++    return conn,raw
++
++@contextlib.contextmanager
++def postgres_analytics_boundary():
++    actual=rdb._webhook_analytics
++    def through_driver(*args,**kwargs):
++        conn,raw=connection()
++        try:
++            with patch.object(rdb,'get_cursor',return_value=conn.cursor()),patch.object(rdb,'_pgcompat',SimpleNamespace(use_postgres=lambda:True)):
++                return actual(*args,**kwargs)
++        finally:conn.close()
++    with patch.object(rdb,'_webhook_analytics',side_effect=through_driver):yield
++
++class PostgresAdapterBackupTests(unittest.TestCase):
++    def test_cursor_exposes_dbapi_description_after_buffering(self):
++        conn,raw=connection();cur=conn.cursor();cur.execute('SELECT * FROM "resellers"')
++        self.assertEqual([d[0] for d in cur.description],['id','value']);self.assertEqual(list(cur.fetchone()),[1,'test-fixture-row'])
++    def test_backup_uses_real_pg_adapter_columns_rows_and_one_snapshot(self):
++        conn,raw=connection()
++        with tempfile.TemporaryDirectory() as d:
++            target=Path(d)/'backup.json.gz'
++            with patch.object(backup,'use_postgres',return_value=True),patch.object(pgcompat,'use_postgres',return_value=True),patch.object(pgcompat,'connect',return_value=conn):backup._dump_postgres(target)
++            value=json.loads(gzip.decompress(target.read_bytes()))
++            self.assertEqual(set(value['tables']),{'resellers','reseller_deposits','future_table'})
++            self.assertTrue(all(t=={'columns':['id','value'],'rows':[[1,'test-fixture-row']]} for t in value['tables'].values()))
++            self.assertEqual(raw.ends,['commit']);self.assertTrue(raw.closed)
++            self.assertIn('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',raw.statements[0][0])
++    def test_failed_fetch_is_not_silently_an_empty_success(self):
++        conn,raw=connection(fail_fetch=True)
++        with self.assertRaises(DriverFailure):conn.cursor().execute('SELECT * FROM "resellers"')
++    def test_failed_fetch_rolls_back_snapshot_and_leaves_no_file_or_raw_secret(self):
++        conn,raw=connection(fail_fetch=True)
++        with tempfile.TemporaryDirectory() as d:
++            target=Path(d)/'failed.json.gz'
++            with patch.object(backup,'use_postgres',return_value=True),patch.object(pgcompat,'use_postgres',return_value=True),patch.object(pgcompat,'connect',return_value=conn):
++                with self.assertRaises(RuntimeError) as caught:backup._dump_postgres(target)
++            self.assertFalse(target.exists());self.assertEqual(raw.ends,['rollback']);self.assertNotIn('private-fetch',str(caught.exception));self.assertTrue(raw.closed)
++    def test_pg_webhook_latency_query_no_sqlite_function_and_real_aggregation(self):
++        conn,raw=connection()
++        with patch.object(rdb,'get_cursor',return_value=conn.cursor()),patch.object(rdb,'_pgcompat',SimpleNamespace(use_postgres=lambda:True)):
++            data=rdb._webhook_analytics('reseller_id=?',(123,),30,since='2026-01-01 00:00:00')
++        self.assertEqual((data['events_total'],data['delivered'],data['pending'],data['avg_delivery_seconds']),(2,1,1,12.0))
++        sql=raw.statements[0][0];self.assertIn('EXTRACT(EPOCH',sql);self.assertNotIn('strftime',sql);self.assertIn('%s',sql)
++        self.assertEqual(raw.statements[0][1],(123,'2026-01-01 00:00:00'))
++
++class WebAdminAnalyticsBoundaryTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        import web_admin.app as wa
++        cls.wa=wa;wa.DB_PATH=fixture._db_path
++    def setUp(self):self.client=fixture.Phase16AdminFailOrderTests()._owner()
++    def test_owner_webhook_analytics_route_through_real_pg_adapter(self):
++        with postgres_analytics_boundary():response=self.client.get('/api/monitoring/webhook-analytics')
++        self.assertEqual(response.status_code,200);self.assertEqual(response.get_json()['webhooks']['avg_delivery_seconds'],12.0)
++    def test_reseller_webhooks_route_through_real_pg_adapter(self):
++        res=rdb.create_reseller('PG boundary reseller '+str(fixture._n()))
++        with postgres_analytics_boundary():response=self.client.get('/api/resellers/'+res['public_id']+'/webhooks')
++        self.assertEqual(response.status_code,200);self.assertEqual(response.get_json()['health']['delivered'],1)
++    def test_failed_monitoring_read_returns_safe_json_and_trace_reference(self):
++        with patch.object(rdb,'get_platform_webhook_analytics',side_effect=DriverFailure('test-only-private-driver-details')):
++            with self.assertLogs(self.wa.app.logger.name,level='ERROR') as logs:response=self.client.get('/api/monitoring/webhook-analytics')
++        self.assertEqual(response.status_code,500);data=response.get_json();self.assertFalse(data['ok']);self.assertTrue(data['error_id'])
++        self.assertEqual(response.headers['X-Error-ID'],data['error_id'])
++        self.assertNotIn('test-only-private-driver-details',response.get_data(as_text=True)+str(logs.output));self.assertIn('42883',str(logs.output))
++
++class AnalyticsErrorBrowserTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):browser_fixture.WholeProjectBrowserTests.setUpClass.__func__(cls)
++    @classmethod
++    def tearDownClass(cls):browser_fixture.WholeProjectBrowserTests.tearDownClass.__func__(cls)
++    def setUp(self):browser_fixture.WholeProjectBrowserTests.setUp(self)
++    def test_non_json_500_explains_http_status_without_html_or_secret(self):
++        self.page.route('**/api/test-only-non-json',lambda r:r.fulfill(status=500,content_type='text/html',body='<h1>test-only-private-server-error</h1>'))
++        result=self.page.evaluate("async()=>{try{await api('/api/test-only-non-json');return 'resolved'}catch(e){return e.message}}")
++        self.assertIn('HTTP 500',result);self.assertNotIn('test-only-private',result);self.assertNotEqual(result,'Bad response')
++    def test_json_500_preserves_safe_error_reference(self):
++        self.page.route('**/api/test-only-json',lambda r:r.fulfill(status=500,content_type='application/json',body=json.dumps({'ok':False,'error':'Internal server error','error_id':'test-reference-123'})))
++        result=self.page.evaluate("async()=>{try{await api('/api/test-only-json');return 'resolved'}catch(e){return e.message}}")
++        self.assertIn('test-reference-123',result)
++
++if __name__=='__main__':unittest.main()

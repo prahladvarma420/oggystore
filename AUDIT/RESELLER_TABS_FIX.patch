@@ -1,0 +1,429 @@
+--- a/web_admin/app.py
++++ b/web_admin/app.py
+@@ -3545,6 +3545,118 @@
+     })
+ 
+ 
++# Reseller-detail operational reads. Owner sessions are checked independently of
++# public API keys; no financial/lifecycle writes, delivery content or supplier HTTP.
++def _reseller_read_window(default_limit=25, clamp_limit=False):
++    try:
++        limit = int(request.args.get("limit", default_limit))
++        if clamp_limit:
++            limit = min(limit, 200)
++        offset = int(request.args.get("offset", 0))
++        if not 1 <= limit <= 200 or not 0 <= offset <= 2147483647:
++            raise ValueError
++        return limit, offset
++    except (TypeError, ValueError):
++        raise ValueError("limit must be 1–200 and offset must be non-negative") from None
++
++
++def _reseller_read_page(rows, limit, offset):
++    more = len(rows) > limit
++    return rows[:limit], {"has_more": more, "next_offset": offset + limit if more else None,
++                          "limit": limit, "offset": offset}
++
++
++@app.route("/api/resellers/<pubid>/orders")
++@login_required
++@owner_required
++def api_reseller_orders(pubid):
++    res = _resolve_reseller(pubid)
++    if not res:
++        return jsonify({"ok": False, "error": "Reseller not found"}), 404
++    from types import SimpleNamespace
++    from reseller_api.services.order_query import parse_order_list_params, get_order_list, OrderQueryError
++    from reseller_api.services.order_status import OrderStatusUnavailable
++    try:
++        params = parse_order_list_params(request.args)
++        # The shared read service uses ONLY reseller_id. This scope is supplied
++        # after owner authorization, not a forged reseller authentication context.
++        orders, pagination = get_order_list(SimpleNamespace(reseller_id=res["id"]), params)
++    except OrderQueryError as exc:
++        return jsonify({"ok": False, "error": exc.message}), exc.status
++    except OrderStatusUnavailable:
++        return jsonify({"ok": False, "error": "Order status is temporarily unavailable"}), 503
++    # Add historical display names for ONLY the returned scoped page. The
++    # public serializer intentionally omits names; reuse its status/money logic.
++    if orders:
++        order_ids = [int(row["order_id"].split("-", 1)[1]) for row in orders]
++        placeholders = ",".join("?" for _ in order_ids)
++        names = {int(row["id"]): row["product_name"] for row in q(
++            "SELECT id, product_name FROM orders WHERE reseller_id=? "
++            "AND source='reseller_api' AND id IN (" + placeholders + ")",
++            (res["id"], *order_ids))}
++        for row in orders:
++            row["product_name"] = names.get(int(row["order_id"].split("-", 1)[1]), "")
++    return jsonify({"ok": True, "orders": orders, "pagination": pagination})
++
++
++@app.route("/api/resellers/<pubid>/api-logs")
++@login_required
++@owner_required
++def api_reseller_api_logs(pubid):
++    res = _resolve_reseller(pubid)
++    if not res:
++        return jsonify({"ok": False, "error": "Reseller not found"}), 404
++    try:
++        limit, offset = _reseller_read_window()
++    except ValueError as exc:
++        return jsonify({"ok": False, "error": str(exc)}), 400
++    from reseller_api.services.observability import sanitize_log_text
++    rows = rdb.list_api_logs(reseller_id=res["id"], limit=limit + 1, offset=offset)
++    rows, pagination = _reseller_read_page(rows, limit, offset)
++    # Metadata allow-list: no key IDs, headers, body, IP, user agent or raw query.
++    logs = [{"id": r["id"], "method": sanitize_log_text(r.get("method"), 12),
++             "endpoint": sanitize_log_text(str(r.get("endpoint") or "").split("?", 1)[0].split("#", 1)[0], 300),
++             "status_code": r.get("status_code"), "response_ms": r.get("response_ms"),
++             "created": r.get("created")} for r in rows]
++    return jsonify({"ok": True, "logs": logs, "pagination": pagination})
++
++
++@app.route("/api/resellers/<pubid>/webhooks")
++@login_required
++@owner_required
++def api_reseller_webhooks(pubid):
++    res = _resolve_reseller(pubid)
++    if not res:
++        return jsonify({"ok": False, "error": "Reseller not found"}), 404
++    try:
++        limit, offset = _reseller_read_window()
++    except ValueError as exc:
++        return jsonify({"ok": False, "error": str(exc)}), 400
++    from urllib.parse import urlsplit
++    rows = q("SELECT id, url, enabled, created, updated FROM reseller_webhooks "
++             "WHERE reseller_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
++             (res["id"], limit + 1, offset))
++    rows, pagination = _reseller_read_page(rows, limit, offset)
++    hooks = []
++    for row in rows:
++        # Legacy destinations may contain credentials in userinfo/path/query.
++        # Display the origin only, never the stored URL/signing secret.
++        try:
++            parts = urlsplit(row["url"])
++            host = parts.hostname or ""
++            if parts.scheme != "https" or not host:
++                raise ValueError
++            host = "[" + host + "]" if ":" in host else host
++            origin = "https://" + host + ((":" + str(parts.port)) if parts.port else "")
++        except ValueError:
++            origin = "Unavailable destination"
++        hooks.append({"webhook_id": "WHK-{:08d}".format(row["id"]),
++                      "destination_origin": origin, "enabled": bool(row["enabled"]),
++                      "created": row["created"], "updated": row["updated"]})
++    return jsonify({"ok": True, "webhooks": hooks, "pagination": pagination,
++                    "health": rdb.get_reseller_webhook_analytics(res["id"], days=30)})
++
++
+ @app.route("/api/resellers/<pubid>/wallet")
+ @login_required
+ def api_reseller_wallet(pubid):
+@@ -5226,27 +5338,26 @@
+     rid = res["id"]
+     try:
+         event_type = request.args.get("event_type") or None
+-        limit  = min(int(request.args.get("limit",  50)), 200)
+-        offset = max(int(request.args.get("offset",  0)),   0)
+-    except (TypeError, ValueError):
+-        return jsonify({"ok": False, "error": "Invalid pagination parameter"}), 400
+-
+-    events = rdb.list_security_events(
+-        reseller_id=rid, event_type=event_type,
+-        limit=limit, offset=offset,
+-    )
+-    # Strip any residual sensitive-looking long strings — defence in depth.
++        limit, offset = _reseller_read_window(default_limit=50, clamp_limit=True)
++    except ValueError as exc:
++        return jsonify({"ok": False, "error": str(exc)}), 400
++
++    events = rdb.list_security_events(reseller_id=rid, event_type=event_type,
++                                      limit=limit + 1, offset=offset)
++    events, pagination = _reseller_read_page(events, limit, offset)
++    summary = request.args.get("summary") == "1"
++    from reseller_api.services.observability import sanitize_log_text
+     safe_events = []
+     for ev in events:
+-        safe_events.append({
+-            "id":          ev.get("id"),
+-            "event_type":  ev.get("event_type"),
+-            "ip":          ev.get("ip"),
+-            "description": (ev.get("description") or "")[:500],
+-            "created":     ev.get("created"),
+-        })
++        item = {"id": ev.get("id"), "event_type": sanitize_log_text(ev.get("event_type"), 100),
++                "created": ev.get("created")}
++        if not summary:
++            # Preserve the existing response fields for legacy consumers.
++            item.update({"ip": ev.get("ip"),
++                         "description": (ev.get("description") or "")[:500]})
++        safe_events.append(item)
+     return jsonify({"ok": True, "reseller_id": pubid, "events": safe_events,
+-                    "count": len(safe_events)})
++                    "count": len(safe_events), "pagination": pagination})
+ 
+ if __name__ == "__main__":
+     port = int(os.getenv("WEB_ADMIN_PORT", "5000"))
+--- a/web_admin/static/js/app.js
++++ b/web_admin/static/js/app.js
+@@ -1687,6 +1687,7 @@
+ 
+ async function viewResellers() {
+   const d = await api(`/api/resellers?search=${encodeURIComponent(resellersSearchTerm)}&status=${encodeURIComponent(resellersStatus)}&page=${resellersPage}&per_page=25`);
++  if (currentView !== "resellers") return; // Ignore a list response after opening a detail card.
+   const rows = (d.resellers || []).map(r => `<tr>
+     <td class="mono"><b>${esc(r.public_id)}</b></td>
+     <td>${esc(r.name || "-")}${r.username ? ` <span class="muted">@${esc(r.username)}</span>` : ""}</td>
+@@ -1720,17 +1721,18 @@
+ /* -------------------------------------------------- reseller detail page */
+ let currentResellerPub = null, resellerActiveTab = "overview";
+ let resWalletSearch = "", resWalletType = "", resWalletPage = 1, resWalletTimer = null;
+-function openReseller(pub) { currentResellerPub = pub; resellerActiveTab = "overview"; currentView = "reseller_detail"; render(); }
++function openReseller(pub) { clearTimeout(resellersSearchTimer); resellersBoxFocused = false; resDetailReadState = {}; currentResellerPub = pub; resellerActiveTab = "overview"; currentView = "reseller_detail"; render(); }
+ 
+ const RESELLER_TABS = [
+   ["overview", "📋 Overview"], ["products", "📦 Products"], ["pricing", "🏷️ Pricing"],
+   ["keys", "🔑 API Keys"], ["wallet", "👛 Wallet"], ["financial", "💰 Financial"], ["orders", "🛒 Orders"],
+   ["apilogs", "🧾 API Logs"], ["secevents", "🛡️ Security Events"],
+-  ["webhooks", "��� Webhooks"], ["limits", "⏱️ Limits"],
++  ["webhooks", "🪝 Webhooks"], ["limits", "⏱️ Limits"],
+ ];
+ 
+ async function viewResellerDetail(pub) {
+   const d = await api(`/api/resellers/${encodeURIComponent(pub)}`);
++  if (currentView !== "reseller_detail" || currentResellerPub !== pub) return;
+   if (!d.ok) { toast(d.error || "Not found", "err"); currentView = "resellers"; await render(); return; }
+   const r = d.reseller || {};
+   const st = d.api_stats || {};
+@@ -1769,9 +1771,10 @@
+     body = `<div id="resKeysWrap"><div class="muted">Loading API keys…</div></div>`;
+   } else if (resellerActiveTab === "limits") {
+     body = `<div id="resLimitsWrap"><div class="muted">Loading limits…</div></div>`;
++  } else if (["orders", "apilogs", "secevents", "webhooks"].includes(resellerActiveTab)) {
++    body = `<div id="resDetailReadWrap" aria-live="polite"><div class="muted">Loading current records…</div></div>`;
+   } else {
+-    const names = { orders: "Reseller orders", apilogs: "API logs", secevents: "Security events", webhooks: "Webhooks" };
+-    body = empty(`${names[resellerActiveTab] || "This section"} management arrives in a later Phase-2 prompt.`, "🚧");
++    body = empty("Unknown reseller section", "⚠️");
+   }
+   $("#content").innerHTML = `<div class="panel glass">
+     <div class="toolbar">
+@@ -1797,8 +1800,79 @@
+   if (resellerActiveTab === "limits") loadResellerLimits(pub);
+   if (resellerActiveTab === "wallet") loadResellerWallet(pub);
+   if (resellerActiveTab === "financial") loadResellerFinancial(pub);
++  if (["orders", "apilogs", "secevents", "webhooks"].includes(resellerActiveTab)) {
++    await loadResellerReadTab(pub, resellerActiveTab);
++  }
+ }
+ function resellerTab(key) { resellerActiveTab = key; render(); }
++
++// Each subtab reads a bounded, reseller-scoped server page. No supplier HTTP,
++// financial write, secret rotation or webhook retry is performed here.
++let resDetailReadState = {};
++function resDetailState(pub, tab) {
++  const key = pub + ":" + tab;
++  return resDetailReadState[key] || (resDetailReadState[key] = { offset: 0, after_id: null, history: [], next: null });
++}
++function resellerReadPage(delta) {
++  const state = resDetailState(currentResellerPub, resellerActiveTab);
++  if (delta > 0 && state.next != null) {
++    state.history.push({ offset: state.offset, after_id: state.after_id });
++    if (resellerActiveTab === "orders") state.after_id = state.next;
++    else state.offset = state.next;
++  } else if (delta < 0 && state.history.length) Object.assign(state, state.history.pop());
++  render();
++}
++function openResellerMasterOrder(publicId) {
++  const match = /^ORD-(\d{8})$/.exec(String(publicId));
++  if (!match) return toast("Invalid order ID", "err");
++  orderFilters = { source: "reseller_api", order_id: String(Number(match[1])) };
++  orderPage = 1; setView("orders");
++}
++async function loadResellerReadTab(pub, tab) {
++  const wrap = $("#resDetailReadWrap");
++  if (!wrap) return;
++  const state = resDetailState(pub, tab);
++  const paths = { orders: "orders", apilogs: "api-logs", secevents: "security-events", webhooks: "webhooks" };
++  const params = new URLSearchParams({ limit: "25" });
++  if (tab === "orders" && state.after_id) params.set("after_id", state.after_id);
++  if (tab !== "orders") params.set("offset", String(state.offset));
++  if (tab === "secevents") params.set("summary", "1");
++  try {
++    const data = await api(`/api/resellers/${encodeURIComponent(pub)}/${paths[tab]}?${params}`);
++    // A delayed response for a previous reseller/tab must never replace current data.
++    if (currentView !== "reseller_detail" || currentResellerPub !== pub || resellerActiveTab !== tab || !wrap.isConnected) return;
++    const meta = data.pagination || {};
++    state.next = meta.has_more ? (tab === "orders" ? meta.next_after_id : meta.next_offset) : null;
++    let heads, rows, note = "", noData;
++    if (tab === "orders") {
++      heads = ["Order", "Product", "Quantity", "Total (USDT)", "Status", "Created", ""];
++      rows = (data.orders || []).map(o => `<tr><td class="mono">${esc(o.order_id)}</td><td>${esc(o.product_name)}</td><td>${esc(o.quantity)}</td><td>${esc(o.total)}</td><td>${esc(o.status)}</td><td>${esc(fmtDate(o.created_at))}</td><td><button class="btn btn-sm btn-ghost" onclick="openResellerMasterOrder(${jsArg(o.order_id)})">Open order</button></td></tr>`);
++      note = "Current reseller API orders. Open an order to use the existing authorized lifecycle workflows.";
++      noData = "No reseller API orders yet.";
++    } else if (tab === "apilogs") {
++      heads = ["ID", "Method", "Endpoint", "HTTP status", "Latency (ms)", "Created"];
++      rows = (data.logs || []).map(l => `<tr><td>${esc(l.id)}</td><td>${esc(l.method)}</td><td><code>${esc(l.endpoint)}</code></td><td>${esc(l.status_code ?? "—")}</td><td>${esc(l.response_ms ?? "—")}</td><td>${esc(fmtDate(l.created))}</td></tr>`);
++      note = "Request metadata only. Query strings, credentials, headers and request bodies are not displayed.";
++      noData = "No API requests recorded yet.";
++    } else if (tab === "secevents") {
++      heads = ["ID", "Event", "Created"];
++      rows = (data.events || []).map(e => `<tr><td>${esc(e.id)}</td><td>${esc(e.event_type)}</td><td>${esc(fmtDate(e.created))}</td></tr>`);
++      note = "Security event metadata. Free-text descriptions are omitted to protect credentials and buyer data.";
++      noData = "No security events recorded yet.";
++    } else {
++      heads = ["Webhook", "Destination origin", "Enabled", "Created", "Updated"];
++      rows = (data.webhooks || []).map(w => `<tr><td class="mono">${esc(w.webhook_id)}</td><td>${esc(w.destination_origin)}</td><td>${w.enabled ? "Yes" : "No"}</td><td>${esc(fmtDate(w.created))}</td><td>${esc(fmtDate(w.updated))}</td></tr>`);
++      const h = data.health || {};
++      note = `Read-only subscriptions; URL paths, query parameters and signing secrets are hidden. Last ${Number(h.window_days) || 30} days: ${Number(h.delivered) || 0} delivered, ${Number(h.pending) || 0} pending, ${Number(h.dead_lettered) || 0} dead-lettered.`;
++      noData = "No webhook destinations configured yet.";
++    }
++    const table = rows.length ? `<div class="tbl-wrap"><table><thead><tr>${heads.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>` : empty(noData);
++    wrap.innerHTML = `<p class="muted">${esc(note)}</p>${table}<div class="toolbar" style="margin-top:12px"><button class="btn btn-sm btn-ghost" onclick="resellerReadPage(-1)" ${state.history.length ? "" : "disabled"}>Previous</button><button class="btn btn-sm btn-ghost" onclick="resellerReadPage(1)" ${state.next != null ? "" : "disabled"}>Next</button><div class="grow"></div><button class="btn btn-sm btn-ghost" onclick="render()">Refresh records</button></div>`;
++  } catch (e) {
++    if (currentView !== "reseller_detail" || currentResellerPub !== pub || resellerActiveTab !== tab || !wrap.isConnected) return;
++    wrap.innerHTML = `<div class="res-detail-error" role="alert">${esc(e.message || "Unable to load records")}</div><button class="btn btn-sm btn-ghost" onclick="render()">Retry</button>`;
++  }
++}
+ 
+ async function loadResellerWallet(pub) {
+   const d = await api(`/api/resellers/${encodeURIComponent(pub)}/wallet?search=${encodeURIComponent(resWalletSearch)}&type=${encodeURIComponent(resWalletType)}&page=${resWalletPage}&per_page=25`);
+--- a/web_admin/templates/index.html
++++ b/web_admin/templates/index.html
+@@ -93,6 +93,6 @@
+ <!-- TOAST -->
+ <div class="toast-wrap" id="toastWrap" aria-live="polite" aria-atomic="true"></div>
+ 
+-<script src="/static/js/app.js?v=34"></script>
++<script src="/static/js/app.js?v=35"></script>
+ </body>
+ </html>
+--- /dev/null
++++ b/tests/test_whole_project_reseller_tabs.py
+@@ -0,0 +1,126 @@
++"""Real WebAdmin reseller subtab routes/UI. Temporary SQLite; no external HTTP.
++Owner reads are distinct from public reseller API authentication. No mutation UI
++or supplier/webhook delivery calls are introduced by this repair.
++"""
++import json, os, unittest
++from pathlib import Path
++from utils.crypto import encrypt_text
++import tests.test_phase16_admin_fail_order as fixture
++import tests.test_whole_project_browser as browser_fixture
++from database import db, reseller_db as rdb
++
++def seed():
++    n=fixture._n();res=rdb.create_reseller(f'Tab reseller {n}')
++    rdb.set_reseller_status(res['id'],'active')
++    db.cur.execute("INSERT INTO products(name,price,stock,delivery,active) VALUES(?,7.25,0,'',1)",(f'Tab product {n}',));pid=db.cur.lastrowid
++    ids=[]
++    for i in range(3):
++        db.cur.execute("INSERT INTO orders(user_id,product_id,product_name,price,source,reseller_id,quantity,unit_price_cents,delivery,master_status) VALUES(0,?,?,7.25,'reseller_api',?,1,725,?,?)",(pid,f'Tab product {n}',res['id'],encrypt_text('test-private-delivery') if i==0 else None,'failed' if i==1 else None));ids.append(db.cur.lastrowid)
++    db.conn.commit()
++    rdb.log_api_request(res['id'],None,'/api/v1/orders?api_secret=test-private-value','GET',200,request_id=f'tab-request-{n}',response_ms=12,key_id='test-private-key',user_agent='test-private-agent')
++    rdb.log_security_event(res['id'],'admin_order_fail',description='test-private-description buyer@example.test',ip='127.0.0.1')
++    db.cur.execute("INSERT INTO reseller_webhooks(reseller_id,url,secret_encrypted,enabled) VALUES(?,?,?,1)",(res['id'],'https://example.test/hook/test-private-path?token=test-private-query',encrypt_text('test-private-signing-secret')));db.conn.commit()
++    return res,ids
++
++class ResellerTabRouteTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        import web_admin.app as wa
++        cls.wa=wa;wa.DB_PATH=fixture._db_path;wa.app.config['TESTING']=True
++    def setUp(self):
++        self.res,self.ids=seed();self.other,self.other_ids=seed()
++        self.client=fixture.Phase16AdminFailOrderTests()._owner()
++        self.base='/api/resellers/'+self.res['public_id']
++    def get(self,section,query=''):return self.client.get(self.base+'/'+section+query)
++    def test_orders_scoped_real_status_and_no_delivery_or_buyer_data(self):
++        response=self.get('orders');self.assertEqual(response.status_code,200)
++        rows=response.get_json()['orders'];self.assertEqual({r['order_id'] for r in rows},{f'ORD-{i:08d}' for i in self.ids})
++        self.assertEqual({r['status'] for r in rows},{'completed','failed','processing'});self.assertTrue(all(r['product_name'].startswith('Tab product ') for r in rows))
++        text=response.get_data(as_text=True);self.assertNotIn('test-private-delivery',text);self.assertNotIn('buyer_email',text)
++    def test_orders_cursor_has_no_omissions_or_duplicates(self):
++        first=self.get('orders','?limit=2').get_json();self.assertTrue(first['pagination']['has_more'])
++        second=self.get('orders','?limit=2&after_id='+first['pagination']['next_after_id']).get_json()
++        self.assertEqual(len(first['orders'])+len(second['orders']),3)
++        self.assertEqual(len({r['order_id'] for r in first['orders']+second['orders']}),3)
++    def test_api_logs_scoped_and_allowlisted(self):
++        response=self.get('api-logs');self.assertEqual(response.status_code,200)
++        data=response.get_json();self.assertEqual(len(data['logs']),1);self.assertEqual(data['logs'][0]['endpoint'],'/api/v1/orders')
++        for bad in ['test-private-value','test-private-key','test-private-agent','api_key_id','user_agent']:
++            self.assertNotIn(bad,response.get_data(as_text=True))
++    def test_security_summary_reuses_existing_route_without_free_text(self):
++        response=self.get('security-events','?summary=1&limit=2');self.assertEqual(response.status_code,200)
++        data=response.get_json();self.assertEqual(len(data['events']),1)
++        self.assertEqual(set(data['events'][0]),{'id','event_type','created'})
++        self.assertNotIn('test-private-description',response.get_data(as_text=True))
++    def test_webhooks_metadata_and_real_analytics_no_url_credentials(self):
++        response=self.get('webhooks');self.assertEqual(response.status_code,200)
++        data=response.get_json();self.assertEqual(data['webhooks'][0]['destination_origin'],'https://example.test')
++        self.assertEqual(data['health'],rdb.get_reseller_webhook_analytics(self.res['id'],days=30))
++        for bad in ['test-private-path','test-private-query','test-private-signing-secret','secret_encrypted']:
++            self.assertNotIn(bad,response.get_data(as_text=True))
++    def test_new_reads_require_login_owner_and_do_not_accept_api_identity(self):
++        anon=self.wa.app.test_client();admin=fixture.Phase16AdminFailOrderTests()._owner('admin')
++        for section in ['orders','api-logs','webhooks']:
++            path=self.base+'/'+section
++            self.assertEqual(anon.get(path).status_code,401)
++            self.assertEqual(anon.get(path,headers={'Authorization':'Bearer test-only-fake-token'}).status_code,401)
++            self.assertEqual(admin.get(path).status_code,403)
++    def test_missing_reseller_is_404(self):
++        for section in ['orders','api-logs','webhooks','security-events']:
++            self.assertEqual(self.client.get('/api/resellers/RES-MISSING/'+section).status_code,404)
++    def test_invalid_pagination_and_identity_injection_rejected(self):
++        for section in ['api-logs','webhooks','security-events']:
++            for query in ['?limit=-1','?limit=0','?limit=abc','?offset=-1','?offset=abc']:
++                self.assertEqual(self.get(section,query).status_code,400,(section,query))
++        self.assertEqual(self.get('orders','?reseller_id='+str(self.other['id'])).status_code,400)
++    def test_metadata_offset_pages_and_empty_results(self):
++        rdb.log_api_request(self.res['id'],None,'/api/v1/products','GET',404)
++        a=self.get('api-logs','?limit=1').get_json();b=self.get('api-logs','?limit=1&offset=1').get_json()
++        self.assertTrue(a['pagination']['has_more']);self.assertFalse(b['pagination']['has_more']);self.assertNotEqual(a['logs'][0]['id'],b['logs'][0]['id'])
++        empty=rdb.create_reseller('Empty tab test '+str(fixture._n()))
++        for section,key in [('orders','orders'),('api-logs','logs'),('webhooks','webhooks'),('security-events','events')]:
++            response=self.client.get('/api/resellers/'+empty['public_id']+'/'+section+'?summary=1' if section=='security-events' else '/api/resellers/'+empty['public_id']+'/'+section)
++            self.assertEqual(response.status_code,200);self.assertEqual(response.get_json()[key],[])
++
++class ResellerTabBrowserTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):browser_fixture.WholeProjectBrowserTests.setUpClass.__func__(cls)
++    @classmethod
++    def tearDownClass(cls):browser_fixture.WholeProjectBrowserTests.tearDownClass.__func__(cls)
++    def setUp(self):browser_fixture.WholeProjectBrowserTests.setUp(self)
++    def open_from_reseller_list(self, res):
++        self.page.locator('.nav-item[data-view="resellers"]').click()
++        self.page.locator('#resellersSearchBox').wait_for()
++        self.page.locator('#resellersSearchBox').fill(res['public_id'])
++        self.page.locator('#content tr').filter(has_text=res['public_id']).get_by_role('button',name='Manage',exact=True).click()
++        self.page.locator('#resellerTabBody').wait_for()
++        self.page.wait_for_timeout(500)  # A stale search debounce/response must not replace the detail.
++        self.assertTrue(self.page.locator('#resellerTabBody').is_visible())
++    def test_four_tabs_render_actual_seeded_rows_on_desktop_and_mobile(self):
++        res,ids=seed();self.open_from_reseller_list(res)
++        for width,height in [(1280,900),(390,844)]:
++            self.page.set_viewport_size({'width':width,'height':height})
++            for key,expected in [('orders',f'ORD-{ids[-1]:08d}'),('apilogs','/api/v1/orders'),('secevents','admin_order_fail'),('webhooks','https://example.test')]:
++                self.page.locator('#content').get_by_role('button',name={'orders':'🛒 Orders','apilogs':'🧾 API Logs','secevents':'🛡️ Security Events','webhooks':'🪝 Webhooks'}[key],exact=True).click()
++                self.page.locator('#resellerTabBody table').wait_for()
++                body=self.page.locator('#resellerTabBody').inner_text();self.assertIn(expected,body)
++                self.assertNotIn('later Phase',body);self.assertNotIn('test-private-',body)
++                folder=os.environ.get('OGGY_AUDIT_EVIDENCE_DIR')
++                if folder:
++                    p=Path(folder);p.mkdir(parents=True,exist_ok=True);self.page.screenshot(path=str(p/f'reseller-{key}-{width}.png'),full_page=True)
++        self.assertEqual(self.errors,[])
++    def test_order_link_opens_existing_filtered_master_order_view(self):
++        res,ids=seed();self.open_from_reseller_list(res)
++        self.page.locator('#content').get_by_role('button',name='🛒 Orders',exact=True).click()
++        self.page.locator('#resellerTabBody table').wait_for();self.page.locator('#resellerTabBody').get_by_role('button',name='Open order',exact=True).first.click()
++        self.page.locator('#content .loader').wait_for(state='hidden')
++        self.assertEqual(self.page.evaluate('orderFilters'),{'source':'reseller_api','order_id':str(ids[-1])})
++        self.assertEqual(self.page.evaluate('currentView'),'orders');self.assertEqual(self.errors,[])
++    def test_failed_read_shows_error_and_retry_not_empty_success(self):
++        res,_=seed();self.open_from_reseller_list(res)
++        self.page.route('**/api/resellers/*/api-logs?*',lambda r:r.fulfill(status=503,content_type='application/json',body=json.dumps({'ok':False,'error':'Temporary test outage'})))
++        self.page.get_by_role('button',name='🧾 API Logs',exact=True).click()
++        self.page.locator('#resellerTabBody .res-detail-error').wait_for();self.assertIn('Temporary test outage',self.page.locator('#resellerTabBody').inner_text())
++        self.assertTrue(self.page.locator('#resellerTabBody').get_by_role('button',name='Retry',exact=True).is_visible());self.assertEqual(self.errors,[])
++
++if __name__=='__main__':unittest.main()
