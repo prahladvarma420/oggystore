@@ -29,6 +29,10 @@ jobs:
         run: python tools/generate_client_kit.py --check
       - name: Run every suite in an isolated process
         run: python tools/run_tests.py
+      - name: Install local PostgreSQL server for native deposit tests
+        run: sudo apt-get update && sudo apt-get install -y postgresql
+      - name: Run private native PostgreSQL deposit concurrency gate
+        run: python tools/run_unique_bep20_postgres.py
       - name: Compile repository Python files
         if: always()
         run: python -m compileall .
