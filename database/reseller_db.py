@@ -337,6 +337,8 @@ def ensure_reseller_tables():
         cur.execute(stmt)
 
     ensure_reseller_deposit_table()
+    from payments.unique_bep20_schema import ensure_schema as ensure_unique_bep20_schema
+    ensure_unique_bep20_schema(cur)
 
     # Limits configuration columns (Phase 2) — additive, idempotent. These are
     # CONFIG only: the enforcement engine arrives with the public API.
