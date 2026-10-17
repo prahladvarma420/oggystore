@@ -95,6 +95,10 @@ def payment_target_is_unique(cur, method, paid, notes, workflow, deposit_id):
 
 def claim(cur,method,txid,deposit_id,user_id,paid):
     """Global raw-ID semantics retained; legacy rows without marker fail closed."""
+    # Same namespace lock as new per-log settlement: one transaction family
+    # can belong to legacy invoices OR permanent-address events, never both.
+    cur.execute('SELECT 1 FROM reseller_bep20_claims WHERE tx_hash=?',(str(txid).lower(),))
+    if cur.fetchone():return False
     lookup='LOWER(tx_hash)=?' if method!='binance' else 'tx_hash=?'
     cur.execute('SELECT 1 FROM processed_txs WHERE '+lookup,(txid,))
     if cur.fetchone():return False
