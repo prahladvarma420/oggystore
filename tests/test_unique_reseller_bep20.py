@@ -59,6 +59,9 @@ class UniqueResellerBep20Tests(unittest.TestCase):
     def tearDownClass(cls):fixtures.ResellerDepositTests.tearDownClass()
     def setUp(self):
         self.h=fixtures.ResellerDepositTests();self.h.setUp();self.addCleanup(self.h.doCleanups)
+        # Global incident gates must not leak between this module's test cases.
+        with fixtures.pgcompat.atomic(db.get_conn()):
+            db.get_cursor().execute('DELETE FROM reseller_bep20_scan')
         self.uid=self.h.uid;self.rid=self.h.rid
         self.cfg=core.Settings(TOKEN,'test-only',f'test-wallet-{self.uid}',90,1,batch_blocks=10)
         self.dest='0x'+f'{self.uid:040x}'
@@ -355,6 +358,39 @@ class UniqueResellerBep20Tests(unittest.TestCase):
             self.assertTrue(db.get_conn().in_transaction)
             return original(*args)
         with patch.object(core,'_reconcile_exact_locked',side_effect=check):self.clean()
+    def test_configuration_changes_cannot_bypass_incident_pause(self):
+        rpc=RPC([self.log()]);core.scan_once(self.cfg,rpc,self.provider)
+        rpc.blocks[99]='0x'+'f'*64
+        with self.assertRaises(core.DepositUnavailable):core.scan_once(self.cfg,rpc,self.provider)
+        changed=replace(self.cfg,confirmations=20)
+        with self.assertRaises(core.DepositUnavailable):core.scan_once(changed,rpc,self.provider)
+        with self.assertRaises(core.DepositUnavailable):core.allocate_address(self.uid,changed)
+        event=core.verify_transfer(RPC([self.log(index=1)]),self.log(index=1),changed)
+        with self.assertRaises(core.DepositUnavailable):core.settle_transfer(changed,event,self.provider)
+    def test_remined_accounted_event_commits_pause_after_partial_scan_crash(self):
+        log=self.log();rpc=RPC([log]);core.process_log(self.cfg,rpc,self.provider,log)
+        remined=dict(log,blockNumber=96,blockHash='0x'+f'{96:064x}')
+        self.assertEqual(core.process_log(self.cfg,RPC([remined]),self.provider,remined),'paused_review')
+        self.assertEqual(self.scalar('SELECT paused FROM reseller_bep20_scan WHERE scan_key=?',self.cfg.key),1)
+        self.assertEqual(rdb.get_wallet_balance_cents(self.rid),1200)
+    def test_inventory_exhaustion_replenishment_and_timeout_are_visible(self):
+        health=core.inventory_health(self.cfg);self.assertEqual(health['free'],1)
+        uid=self.uid+50000000;db.ensure_user_id(uid);rs=rdb.create_reseller('Pool',uid,'pool');rdb.set_reseller_status(rs['id'],'active')
+        core.allocate_address(uid,self.cfg)
+        self.assertEqual(core.inventory_health(self.cfg)['category'],'inventory_exhausted')
+        with self.assertLogs(worker.log,level='WARNING') as captured:
+            worker.cycle(self.cfg,self.provider,RPC([]))
+        self.assertIn('inventory_exhausted',' '.join(captured.output))
+        third='0x'+f'{self.uid+2000000000:040x}'
+        self.provider.addresses.append(third);core.import_inventory(self.cfg,self.provider)
+        self.assertEqual(core.inventory_health(self.cfg)['free'],1)
+        self.assertEqual(core.allocate_address(self.uid,self.cfg)['address'],self.dest)
+    def test_rpc_outage_does_not_advance_checkpoint(self):
+        rpc=RPC([self.log()])
+        with patch.object(rpc,'get_logs',side_effect=TimeoutError('provider-private-url')):
+            with self.assertRaises(TimeoutError):core.scan_once(self.cfg,rpc,self.provider)
+        self.assertEqual(self.scalar('SELECT next_block FROM reseller_bep20_scan WHERE scan_key=?',self.cfg.key),90)
+        self.assertEqual(core.scan_once(self.cfg,rpc,self.provider),'advanced');self.clean()
     def test_precision_validation_and_maximum_amount(self):
         for value in (True,1.2,'01','-1',str(2**256)):
             with self.subTest(value=value):
