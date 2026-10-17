@@ -183,6 +183,7 @@ def allocate_address(uid, cfg):
     res = active(uid)
     with pgcompat.atomic(db.get_conn()):
         c = db.get_cursor(); namespace_lock(c)
+        if _paused():raise DepositUnavailable('Deposit scanner paused for review.')
         res = active(uid)
         c.execute('SELECT status FROM resellers WHERE id=?' + (' FOR UPDATE' if pgcompat.use_postgres() else ''), (res['id'],))
         if c.fetchone()[0] != 'active':
@@ -315,19 +316,20 @@ def settle_transfer(cfg, event, adapter):
         raise DepositUnavailable('Custody verification unavailable; retry later.') from None
     with pgcompat.atomic(db.get_conn()):
         c = db.get_cursor(); namespace_lock(c)
-        scan = _one('SELECT paused FROM reseller_bep20_scan WHERE scan_key=?',(cfg.key,))
-        if scan and scan['paused']:
+        if _paused():
             raise DepositUnavailable('Deposit scanner paused for review.')
         old = _one('SELECT * FROM reseller_bep20_events WHERE event_key=?',(event.key,))
         if old and (old['raw_units']!=str(event.raw_units) or old['address']!=event.recipient):
             if old['state']!='accounted':
                 c.execute("UPDATE reseller_bep20_events SET state='review',category='identity_conflict' WHERE event_key=?",(event.key,))
                 return 'review'
-            raise DepositUnavailable('Accounted transfer identity changed; operator review required.')
+            _pause_locked(c,cfg)
+            return 'paused_review'
         if old and old['state'] == 'accounted':
             if any(old[k] != v for k,v in {'raw_units':str(event.raw_units),'address':event.recipient,
                                           'block_hash':event.block_hash}.items()):
-                raise DepositUnavailable('Accounted transfer changed; operator review required.')
+                _pause_locked(c,cfg)
+                return 'paused_review'
             return 'duplicate'
         # All financial eligibility is rechecked while holding shared payment lock.
         if legacy_used(c,event.tx_hash):
@@ -425,7 +427,7 @@ def scan_once(cfg, rpc, adapter):
         c.execute('INSERT OR IGNORE INTO reseller_bep20_scan(scan_key,next_block,updated_at) VALUES(?,?,?)',
                   (cfg.key,cfg.start_block,now_text()))
         checkpoint=_one('SELECT * FROM reseller_bep20_scan WHERE scan_key=?',(cfg.key,))
-    if checkpoint['paused']:raise DepositUnavailable('Deposit scanner paused for review.')
+    if _paused():raise DepositUnavailable('Deposit scanner paused for review.')
     start=checkpoint['next_block']
     if checkpoint['anchor_hash'] and hash32(rpc.eth.get_block(start-1)['hash'])!=checkpoint['anchor_hash']:
         with pgcompat.atomic(db.get_conn()):
@@ -451,6 +453,7 @@ def scan_once(cfg, rpc, adapter):
             # The RPC boundary is not trusted to honor its recipient filters.
             if _decode(log,cfg).recipient not in addresses[offset:offset+100]:raise DepositUnavailable('Unexpected transfer recipient.')
             result=process_log(cfg,rpc,adapter,log)
+            if result=='paused_review':return 'paused_review'
             pending |= result=='pending'
     anchor=hash32(rpc.eth.get_block(end)['hash'])
     if anchor!=batch_anchor:
@@ -461,6 +464,8 @@ def scan_once(cfg, rpc, adapter):
     if pending:return 'pending_custody'
     # Revalidate previous anchor after all external work, before checkpoint advance.
     if checkpoint['anchor_hash'] and hash32(rpc.eth.get_block(start-1)['hash'])!=checkpoint['anchor_hash']:
+        with pgcompat.atomic(db.get_conn()):
+            c=db.get_cursor();namespace_lock(c);_pause_locked(c,cfg)
         raise DepositUnavailable('Canonical checkpoint changed during scan.')
     with pgcompat.atomic(db.get_conn()):
         c=db.get_cursor();namespace_lock(c)
@@ -482,3 +487,27 @@ def validate_rpc(cfg, rpc):
         if value!=cfg.decimals:raise ValueError()
     except Exception:
         raise DepositUnavailable('Deposit RPC asset validation failed.') from None
+
+
+def _pause_locked(cur, cfg):
+    """Persist incident state in the caller's committed non-crediting transaction."""
+    cur.execute('INSERT OR IGNORE INTO reseller_bep20_scan(scan_key,next_block,updated_at) VALUES(?,?,?)',
+                (cfg.key,cfg.start_block,now_text()))
+    cur.execute('UPDATE reseller_bep20_scan SET paused=1,updated_at=? WHERE scan_key=?', (now_text(),cfg.key))
+
+
+def _paused():
+    # Configuration changes must not bypass an unresolved incident. There is one
+    # supported receiving network/asset and no automatic resume operation.
+    return bool(_one('SELECT scan_key FROM reseller_bep20_scan WHERE paused=1 LIMIT 1'))
+
+
+def inventory_health(cfg):
+    """Internal counts only: no address, provider reference, recipient or secrets."""
+    c=db.get_cursor()
+    c.execute('''SELECT COUNT(*), COALESCE(SUM(CASE WHEN reseller_id IS NULL THEN 1 ELSE 0 END),0)
+        FROM reseller_bep20_addresses WHERE provider=? AND wallet_ref=? AND chain_id=? AND token=? AND decimals=?''',
+        (cfg.provider,cfg.wallet_ref,cfg.chain_id,cfg.token,cfg.decimals))
+    total,free=c.fetchone()
+    return {'total':int(total),'free':int(free),'assigned':int(total)-int(free),
+            'category':'inventory_exhausted' if not free else 'inventory_available'}

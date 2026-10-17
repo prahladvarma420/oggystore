@@ -52,7 +52,9 @@ PAY_TX_PATH = "/sapi/v1/pay/transactions"
 
 
 def _make_async_client():
-    """httpx client, optionally routed through a proxy (to dodge geo-blocks).
+    """httpx client with optional operator-approved network routing.
+
+    Never use routing changes to evade provider jurisdiction/account restrictions.
 
     Handles both new (proxy=) and old (proxies=) httpx signatures.
     """
@@ -232,29 +234,60 @@ def _is_usdt_only(tx) -> bool:
     return True
 
 
+class BinanceFetchError(RuntimeError):
+    """Only allow-listed metadata, never a signed URL or raw provider body."""
+    def __init__(self, category, status=None, retry_seconds=60):
+        self.category = category
+        self.status = status
+        self.retry_seconds = max(1, min(int(retry_seconds), 3600))
+        super().__init__('Binance payment verification unavailable: ' + category)
+
+
+def _provider_failure(response):
+    status = response.status_code
+    category = {451:'provider_restricted',401:'authentication',403:'access_denied',
+                418:'rate_blocked',429:'rate_limited'}.get(status,
+                'provider_server' if status >= 500 else 'provider_rejected')
+    delay = 300 if status in (451,401,403,418) else 60
+    if status in (418,429):
+        try:
+            delay = max(delay, min(3600, int(response.headers.get('Retry-After','60'))))
+        except (AttributeError, ValueError, TypeError):
+            pass
+    # Numeric provider codes refine operator diagnosis without logging raw text.
+    if status != 451:
+        try:
+            code = response.json().get('code')
+            category = {-2015:'key_ip_or_permission',-1021:'clock_skew',
+                        -1022:'invalid_signature'}.get(code,category)
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return BinanceFetchError(category,status,delay)
+
+
 async def _recent_pay_transactions():
-    """Signed call to Get Pay Trade History. Returns the raw data list."""
+    """Signed read-only history fetch; never return provider error details."""
     ts = int(time.time() * 1000)
-    start = ts - 2 * 24 * 60 * 60 * 1000  # look back 2 days
+    start = ts - 2 * 24 * 60 * 60 * 1000
     query = f"startTime={start}&limit=100&recvWindow=60000&timestamp={ts}"
-    signature = hmac.new(
-        BINANCE_API_SECRET.encode("utf-8"), query.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    signature = hmac.new(BINANCE_API_SECRET.encode('utf-8'), query.encode('utf-8'), hashlib.sha256).hexdigest()
     url = f"{BINANCE_API_BASE}{PAY_TX_PATH}?{query}&signature={signature}"
-    headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
-
-    async with _make_async_client() as client:
-        resp = await client.get(url, headers=headers)
-        if resp.status_code != 200:
-            # Surface the real Binance error (e.g. -2015 invalid API-key/IP/permission)
-            print(f"[binancepay] HTTP {resp.status_code}: provider request rejected", flush=True)
-            resp.raise_for_status()
-        data = resp.json()
-
-    if not isinstance(data, dict) or not data.get("success"):
-        print("[binancepay] invalid provider response", flush=True)
-        return []
-    return data.get("data") or []
+    try:
+        async with _make_async_client() as client:
+            response = await client.get(url, headers={'X-MBX-APIKEY':BINANCE_API_KEY})
+            if response.status_code != 200:
+                raise _provider_failure(response)
+            data = response.json()
+    except BinanceFetchError:
+        raise
+    except (httpx.TimeoutException, httpx.TransportError):
+        raise BinanceFetchError('transport',retry_seconds=30) from None
+    except Exception:
+        raise BinanceFetchError('invalid_response',retry_seconds=60) from None
+    if (not isinstance(data,dict) or data.get('success') is not True or
+            not isinstance(data.get('data'),list) or not all(isinstance(row,dict) for row in data['data'])):
+        raise BinanceFetchError('invalid_response',retry_seconds=60)
+    return data['data']
 
 
 async def check_binance_payments(context):
@@ -267,12 +300,26 @@ async def check_binance_payments(context):
         await reseller_deps.post_credit_actions_safely(context)
         return
 
+    health = context.bot_data.get('binance_verification_health', {})
+    current = time.monotonic()
+    if current < health.get('retry_at', 0):
+        return  # schedule unchanged; this provider fetch alone is cooling down
     try:
         txs = await _recent_pay_transactions()
-    except Exception as exc:
-        print("[binancepay] transfer fetch failed", flush=True)
-        log_error("Binance Pay checker fetch error", extra="category=provider_unavailable")
+    except BinanceFetchError as exc:
+        previous = health.get('category')
+        context.bot_data['binance_verification_health'] = {
+            'category':exc.category, 'http_status':exc.status,
+            'retry_at':time.monotonic()+exc.retry_seconds, 'retry_seconds':exc.retry_seconds}
+        # One sanitized diagnostic per attempted poll, not per scheduler tick.
+        print(f"[binancepay] verification unavailable category={exc.category} http={exc.status} retry_seconds={exc.retry_seconds}", flush=True)
+        if previous != exc.category:
+            log_error('Binance Pay verification unavailable',extra=f'category={exc.category} http={exc.status}')
         return
+    except Exception:
+        log_error('Binance Pay checker fetch error', extra='category=provider_unavailable')
+        return
+    context.bot_data.pop('binance_verification_health', None)
 
     observations=[]
     for tx in txs:
