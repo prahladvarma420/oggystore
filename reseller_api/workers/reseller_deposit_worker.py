@@ -7,14 +7,24 @@ import argparse
 import logging
 import signal
 import threading
+import time
 
 log = logging.getLogger(__name__)
+_INVENTORY_ALERTS = {}
 
 
 def cycle(cfg, adapter, rpc):
-    from payments.unique_bep20 import import_inventory, scan_once, validate_rpc
+    from payments.unique_bep20 import import_inventory, scan_once, validate_rpc, inventory_health
     validate_rpc(cfg, rpc)
     import_inventory(cfg, adapter)
+    health=inventory_health(cfg)
+    previous=_INVENTORY_ALERTS.get(cfg.key)
+    current=time.monotonic()
+    if health['free']==0 and (previous is None or current-previous>=300):
+        log.warning('reseller_deposit_inventory category=inventory_exhausted')
+        _INVENTORY_ALERTS[cfg.key]=current
+    elif health['free']:
+        _INVENTORY_ALERTS.pop(cfg.key,None)
     return scan_once(cfg, rpc, adapter)
 
 
