@@ -57,7 +57,16 @@ class TopupFlowTests(support.ResellerDepositTests):
             with self.assertRaises(deposits.DepositError):deposits.create_session(self.uid,'trc20',amount)
         self.assertEqual(self.scalar('SELECT COUNT(*) FROM reseller_deposits WHERE reseller_id=?',self.rid),0)
     def test_unique_amount_shared_scope_and_memo_conventions(self):
-        with patch.object(shared.random,'randint',side_effect=[1234,1234,1235,1237]):
+        # Earlier cases leave valid invoices in this suite-owned database.
+        # Choose a clear band before injecting the intended duplicate/nearby
+        # collisions; hardcoded 1234 could exhaust the finite mock on unrelated
+        # random invoices. All production allocation/precision guards stay on.
+        db.cur.execute('SELECT unique_amount FROM deposits UNION ALL SELECT expected_amount FROM reseller_deposits')
+        reserved=[shared.Decimal(str(row[0])) for row in db.cur.fetchall() if row[0] is not None]
+        base=next(n for n in range(1000,9997) if all(
+            abs(shared.Decimal(10)+shared.Decimal(n+offset)/1000000-value)>2*shared.TOL
+            for offset in (0,1,3) for value in reserved))
+        with patch.object(shared.random,'randint',side_effect=[base,base,base+1,base+3]):
             _,cid,amount,_=self.customer();d=self.deposit()
         self.assertGreater(abs(d['expected_amount']-amount),2*float(shared.TOL));self.assertEqual(round(d['expected_amount'],6),d['expected_amount'])
         self.credit(d);b=self.deposit('binance');self.assertRegex(b['memo'],r'^[A-Z0-9]{8}$');self.assertEqual(b['expected_amount'],b['amount'])
