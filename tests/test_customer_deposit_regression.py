@@ -45,9 +45,11 @@ class CustomerDepositRegressionTests(unittest.TestCase):
         entry = {'address': bep.USDT_BEP20_CONTRACT,
                  'topics': [bep.TRANSFER_TOPIC, '0x'+'0'*64, bep._topic_address(address)],
                  'data': hex(int(Decimal(str(expected))*10**bep.USDT_DECIMALS)),
-                 'blockNumber': 95, 'transactionHash': tx or self.helper.tx('bep20')}
+                 'blockNumber': 95, 'blockHash': '0x'+f'{95:064x}', 'logIndex': 0, 'transactionHash': tx or self.helper.tx('bep20')}
         rpc = SimpleNamespace(eth=SimpleNamespace(block_number=100,
-                      get_logs=lambda query: entries if entries is not None else [entry]))
+                      get_logs=lambda query: entries if entries is not None else [entry],
+                      get_transaction_receipt=lambda tx: {'status':1,'transactionHash':entry['transactionHash'],'blockNumber':95,'blockHash':entry['blockHash'],'logs':[entry]},
+                      get_block=lambda height:{'hash':'0x'+f'{height:064x}'}))
         stack = contextlib.ExitStack()
         for target, kwargs in [('_config_ready', {'return_value':True}),
             ('USDT_BEP20_ADDRESS', {'new':address}), ('_get_web3', {'return_value':rpc}),

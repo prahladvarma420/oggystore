@@ -93,12 +93,29 @@ def payment_target_is_unique(cur, method, paid, notes, workflow, deposit_id):
             return False
     return True
 
+def _historical_chain_reservation(cur, method, txid):
+    """Read-only retirement safety: never recreate or remove old accounting data.
+
+    New installs have neither table. Existing reservations/accounted events must
+    still prevent an old transfer replaying into an invoice after feature removal.
+    Metadata/database failures propagate so the financial transaction rolls back.
+    """
+    if method != 'bep20':return False
+    for table, tail in [('reseller_bep20_claims',''),
+                        ('reseller_bep20_events'," AND state='accounted'")]:
+        if pgcompat.use_postgres():
+            cur.execute("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=?",(table,))
+        else:
+            cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,))
+        if cur.fetchone():
+            cur.execute('SELECT 1 FROM '+table+' WHERE LOWER(tx_hash)=?'+tail,(txid.lower(),))
+            if cur.fetchone():return True
+    return False
+
+
 def claim(cur,method,txid,deposit_id,user_id,paid):
     """Global raw-ID semantics retained; legacy rows without marker fail closed."""
-    # Same namespace lock as new per-log settlement: one transaction family
-    # can belong to legacy invoices OR permanent-address events, never both.
-    cur.execute('SELECT 1 FROM reseller_bep20_claims WHERE tx_hash=?',(str(txid).lower(),))
-    if cur.fetchone():return False
+    if _historical_chain_reservation(cur,method,txid):return False
     lookup='LOWER(tx_hash)=?' if method!='binance' else 'tx_hash=?'
     cur.execute('SELECT 1 FROM processed_txs WHERE '+lookup,(txid,))
     if cur.fetchone():return False

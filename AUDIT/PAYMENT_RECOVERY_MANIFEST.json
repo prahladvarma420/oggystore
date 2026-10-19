@@ -1,0 +1,259 @@
+{
+  "base_commit": "0d25bac6c2255ed636c6db848314f3d65e82b0ce",
+  "branch": "main",
+  "instructions": "Apply only after comparing original hashes against your current branch. Extract added/modified paths at repo root, explicitly git rm the deleted paths. No SQL drops or balance changes. See docs/PAYMENT_RECOVERY.md.",
+  "manifest_self_hash": "Excluded to avoid self-reference; external ZIP SHA-256 covers this manifest.",
+  "preserved_current_head_files": [
+    "database/db.py",
+    "database/pgcompat.py",
+    "utils/backup.py",
+    "web_admin/app.py",
+    "payments/deposit_handlers.py",
+    "payments/reseller_deposits.py",
+    "payments/binance_checker.py",
+    "bot.py",
+    "config.py",
+    "tests/test_phase12_final_regression.py",
+    "tests/test_phase17_topup_flow.py"
+  ],
+  "files": [
+    {
+      "path": ".github/workflows/tests.yml",
+      "action": "modified",
+      "reason": "Replace the retired feature-only native gate with the private invoice PostgreSQL gate; preserve all other CI steps. Hosted execution not claimed.",
+      "original_sha256": "f645cec6cf2c6060bdbab5c05204d91d56a8b682210806bc3298ef740b8b403a",
+      "final_sha256": "bb4b87dbe1d2f16b6b86295c775e8d19964c14252972dd2e64b1cdb4b1715679"
+    },
+    {
+      "path": "AUDIT/PAYMENT_RECOVERY_FILE_REVIEW.json",
+      "action": "added",
+      "reason": "Mechanical tracked-file inventory, syntax/config classifications and hashes; explicitly not manual proof of every behavior.",
+      "original_sha256": null,
+      "final_sha256": "c51d9814b7f98e616b936c355d546dc40ab984d3622b12473568d49b5a7ec659"
+    },
+    {
+      "path": "AUDIT/PAYMENT_RECOVERY_PLAN.md",
+      "action": "added",
+      "reason": "History-bound restoration plan and scope.",
+      "original_sha256": null,
+      "final_sha256": "3975bd197d7631e48275cb17ad13aae89e6272fd0bace2f84881d6a5529c5f20"
+    },
+    {
+      "path": "AUDIT/PAYMENT_RECOVERY_REPORT.md",
+      "action": "added",
+      "reason": "Current evidence-bound root causes, file-by-file audit, commands, results and limitations.",
+      "original_sha256": null,
+      "final_sha256": "6fe1de488bc3321a3fa9804f70f775e5c7a80e16e4de32d98e7d3d304b4a8a7b"
+    },
+    {
+      "path": "AUDIT/PAYMENT_RECOVERY_RESULTS.json",
+      "action": "added",
+      "reason": "Actual per-suite counts, runtimes and static/security outcomes, not hypothetical results.",
+      "original_sha256": null,
+      "final_sha256": "c39529ac8136ba0c7017306b6a72ce1d75b7cefed2d3570c77e1e3216378147d"
+    },
+    {
+      "path": "AUDIT/RESELLER_BEP20_PHASE2_RESULTS.json",
+      "action": "deleted",
+      "reason": "Abandoned unique-address feature only; remove explicitly; no production table or balance is deleted.",
+      "original_sha256": "0af3a21055e425ece3898b07bd5814131d96ee771997dba3ec9e3867c800c581",
+      "final_sha256": null
+    },
+    {
+      "path": "GO_LIVE.md",
+      "action": "added",
+      "reason": "Restore omitted shared go-live checklist; historical evidence remains explicitly historical, NOT READY gates preserved.",
+      "original_sha256": null,
+      "final_sha256": "8df0383235c9496e9f1cab0f4acb591bd3557a38dc3a1c24c57d088990fb2826"
+    },
+    {
+      "path": "OPERATIONS.md",
+      "action": "added",
+      "reason": "Restore omitted shared application operations runbook, required by existing cumulative guards.",
+      "original_sha256": null,
+      "final_sha256": "629a758d3bd8378bb02c5992fcaa9af97bf16b836a5b5ad5bd1ff2e3dd5b98b6"
+    },
+    {
+      "path": "PHASE16_OPERATIONS_AUDIT.md",
+      "action": "added",
+      "reason": "Restore omitted historical Phase16 audit with an explicit notice, not new production certification.",
+      "original_sha256": null,
+      "final_sha256": "54c668260be95f26873ea1027ea77a6fd1ea90406f2c46aa0fffd7bc6b2cc465"
+    },
+    {
+      "path": "Procfile",
+      "action": "modified",
+      "reason": "Remove only reseller-deposit-worker; restore the four pre-feature commands byte-for-byte.",
+      "original_sha256": "8c96cf93889ed4f946e94304824ad8164dc9e2e2e4db13dc82c434d8a68f62fc",
+      "final_sha256": "9710b474831542b94afe914e2b6baf49201c23875a1018d3f62ec0a2b4ec5693"
+    },
+    {
+      "path": "RAILWAY_RESELLER_API.md",
+      "action": "modified",
+      "reason": "Restore missing deployment/runbook content from the prior delivered shared guide, including API and both operational workers; no unique-address service.",
+      "original_sha256": "bb9cee935432d137135abed3b80067e0369a1eb8a9f49dcf08256656579814f7",
+      "final_sha256": "fbf97dfacb2bc1bdcb85cbaf47bca1c1425bc6c111a3c7bb1786b930e91cc9a8"
+    },
+    {
+      "path": "RESELLER_API.md",
+      "action": "added",
+      "reason": "Restore omitted shared authoritative API guide/error catalog from prior patch; existing client-kit and route parity checks pass.",
+      "original_sha256": null,
+      "final_sha256": "c37040fb4e92c1cd8a0d244347d62ac5207855aeac6958cc6214c26afdeb2251"
+    },
+    {
+      "path": "RESELLER_API_FUTURE_PROMPTS.md",
+      "action": "added",
+      "reason": "Restore omitted master backlog without closing unverified live gates.",
+      "original_sha256": null,
+      "final_sha256": "ab88b6082d8e3cc9272a730b16a7b52987924b626716d62ecf0f4dcc3e2c86f2"
+    },
+    {
+      "path": "RESELLER_API_VERSIONING.md",
+      "action": "added",
+      "reason": "Restore omitted versioning contract used by cumulative regressions.",
+      "original_sha256": null,
+      "final_sha256": "cede67be7041619966ef84e7fe1419a790427004b0aad228ca41c27614339259"
+    },
+    {
+      "path": "database/reseller_db.py",
+      "action": "modified",
+      "reason": "Remove only the two unique-schema bootstrap lines; existing reseller invoice tables, ledger, analytics and backup fixes preserved.",
+      "original_sha256": "e7ab0b0cb83d9e223d87323c459ae08066b2223c4971a78a10c19ebb3eb3033e",
+      "final_sha256": "45fddef0e76f5104770c2535710fd0d8e0cbe4b81e87105667d660e1fa103653"
+    },
+    {
+      "path": "docs/PAYMENT_RECOVERY.md",
+      "action": "added",
+      "reason": "Exact source-bound deployment, explicit deletion commands, backup, retained tables, verified-payment reconciliation, Binance blocker and rollback.",
+      "original_sha256": null,
+      "final_sha256": "eccc1267a6e19d26f312f50d79335ea81873e765675186e9a957dabdef5ac4ef"
+    },
+    {
+      "path": "docs/payment-checkers.env.example",
+      "action": "added",
+      "reason": "Safe placeholders and existing variable names only; no deployed secret replacement.",
+      "original_sha256": null,
+      "final_sha256": "e3bc9c70768a6bdf8538ee64d438dc549852ef909c2f50e0cc979e4265248465"
+    },
+    {
+      "path": "handlers/reseller_handlers.py",
+      "action": "modified",
+      "reason": "Remove only 49 feature-specific address/QR/history lines; restore invoice BEP20 selection and all other Reseller Center features.",
+      "original_sha256": "5bd93a3c606509338ce95ab85be9e9c4cc2db3892b127af3b60e75329487ce39",
+      "final_sha256": "255cb358d28561fe86750f2f8a94b474bedb619589cc3a6717d8c2c3cea99c70"
+    },
+    {
+      "path": "payments/bep20_checker.py",
+      "action": "modified",
+      "reason": "Repair checkpoint catch-up and RPC rotation; require successful receipt/canonical exact Transfer log proof; remove automatic balance-only pseudo-payment credits; retain old invoice matching/expiry/accounting.",
+      "original_sha256": "006f46ba26cd9e981f64c0ba4c010521b8caa38e5bcf94bcb378d85349cb13db",
+      "final_sha256": "0fa11239b63ac7b54f39ad4cebe436ddf77eb43e1b5952f6ea601e208e3238c5"
+    },
+    {
+      "path": "payments/deposit_settlement.py",
+      "action": "modified",
+      "reason": "Replace mandatory experimental table dependency with optional read-only old reservation/accounted-event replay guard; preserve shared lock, cross-wallet claims and atomic accounting.",
+      "original_sha256": "86a4b48c5bc45b894a3034d78645ff5f0d82c9b5fccb7586d4437800151c61b9",
+      "final_sha256": "599cf1ac24854786916641c676bdc4f1fedeef68cb0bb336614b07ae29f7c888"
+    },
+    {
+      "path": "payments/unique_bep20.py",
+      "action": "deleted",
+      "reason": "Abandoned unique-address feature only; remove explicitly; no production table or balance is deleted.",
+      "original_sha256": "c9a931d224f672aeffe5f2c22c92a15473286e3d8a89c42f135da7fd89589705",
+      "final_sha256": null
+    },
+    {
+      "path": "payments/unique_bep20_schema.py",
+      "action": "deleted",
+      "reason": "Abandoned unique-address feature only; remove explicitly; no production table or balance is deleted.",
+      "original_sha256": "812420718ec04f751e75b727ce0cfbd3b5261de14ee57f71458607be11a80fa6",
+      "final_sha256": null
+    },
+    {
+      "path": "reseller_api/workers/reseller_deposit_worker.py",
+      "action": "deleted",
+      "reason": "Abandoned unique-address feature only; remove explicitly; no production table or balance is deleted.",
+      "original_sha256": "1f659d4c93e75b535e1d7b1a531eac32346e81d9e86b27849c3535ec633c1dc9",
+      "final_sha256": null
+    },
+    {
+      "path": "tests/test_customer_deposit_regression.py",
+      "action": "modified",
+      "reason": "Enrich mock RPC evidence with receipt, canonical block hash and log index only; all 27 original assertions/cases retained.",
+      "original_sha256": "e59cfc178804489397d902d68d0fe293a82f57d57b67f66f5e3c7d1b509f6750",
+      "final_sha256": "d78e7cc9246e0fe6fb42beb0751a2cd7f5322b5a48ce7103752fb01d3a77b83e"
+    },
+    {
+      "path": "tests/test_deposit_postgres.py",
+      "action": "added",
+      "reason": "8 native PostgreSQL integration tests gated to a test-owned local disposable cluster; concurrency, claims, rollback and clean bootstrap.",
+      "original_sha256": null,
+      "final_sha256": "74e90ca55d380d601e5a45dddab6f7a911c1c4fa3120a23bcbecc8abaf197881"
+    },
+    {
+      "path": "tests/test_deposit_restore.py",
+      "action": "added",
+      "reason": "13 new focused real-SQLite/checker tests with external RPC/Telegram mocked; catches old feature routing, scanner defects, receipt failures and historical replays.",
+      "original_sha256": null,
+      "final_sha256": "0ac556b9b17c4c6e034be565c1d83dda1d8087c8865aa01a49da79d06fdebd6e"
+    },
+    {
+      "path": "tests/test_git_history_scan.py",
+      "action": "added",
+      "reason": "3 isolated temporary-Git tests for history scanner detection/redaction/error exit.",
+      "original_sha256": null,
+      "final_sha256": "886fc8cd6689872856ee90712c4e704a0c66b90a2866da38d60e6f3b64f521e7"
+    },
+    {
+      "path": "tests/test_phase17_reseller_deposits.py",
+      "action": "modified",
+      "reason": "Enrich mock RPC evidence only; existing financial/security assertions unchanged, including preexisting skip.",
+      "original_sha256": "331cf18fdf6147d92934120c473d776f4f578c0c72658ad0df7d1a2221468ee9",
+      "final_sha256": "3905c2cd32f9ebf717ae482506e1a2bfd3f27f8be7e5dd14507aa2158a46487c"
+    },
+    {
+      "path": "tests/test_reseller_api_infrastructure.py",
+      "action": "modified",
+      "reason": "Restore exact four-process Procfile expectation; do not remove original process assertions.",
+      "original_sha256": "9eb74bd0449f5253cf54f2e8ef921c807456c4b97ff0f2216e099b0b0f6a0529",
+      "final_sha256": "4ac8d87898edb899c12d0ba4c394b227756139e0be951fb23793b8b32bdb9e8f"
+    },
+    {
+      "path": "tests/test_unique_bep20_postgres.py",
+      "action": "deleted",
+      "reason": "Abandoned unique-address feature only; remove explicitly; no production table or balance is deleted.",
+      "original_sha256": "cae9be14cca5a40cbdb0d13e44a32c25bea47395f08dad716ca35168181f723c",
+      "final_sha256": null
+    },
+    {
+      "path": "tests/test_unique_reseller_bep20.py",
+      "action": "deleted",
+      "reason": "Abandoned unique-address feature only; remove explicitly; no production table or balance is deleted.",
+      "original_sha256": "325ec7dea36328bfc0c1ecbbec2b2d46e9ff6854381370081176d17d671377b5",
+      "final_sha256": null
+    },
+    {
+      "path": "tools/run_deposit_postgres.py",
+      "action": "added",
+      "reason": "Private non-root local PostgreSQL harness, sanitized environment, no TCP/production DB reuse; replaces feature-only harness.",
+      "original_sha256": null,
+      "final_sha256": "94a0eb1dec4ac467da587f816ab57374541f8dc3b6302bb084085c8107e522b2"
+    },
+    {
+      "path": "tools/run_unique_bep20_postgres.py",
+      "action": "deleted",
+      "reason": "Abandoned unique-address feature only; remove explicitly; no production table or balance is deleted.",
+      "original_sha256": "c7cdf841e5ce77a182d9c583763c9876cd109c0a9148f4b3344f84d778b23c00",
+      "final_sha256": null
+    },
+    {
+      "path": "tools/scan_git_history.py",
+      "action": "added",
+      "reason": "Read-only metadata-only scan of reachable fetched Git blobs; never prints secret values or rewrites history.",
+      "original_sha256": null,
+      "final_sha256": "aeb502af855c84db7901125d4b4705a2740cb752e9447e4a703cc80803a33fa4"
+    }
+  ]
+}

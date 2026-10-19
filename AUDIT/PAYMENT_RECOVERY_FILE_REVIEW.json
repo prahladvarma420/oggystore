@@ -1,0 +1,2722 @@
+{
+  "base_commit": "0d25bac6c2255ed636c6db848314f3d65e82b0ce",
+  "files": [
+    {
+      "path": ".github/workflows/tests.yml",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1945,
+      "sha256": "bb4b87dbe1d2f16b6b86295c775e8d19964c14252972dd2e64b1cdb4b1715679",
+      "syntax": "YAML parsed"
+    },
+    {
+      "path": ".gitignore",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 571,
+      "sha256": "c8aab6240b7d094de1e9fb7f894c82b7aaaab34c634589552781337a069c663f",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "AUDIT/FIXES.patch",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 91683,
+      "sha256": "ec920b33d5eb8a12b9b362f41f9b401f951285f5f387e80ea70f55d62f934ae7",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "AUDIT/INVENTORY.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1111127,
+      "sha256": "d8fbd24c7f226a19116d22781f4b540f47e33761ef7568c1898710211698785f",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "AUDIT/PAYMENT_RECOVERY_PLAN.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1962,
+      "sha256": "3975bd197d7631e48275cb17ad13aae89e6272fd0bace2f84881d6a5529c5f20",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "AUDIT/PAYMENT_RECOVERY_REPORT.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 17765,
+      "sha256": "6fe1de488bc3321a3fa9804f70f775e5c7a80e16e4de32d98e7d3d304b4a8a7b",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "AUDIT/PAYMENT_RECOVERY_RESULTS.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 47019,
+      "sha256": "c39529ac8136ba0c7017306b6a72ce1d75b7cefed2d3570c77e1e3216378147d",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "AUDIT/PHASE_TRACKER.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1528,
+      "sha256": "e995bea3009fec1624f4be2ceed750ad0ca6ca6ed6fe2aa06a843ed38b52e70a",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "AUDIT/POSTGRES_BACKUP_ANALYTICS_FIX.patch",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 19093,
+      "sha256": "1eee1657d3ea99e14f3821b83dfe6c8fa5251970cd1effc4a2a69f12bd94bfaf",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "AUDIT/RESELLER_BEP20_PHASE2_RESULTS.json",
+      "status": "deleted_feature_only",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification"
+    },
+    {
+      "path": "AUDIT/RESELLER_TABS_FIX.patch",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 27636,
+      "sha256": "4a8f295bcc25d2ae65c4aa148fa115e1858165f06ac7ab7eae4eda97fb2b0f5c",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "AUDIT/RUNTIME_ROUTES.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 30330,
+      "sha256": "b3d63feaa9b3d01a059de3015cc3e25a2a480746c339cd97c8186047c4487631",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "GO_LIVE.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 18745,
+      "sha256": "8df0383235c9496e9f1cab0f4acb591bd3557a38dc3a1c24c57d088990fb2826",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "OPERATIONS.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 38193,
+      "sha256": "629a758d3bd8378bb02c5992fcaa9af97bf16b836a5b5ad5bd1ff2e3dd5b98b6",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "PHASE16_OPERATIONS_AUDIT.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 44885,
+      "sha256": "54c668260be95f26873ea1027ea77a6fd1ea90406f2c46aa0fffd7bc6b2cc465",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "PHASE17_CI_TEST_RESULTS.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 83043,
+      "sha256": "8e216278e9958f52967856d007f616283912e273198f57177ce71aeaa0017d39",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "PHASE17_CLIENT_KIT_TEST_RESULTS.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 79999,
+      "sha256": "deb39e47d31246622ec8f4bf6271a3965ce0185ed809fa73db8142cd44245c03",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "PHASE17_COMPATIBILITY_HASHES.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1649,
+      "sha256": "772e7265331c74a4a75f061333f9a7b744ee101da807ff4188131278412a76dd",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "PHASE17_FINAL_TEST_RESULTS.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 53129,
+      "sha256": "5dbd52b8ba4f56b0a967144ff315fc4429cc67ea9cad660abe11efcf57ee35c6",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "PHASE17_LOAD_TEST_RESULTS.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 35280,
+      "sha256": "0fb7f8f7e2d8f426691a269521f62b9d07ed459a0aef2a6346f9e9aca521f8c0",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "PHASE17_NOTIFICATIONS_TEST_RESULTS.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 9602,
+      "sha256": "0a295a2ba0e191b5b73edeae825c9fdffbbf411a0feaca6ac249dae6269bf719",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "PHASE17_READINESS_GATE.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 16261,
+      "sha256": "686fbe29ac28de553dd7990a125bbe29e8d3d1d3a6a23c5f96ece10588bf9f27",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "PHASE17_SECURITY_DELTA_TEST_RESULTS.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 51747,
+      "sha256": "d53008722ac82b79bb4b2f22f2a56b0b64d70d51327177d81546e315c63f82bf",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "PHASE17_TELEGRAM_CATALOG_TEST_RESULTS.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 9388,
+      "sha256": "70ea3bfe5f6e4869d82f1ea033c9bfd61c42bfa7b4e4c3db18222ae717f20a39",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "PHASE17_TELEGRAM_STATS_DOCS_TEST_RESULTS.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 9498,
+      "sha256": "69b4d2791af11d6e4d5d873650035220ef4c880cb5e350c660f07aeb9eb9f571",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "PHASE17_TEST_RESULTS.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 9281,
+      "sha256": "8d17178230cecacac6290105fa581be360d6e9de77763f033c067b8f6bf83548",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "Procfile",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 241,
+      "sha256": "9710b474831542b94afe914e2b6baf49201c23875a1018d3f62ec0a2b4ec5693",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "RAILWAY_RESELLER_API.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 20735,
+      "sha256": "fbf97dfacb2bc1bdcb85cbaf47bca1c1425bc6c111a3c7bb1786b930e91cc9a8",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "README.txt",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6930,
+      "sha256": "e8abc861968d50bf1425b185d8031bad39f0e01383bcec12e7abe4a4c3b06751",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "RESELLER_API.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 62295,
+      "sha256": "c37040fb4e92c1cd8a0d244347d62ac5207855aeac6958cc6214c26afdeb2251",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "RESELLER_API_FUTURE_PROMPTS.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 73622,
+      "sha256": "ab88b6082d8e3cc9272a730b16a7b52987924b626716d62ecf0f4dcc3e2c86f2",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "RESELLER_API_VERSIONING.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3752,
+      "sha256": "cede67be7041619966ef84e7fe1419a790427004b0aad228ca41c27614339259",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "SUPPORT_INBOX_IMPLEMENTATION.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 7793,
+      "sha256": "33d28537f825c42f5f97e5382b25cdb3443e496f91a8d06133c1ed7fb5801235",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "TICKET_SYSTEM_UPGRADE.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4065,
+      "sha256": "ed3b53871368b05673cb5889435d8686d658725d18e5655c6228b0a42e3e7c82",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "WEB_ADMIN_AUDIT_AND_OPTIMIZATION.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 15703,
+      "sha256": "8ac6c121d4223a489f2228e6efb96b02e1497803b7e5ed640253a68881296247",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "admin/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "admin/admin_handlers.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 294399,
+      "sha256": "acaaa2ce7a901b48443d4c425374a37b383901e07063c9a6435c7260d4519a36",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "admin/backup_handler.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1064,
+      "sha256": "3d18c1d0767c5b12046d1e00cb0f25554945aa836572609bc7a34f4d609bb925",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "apply_suggested_categories.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3281,
+      "sha256": "464a0bfd43cdcb6cf39e3eff72cc48fdcc7cb4abea405adc9b97df216b42e4e3",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "bot.bat",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13,
+      "sha256": "bc85c8301f03eef0dde8c40c10c7482c6e398b83882e4c79246aca6039b4d196",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "bot.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5015,
+      "sha256": "adc37b0e3876bac4f42dd88f9be56ef3e8140815d35031cfca7897abd99366df",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "config.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4723,
+      "sha256": "ab3df617c21f548dff2778cb5336aaa31e19659b440e00c8931225f4d6288472",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "database/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "database/adjustment_db.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 12445,
+      "sha256": "4abf91d26d7c3f94c8fc1431118098f2da72158fe2a1775c06d9b2636d853470",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "database/db.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 142013,
+      "sha256": "7fca599e3e568493d1aef1deb69e9be11d8e7626e9cb1f869a54c07c0482d0b3",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "database/invoice_db.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 19329,
+      "sha256": "ce889ff94211cc64f342522a778b2a7984e5f78a18737dd481a66121e9d037d9",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "database/pgcompat.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 16846,
+      "sha256": "d09ca155afab199fcb4617fee93aa21623aebd8494d72a4239254d2bb2c29705",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "database/reconciliation_db.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13395,
+      "sha256": "59655a01af8a4010348f43a59af4c305aac8720be82b1f886638a69d0d0ff2b4",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "database/reseller_db.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 152136,
+      "sha256": "45fddef0e76f5104770c2535710fd0d8e0cbe4b81e87105667d660e1fa103653",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "database/statement_db.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 18663,
+      "sha256": "a5a30714e487cfd6c84107e8d6712329c7028453e4a84af8fc6ea5b778c3d584",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "docs/PAYMENT_RECOVERY.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13305,
+      "sha256": "eccc1267a6e19d26f312f50d79335ea81873e765675186e9a957dabdef5ac4ef",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "docs/email_product_fulfillment.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 9236,
+      "sha256": "dcda111cae75678ed78d6cbdf32a9ae83c2ba432259d078cb65d219e81d5c580",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "docs/fulfillment_generic_api.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 10907,
+      "sha256": "b5154cb5d45bf68bd2f4893ddd4d54630b38891d43486d992a54658b0de8de21",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "docs/openapi-webadmin.yaml",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 16542,
+      "sha256": "49b9272f6371e3d3c321c6c9c5e19d00ae5235b3ff062c5bf4beb95a59d7edf6",
+      "syntax": "YAML parsed"
+    },
+    {
+      "path": "docs/openapi.yaml",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 69241,
+      "sha256": "11c8decb5c7e8cfb97bd92fecdbdb4a6603ff1e8906d4fb485fe19b16565a92a",
+      "syntax": "YAML parsed"
+    },
+    {
+      "path": "docs/payment-checkers.env.example",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 689,
+      "sha256": "e3bc9c70768a6bdf8538ee64d438dc549852ef909c2f50e0cc979e4265248465",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "docs/phase16_status_normalization.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 7199,
+      "sha256": "74137eb04d011e632e0b479625b7f4449130a4880d3d85d41baa90def6d5e2cd",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "docs/supplier_fulfillment.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 7742,
+      "sha256": "e6247b7cb0fb6b2115635734a9af87e98f126b62f61cd0ddcfec67c5ef74e044",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "examples/OGGY-Reseller-API.postman_collection.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 47289,
+      "sha256": "e648109140ac2403893af049b306f05b8771fa977f317dc42e35b38208fc1678",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "examples/OGGY-production.postman_environment.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 468,
+      "sha256": "a875fd21de2ff64c3e4565f7e317b5b2865eacb95bae29b6e3465cbb235ec5d0",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "examples/OGGY-test.postman_environment.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 462,
+      "sha256": "13872f5eaa81b3e0821422b2930db0143214d12252755036d74419168c9f0738",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "examples/README.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 11852,
+      "sha256": "508d6e1d0dd66965771c2d9b2e2c1fa2f0cc838a8bcb9ad9fa6f80e8a683f9a4",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "examples/error_codes.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 37023,
+      "sha256": "88bd80ad43bb1793456bcc41cbc0a366d42bbded5d9299c266683650696e8588",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "examples/package-lock.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 33064,
+      "sha256": "a30294dd29cd303ae25d02ee60b4acf4a25b32a25276adff2564999d77046958",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "examples/package.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 354,
+      "sha256": "cfe3a1d63f904d1679c7fc0d18db2f12d2f2f50303a90d1b34590dc8c36c041d",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "examples/postman-collection-v2.1.schema.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 55081,
+      "sha256": "90000a561d00b1a06ee37a6d3606e911e1357f757d8d91afc690d87dadacb9b2",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "examples/webhook_receiver.js",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 8485,
+      "sha256": "26da5feb8b5238cbabb2f0c50bd87950514d1ac52d32c48928d9af358be53420",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "examples/webhook_receiver.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 10302,
+      "sha256": "ce237ca70a22dfa0f5eae18e7e5b1fb172272323ea3f37b6e4c0a4dafe12c879",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "fulfillment/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 39,
+      "sha256": "3a5a82b89086597418aca6b5be65113d7e03d5a5f24590d77f19a135e6f2cd43",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "fulfillment/external_clients/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 41,
+      "sha256": "a87e40b2ebaedfbee9b5754ff9a3f2a6045ff81bc682b2f3a1d7e59ec7d4e711",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "fulfillment/external_clients/base.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 342,
+      "sha256": "c95b2c1c1b38ff821b73681b0cf3927ea6b9023afcdaf028f3ab9ff019694d7e",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "fulfillment/external_clients/generic_api_client.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 14587,
+      "sha256": "b3c63c1aaeee04a133a1720186f887fd91365bd455bfe9c32210dd996488dcc6",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "fulfillment/external_clients/supplier_api_client.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3945,
+      "sha256": "f9a944c84950d844e1b8b9d555609aaabb8d37bd7276c800de753bc0ae88b5cb",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "fulfillment/order_dispatch.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4630,
+      "sha256": "5289e392e1d00c4edd0e504c6e83baba07d04ee8afa7e5e7efab0452703b80e3",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "fulfillment/references.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2657,
+      "sha256": "cb1722a0218de45bf51d091512b7a3de6333c1eb4b7ab824184c0d0c8e7f391a",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "fulfillment/router.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4318,
+      "sha256": "975bdfd2202eebe07d7751ba6c2ef706976bf1f9084a71442b93b3ea8ea5297c",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "handlers/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "handlers/reseller_handlers.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 71539,
+      "sha256": "255cb358d28561fe86750f2f8a94b474bedb619589cc3a6717d8c2c3cea99c70",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "handlers/user_handlers.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 91740,
+      "sha256": "bd72fb5964cf3d9303b5d032776a0347394579c9583e7c71ca3f7cd2ddcedf21",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "keyboards/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "keyboards/menus.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 22195,
+      "sha256": "027ef8a0eeb876fef99ad40f97ee6cc23bf3e01c00cab1af5e1fb486b6e25966",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "payments/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "payments/bep20_checker.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 32886,
+      "sha256": "0fa11239b63ac7b54f39ad4cebe436ddf77eb43e1b5952f6ea601e208e3238c5",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "payments/binance_checker.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 19931,
+      "sha256": "716014d7352ff27cc57c5d0cf0cfa3d5f0587f322f99b21e892e8a00c3730561",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "payments/deposit_handlers.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13938,
+      "sha256": "1834741c3129d9354d9d36b11ee24a56a45698243c32ad0cfa615eb9170da246",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "payments/deposit_settlement.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13253,
+      "sha256": "599cf1ac24854786916641c676bdc4f1fedeef68cb0bb336614b07ae29f7c888",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "payments/reseller_deposits.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 15220,
+      "sha256": "2f80488db6895801c34824658be2660cee65a6ab7c69e9ebad5cf44b695e9427",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "payments/trc20_checker.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 12597,
+      "sha256": "3cabf7ac751ed72b68aa6155b65853aed078845e250ff166e8a6a79e9042c736",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "payments/unique_bep20.py",
+      "status": "deleted_feature_only",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification"
+    },
+    {
+      "path": "payments/unique_bep20_schema.py",
+      "status": "deleted_feature_only",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification"
+    },
+    {
+      "path": "products/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "products/product_handlers.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 66843,
+      "sha256": "e9ed977a012b52cefa9b03907cae30dcebe1583751649523d87f2a34eaf9a178",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "railpack.json",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 782,
+      "sha256": "d875389778ae6297e550eccd8c7b28779bf89a94e5c9f275ea96cb8981dbfd03",
+      "syntax": "JSON parsed"
+    },
+    {
+      "path": "railway-setup.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6958,
+      "sha256": "c21a826a9d42ef192e218e5c71698d187a885ef450b48589c1aa64b108f4a7c4",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "requirements.txt",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 204,
+      "sha256": "5403cf32a2316ea5aa8c946a814ebd15491fa2de10b11a2323b6a6d846ed8c6d",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "reseller_api/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2414,
+      "sha256": "04d72f36dce77aa6c4c442caa45e484fa921e0baf8e19b5abb622eca52c47720",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/app.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 547,
+      "sha256": "266c7e1f732779274c4d5562018988ff710f8cbc2791fddf18d93fea9e275f6b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/config.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4091,
+      "sha256": "c6a8025b5faa073fd35161710be6e74b5f94f5f383de3ba08cfbe960498327eb",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/context.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 971,
+      "sha256": "8f59d9a1dc3712841908358d966ce5354407e775af35c8e6900426d64d85d6a9",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/health.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1192,
+      "sha256": "098970e2dfb8f35270b90e163f509666cbc97975879b4fbf30700cf9fe5b5d00",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/analytics.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2259,
+      "sha256": "6170d04bf4311f33e0f7db84e766ac9ba7528dd29a2ffc1c87836b5b7527476d",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/balance.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1821,
+      "sha256": "afd874d10444c9d3305d3e71473c7ba888df145991ee874da5e78423b6f50c5a",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/exports.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5072,
+      "sha256": "724228a52b83bea2435f74ebf8608ae984c0d25b9d3f44825308c261018bd554",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/foundation.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 756,
+      "sha256": "7650e37faac9aca2a8db154d9a31f1770d4a0a811d6eecfae4ce2e321b04d492",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/invoices.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 12107,
+      "sha256": "7003833711be9ec5d7bc7082bc98e14fbe134526610b59de9a5e2b9ab8ad2a96",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/my_catalog.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4182,
+      "sha256": "29b75f48aecc8c355469c733b25e0c274fe3dbbfd0114230c4388dc426e04e97",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/orders.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 18638,
+      "sha256": "f81db3321766a4ba16a3c0c90c572d87af4ba8c4a78c032487543d6ba6e53baf",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/pricing.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2054,
+      "sha256": "092f0d81ce39b265131eb0aa2632990bd938e4a7953becc33e3b7536f4de7277",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/product_import.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2501,
+      "sha256": "42f158df7e9c48dfdce7b0fadc0b102df6fa45c725c448ceb5cbfe2b9af173ac",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/products.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1387,
+      "sha256": "a479783c9d31f71ca6aaa283b2e8b2af2c172fefa147382c5f3db8d69977ea6c",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/refunds.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3383,
+      "sha256": "4b1b169c3a3ce6f524c641eec92bc19bab6282213b8872b4e9a0fa1559607317",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/statements.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 15048,
+      "sha256": "0e3c54f969a384f0e29e86e48aa6b83df2858c4b75aef99243c5d45e7948c2ed",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/transactions.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6533,
+      "sha256": "5b9855edb4b516c47cda8e568fff450f8c903b09aa8db3eecfb13b8af333ec68",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/usage.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2806,
+      "sha256": "abb94dac4e9c490b0ae0627f0c08381026c770e74f89bb1bd437f8deb03ea078",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/controllers/v1/webhooks.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 19985,
+      "sha256": "1bbd0d7a52a5eb873915d3ee6db6b3c5b8f2a9f592e94ec8fe93eb0382df6b4e",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/decorators.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 497,
+      "sha256": "ca18ce5bdb2a2ab8a38827d470958b3b7fbbeac1fe123d5cadc09d7738a6adae",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/errors.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2191,
+      "sha256": "e64dbe76d67e819c19b3e0018e014b13ea3a8ea1eab945555296546237baede9",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/lifecycle.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1114,
+      "sha256": "36a44d27cc26b1a9b70d115709c5244785bc34f072ccd38cc043abaead1d7359",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/middleware/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/middleware/authentication.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5504,
+      "sha256": "24e3c7a6d32e3639bb3f8513ee6f42fa3cf5a5f4bef4d71e013797437c6dfff1",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/middleware/authorization.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1524,
+      "sha256": "98ce5914bdcc11fbce62a5491ddde0f7fdf9ff0199c926fd04083c619db49795",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/middleware/endpoint_rate_limit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2644,
+      "sha256": "14c31e791aab4b6e65f9379bf6bbacdebdf7d28ba0b065fa1cc5f8fb69a6d456",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/middleware/payload_guard.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3069,
+      "sha256": "e5283f065501ad3f7473b5d6396a6a59ec1b96eec02d3e057016f95dfb5ad59a",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/middleware/rate_limit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1472,
+      "sha256": "34791b06b3039bc81e8e0428f99611c8fe9efc6d1859a055e77e4de322bb66fd",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/middleware/request_context.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3264,
+      "sha256": "9fb418c1d63e156b4080f6115d857f70bc39379d4361f8fbfcfb7973bf7f50c8",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/middleware/security.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2198,
+      "sha256": "c7536a4988230a8a4d5f8e67cb1f531d6633ca52a9127e7e815ed80770a958fd",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/middleware/security_controls.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 467,
+      "sha256": "45f2f772d1422ebcbc149253580c8a30dd4e004a1171e60c075009d9781f3202",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/responses.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1677,
+      "sha256": "c234eae1d2012bb11b6a9a2af683a86910385764a01692dfbad5d52752349cbb",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/routes/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/routes/health.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 406,
+      "sha256": "8968ed85e0ef5cef30fe93f9f6b07b08dba116990f26938b64f69e6b6da6203d",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/routes/v1/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 12304,
+      "sha256": "2f8b86eebc7545eb87be6678cecfb2526858e948abb0b4ad48a6f184df113d0a",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/adjustment_service.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 11925,
+      "sha256": "0625c09ca8c75bc70426b02899085785a3ea9f02f9addba45c007ca096ad99ea",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/auth_rate_limit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5079,
+      "sha256": "7fdf445b60c936d9af91db77dbe1de4cbfe462e683447999861f193aa2b88198",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/authentication.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4188,
+      "sha256": "15bd9bfc5936ab535df71bbb0567d0ccfac932502bdec705618bca77e06e8280",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/authorization.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6362,
+      "sha256": "696bb9b60bcdeb9a3dc631be1ddfa446ad64ead445eab54d216c08adf3694e1b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/credentials.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 807,
+      "sha256": "a29e0ea1768be493b5d03bc71443a0ee8c9a65d075161d433ef6aa5b5f7d45a8",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/delivery_normalization.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4686,
+      "sha256": "d2345199a234cfc9a8772a3357cdba02209ceb45411f26a807d6d3ad2e57345b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/endpoint_rate_limit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 7529,
+      "sha256": "a671b1d3cf57ad40caf9d8e9d6be0ddb16664e055bb67afc13f6ffbd4fd796bf",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/financial_abuse_guard.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6239,
+      "sha256": "f6b576c362cbd75fac2823c79405c393eff81b571bca8caf1ac1ac8d903c552e",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/invoice_service.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 11679,
+      "sha256": "0c00dfcff1aa41c5149ad06927979ccadc96c00d7f60bedec8f714bca28347c8",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/observability.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4979,
+      "sha256": "0599924c169d7050f9f4a36f32b49d47f24788a696af4eeb6576f4de7fb5cc66",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/order_delivery.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 9165,
+      "sha256": "6901deb3874524b7587e4f72b29b573c97d8b8d5819d93b49132d5dc2d1a1c86",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/order_failure.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 29055,
+      "sha256": "178bd0bfce81cff097a54d548a2382a73aac7361dd521503d84f4ab3760f0e62",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/order_idempotency.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 10750,
+      "sha256": "ba8434585b78fcfa2675a44148ec07c2a974f64542f623bd2263790c95d9c74b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/order_notifications.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13913,
+      "sha256": "810369a39c86a616e1102272b4f5ea2817fee19e2f7d6bc85053ad41c5371cc6",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/order_pricing.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5648,
+      "sha256": "60a1dcafdb86d7925d4e53575026d8ff333220676deee716fd3fd41394ceea0f",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/order_query.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 18069,
+      "sha256": "308303ef5ccd8daa890625b1eca4833f1fbd5a43229484556706d3321b060531",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/order_service.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 27261,
+      "sha256": "b89c530adb73c0e9ea1ce111ab21734d1f622ee9b79edcf44203415375f561f3",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/order_status.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5315,
+      "sha256": "11ea024f4157b968ac3a5600ed3a921ae0cb7cbfe0c4ab4d2c3a3a6b3421ae6e",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/order_stock.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 14425,
+      "sha256": "493ab8edb36ad75da3cdc597e18866758ca0e00c5958226ea2462e2972290a28",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/order_validation.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 19886,
+      "sha256": "71572e79e4a928f2e9c7c9d3d5216925317754137aed83ff7c1c65340f256018",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/pricing.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6249,
+      "sha256": "3d0c62778afc501d97923d3122f6dc5c44b608999efb70f00f59269d777021ce",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/product_catalog.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 9375,
+      "sha256": "20e064201f2e26ce6e04e2bacbef74c3b45298db4c75f4c991407a600720bf63",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/product_import.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13702,
+      "sha256": "77c4854634267a17082336c5270a305e8e0daafb11ce04379456d495bc4f2626",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/product_sync.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 10496,
+      "sha256": "af616966152d119b2eda888d341e49f21b763707b49637136b80d54a39791eee",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/quota_service.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3494,
+      "sha256": "c45ad47c6df12f85e46f49b071da08ae760756008680cd3a6902161092779ce3",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/rate_limit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4723,
+      "sha256": "b88b33ac6f09bfc477c12cda26f9db67dacc0941971f219c685678dc8f86b5c9",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/reconciliation.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 23343,
+      "sha256": "62094c98dda3f816e49e1fa6c9e03019b297df3dce7e72e53ada39f14b8a0eda",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/request_security.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1869,
+      "sha256": "0bf8c17fe60d9355cd85e57342388fc26de89e3a4eac6f5409b774f14647c61d",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/request_validator.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4837,
+      "sha256": "ceac10794cb2f88f2061d407cc9a01a404ffc28d4c92c81f8b3cc67d2e2d9cce",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/security_controls.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2661,
+      "sha256": "d27e6300ce1c01b8e56c457f26936757a83a2f41094ee6c04c7cd2fb9a1b03ef",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/security_logger.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6325,
+      "sha256": "59d5c3560d62cb77424f5fd50a812fa2d085987520aa2cf69515fc1e9fe70fed",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/statement_service.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 11980,
+      "sha256": "a3fc188329932e2d24f314884c897e124caf131e7ac220daecfa357d20c29725",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/wallet.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4549,
+      "sha256": "5c49b1cfd4a318ad0df91e7d5734467331d7bde0d75c972ec071343849dffffb",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/webhook_config.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 14836,
+      "sha256": "c78a0b1521a71cb7b965c2ef3ebad37cc06efbd772d4408344668ea6cc8d0d18",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/webhook_delivery.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 20246,
+      "sha256": "6c3f9e70575f06d838fa27d88b1e5cf0976233e04972c06b6e8f9216d25661ff",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/webhook_outbox.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 22838,
+      "sha256": "27ea5828bd74254888325790a32100fbfde3e4252bd32fa23ec60fbd8ccbb0db",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/services/webhook_signature.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 9014,
+      "sha256": "4341e4bc3f759b2c575c21319f2d3542529f728055fcd6c7802e9a1f9d1eebfd",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/versioning.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4317,
+      "sha256": "a994b1f0f5b7f5e3ba452da05468a4905df952554c6e031a49ba2f852fb5bee0",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/workers/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/workers/fulfillment_worker.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13967,
+      "sha256": "3ace34dc6497e391b67cf837a1dd0f141e13c6cfef6eaf53987ed5870aa50da9",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "reseller_api/workers/reseller_deposit_worker.py",
+      "status": "deleted_feature_only",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification"
+    },
+    {
+      "path": "reseller_api/workers/webhook_worker.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 17025,
+      "sha256": "3e7db2e0a62326f1ddce49db4618ba81713f04aaa78e95a9141e14ccfcfe93ce",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "services/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "services/api_email_invites.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 11064,
+      "sha256": "a34ac12e24fcb1db697a7f88b41e559d25ed44e0f1d54e508d2609b7e54b3cb8",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "services/canva_invite.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 41048,
+      "sha256": "cb418ba976cca33a00ae5bce39756630e44ce3426265f205eabc8083fc7ca63b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "services/m365_family.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 66657,
+      "sha256": "f4dbb14f3ef07011410daedaf0020ad90b7881229c2a1722f8323efdcddfd7b6",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "services/pw_lane.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1696,
+      "sha256": "fcad63a63e2b71785cd6e96d2ec5d3b5bc0cf49459807203b446fadfe8da57d5",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "services/rate_limit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tasks/auto_marketing.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2528,
+      "sha256": "ab2e4fa746ef901d93bb1fddaed19d4abc189532695b5718e3acd12f96302e61",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tasks/invoice_reminders.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3933,
+      "sha256": "100caff1fe26a15a6e4c713f2406cd4c52d2980f120335e70589b91a0598af9d",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tasks/scheduled_broadcasts.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1924,
+      "sha256": "3dad03b6f8f4974592263f7545568a1a7c6815fa89f76195b8ebf6f8322c0fad",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tasks/ticket_reminders.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2458,
+      "sha256": "0fb563e5b20bad187c57bda5724da301cb8b20327ee6a82d6abe388d77e321f4",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/api_v1_balance_http_suite.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4105,
+      "sha256": "fb11584a40ac86a4a04b5cc35d3e9ff9e7227bc0c61c2f2ce59cc20fe57e1e37",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/api_v1_my_catalog_http_suite.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 10372,
+      "sha256": "d55f77e5897f29e2ab4177d70897a5a9294d5746cfeac869a8eae86032a0bcaa",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/api_v1_products_http_suite.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 12378,
+      "sha256": "2bd8e67426529fe7b4e6af1dc2f91ffce219002d6ec3ad6a33e85db90c2a82e4",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/fixtures/webhook_receiver_harness.js",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1831,
+      "sha256": "a52378bbb5381b84d72c065acdd601bb252473c7bdc7ca3406c2c2dced3d1a4d",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "tests/test_abuse_monitoring.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13200,
+      "sha256": "b805da76df0414b61264c4fa73993e21d4a1be552c4be127e18096493508f73c",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_authorization_service.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 9706,
+      "sha256": "b8f843295fe2116f30e0e39cf25edc05f215fcca96c1fae1a9dc57ab54b8968c",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_balance_service.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3649,
+      "sha256": "60bb7afca1fa208d2a4e4bc5f166c6b8dcfce6ac3fea00ad679eb9922c61bed4",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_endpoint_rate_limit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 8754,
+      "sha256": "7e5851ddf9ad8f6d4b0cdcc48920200f10328090d0d410c752387befc2a7d357",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_product_catalog_service.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 11125,
+      "sha256": "6f9775fcac2000e0c983e3ccaac9ad8c757538d9506e33d29dc30613e05fc655",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_product_detail_service.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6638,
+      "sha256": "7a69389217478936d6260835c5671e79350c04d200e289c72f3d7f390ff0657c",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_product_performance.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6648,
+      "sha256": "11a47f6e46ef51529a5a7ad7d7a02fbe5ff9cc2a6fe1c282a4ea2a36eb7de3f0",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_product_security_review.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 11262,
+      "sha256": "a006cc49433c6097b79ec1de9f7108ba3ce8217b835f4ac29a49222b29f9017c",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_rate_limit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 27048,
+      "sha256": "12716cdc7444a8f808ff0bc0e657bad9b6e5b938ddcdaa3fa2a31199f036124f",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_v1_balance.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 378,
+      "sha256": "7194b23da5d657dd6bee59932c46313c58ac9945867303d2d52aab5d82aa7048",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_v1_delivery.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6104,
+      "sha256": "669dc5bf461e6228805729f5a4655f4555912e307387d00fbc030d891393a162",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_v1_foundation.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 15177,
+      "sha256": "300d534c0d38238bbefcd6aa84deee99599122865968e07d1d2486203506aaa1",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_v1_products.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 383,
+      "sha256": "7d47fa9cefc07749f359c5b52ebd586ac0e889481f3d665aa3ac9619be3004d0",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_api_v1_webhooks.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 34279,
+      "sha256": "3f39666b3d95cd54908be5b54a6b0b2a4f76249a09568cc38c3a9ecafb27f665",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_auth_abuse_protection.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6710,
+      "sha256": "29be0169adff0768ca2c3ae3ed63e0662ac450a5d3ffb7009232f3e231d95a4a",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_binance_provider_failures.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 7476,
+      "sha256": "1003f773d8e33ae761e2ab8af9be68b4c6d7cafd044b28a746b7c33661fe36f2",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_customer_deposit_regression.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 20643,
+      "sha256": "d78e7cc9246e0fe6fb42beb0751a2cd7f5322b5a48ce7103752fb01d3a77b83e",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_deposit_postgres.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6916,
+      "sha256": "74e90ca55d380d601e5a45dddab6f7a911c1c4fa3120a23bcbecc8abaf197881",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_deposit_restore.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 9165,
+      "sha256": "0ac556b9b17c4c6e034be565c1d83dda1d8087c8865aa01a49da79d06fdebd6e",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_event_generation.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 24564,
+      "sha256": "36dd20bee7f193872443c4cfd6996b928cdf355e5d7d3f97ee4cb06657dabfae",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_financial_abuse_protection.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 8096,
+      "sha256": "90e610c82f3d69ba44b4293fef52a5258c9af859725bdb9fe7f0e76af03a9387",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_git_history_scan.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2478,
+      "sha256": "886fc8cd6689872856ee90712c4e704a0c66b90a2866da38d60e6f3b64f521e7",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase10_final.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 40525,
+      "sha256": "44f631053963f3b638d8efe4437f47dddaf567ae2058e763b3974941ef710d23",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase11_pricing.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 28810,
+      "sha256": "1689dc90dddea8af5b29758173a0d9b524255b9a642c8df7e1e20340a0ed099d",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase11_product_catalog.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 30091,
+      "sha256": "bd22fd3a399d3f2fde770f2af0df6883ac5eabbbf3f41ac79c5448129ff40cd0",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase11_product_customization.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 18484,
+      "sha256": "66313d2a0f69dcf11deb0d62a1b6f86c3397a9575851a9a13cf6d97ab9e59397",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase11_product_import.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 25694,
+      "sha256": "9fe70f3105e414e8f56094204cce371cbdf582ebda224e7e02392bda59f9746f",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase11_stock.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 36213,
+      "sha256": "7463b828a20c78afd5f43d9a5f636e8e299ef92422793635edfb3a09910c721f",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase11_sync.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 26092,
+      "sha256": "b6e6523547285500970f03518c11a8f7576a58d1a19d4c47607f06f10fa562f4",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase11_webhooks.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 26202,
+      "sha256": "69cbb3b5c4667450699e3cc6f84bba3ec9d2e31cd53c9f26abcb46c14a39664d",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase12_concurrency_idempotency.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 32119,
+      "sha256": "1fd353dfe727f1fc49c07dbfe7f8690ff8b8f1ba8ef48ea59f083e271958092f",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase12_failure_recovery.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 46988,
+      "sha256": "a400ad3283318ac30e9520afa980f517f0241c19a80e4bb3a58db484f73df4cd",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase12_final_regression.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 25779,
+      "sha256": "950b32c524968ea7d80a5647bdb7307b6671f3f8990b762d336094506fc8909c",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase12_order_creation.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 23610,
+      "sha256": "e5f909b2022e6772401c8442cfdd08bca7214f694ff552becc51917d93f3e003",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase12_order_lifecycle.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 15365,
+      "sha256": "2de5bbf2e7f698983ed39792fecff2c67ddf851d6643778e550b43c650ab7c59",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase12_order_mapping.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 18371,
+      "sha256": "0744960966666f254b01a0f8ee3251d377c5292f0c6ccd496cbbe944dbe64083",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase12_order_security_audit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 28820,
+      "sha256": "ae93a102e66c710d1c248fa8b6a15787d03eed9643d13111450f0679a7c1f4ab",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase12_quotes.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 16082,
+      "sha256": "f359ff945a959634b868939261a116f93bbcf272d21b83957af29abd174089d3",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase12_wallet_integration.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 20304,
+      "sha256": "dd87ea6b1f78518e5de20931bd9c6b85fcc3b15a9cf96145322c65b820fb09c3",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase13_api_security_audit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 22271,
+      "sha256": "b27be006e6c00e75230b82adc494b851ec2fd39657662db4ddfd4f5d3d6dea77",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase13_documentation.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 12117,
+      "sha256": "77e7e7aa37346c8f6ae5f1ddaad0c5b833cac5b347db25c271fd92e3b66ad31e",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase13_final_readiness.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 18822,
+      "sha256": "00215c53b73afa039c780cce76c8a01a1bdee29e3a0e86607fb985aea45b42c7",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase13_key_lifecycle.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 15727,
+      "sha256": "680aa97086a7cb10d694d2c2276869865dc4ea8712d07f094e8eda1eebc5ebf6",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase13_reliability.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 16783,
+      "sha256": "2d72906e65f2a90fd4235a0442c6203d909d501d1c2fd11d694110ecf1853adf",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase13_response_standardization.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 19691,
+      "sha256": "41d446ab3e84aa3736c5b9b54fb7a95b713ed977d013969922c2082e5c7eb51a",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase13_sandbox.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 12599,
+      "sha256": "6fb4477165bc2caf62a5bb93d6a8894eda0ea90bf3a5d7ad09f78dadd6a05229",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase13_usage_monitoring.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 12729,
+      "sha256": "43e857a2734139f37ef9f7fa71573dd0a4f325c51f40b5d158454c1fe179e1be",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase13_versioning.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 16301,
+      "sha256": "12a11e23faf8a6138192e1d153d6e9a39bd8f145b1242bf27b8e5ff8abc6aa1d",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase14_analytics_audit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 14346,
+      "sha256": "4ee3d2ed5d6e9e6232f16f0e1ccfe6cf737c9fb7a99b46c0176d2777ae7f6a2b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase14_dashboards.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 11173,
+      "sha256": "6e14a9ce7dc42f35da905e7a6426ee407d50bd92e7533259634b72f1935e38a8",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase14_exports.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13678,
+      "sha256": "d04426dc0b75c486862262dc15ad516cd1b19f5c2660f8fc74ababba4c488571",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase14_financial_analytics.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13008,
+      "sha256": "8c54fad5a8ab0cb179e6313b39aa0e9a003e377609c825fdc853d4a0f2c02bf2",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase14_product_analytics.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 12620,
+      "sha256": "d598a040a4d6e7618816b7973f8fea9f7f9316bf18dd8190070c3723eb8c2366",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase14_sales_analytics.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 12145,
+      "sha256": "69cfc0a3b46ffc4fc27ea68344c5396a10432e15030d9095a567a3d50f45a74e",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase14_usage_analytics.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13161,
+      "sha256": "6e344dd517149eecf3571848e3a44a758b56b1c975dd5b50a515a8656d4f715c",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase14_webhook_analytics.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 12348,
+      "sha256": "3ee4de585357caf84d7406f7e8542ce20fd8d66d7fe35339c1c8b1c582fd983a",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase15_adjustments.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 22170,
+      "sha256": "e511949b082e04e40298d1d67881d0c32b3807129524c1a009b7f39f1c758788",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase15_final.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 27038,
+      "sha256": "d7de1168e71217f25757fb3d4cda7f885cca707951ee118aebbdfd062f0a8705",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase15_financial_security_audit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 27263,
+      "sha256": "9ad3d62bddf5b08e7ae50493d0c46012527bbe4fe7294cfeb36be10514a1cfc5",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase15_invoice_statement_api.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 19052,
+      "sha256": "a6c1ecafefaccf1806224ee1b0138c6079af22887efc9590c96c4f59d4f41ab8",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase15_invoices.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 25771,
+      "sha256": "d9f521749b5f0fa9ed0b087e749600deda6d681b0bbdaa134a40385fc057f280",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase15_ledger_integration.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 23606,
+      "sha256": "3bee5a6705ffebff13eda86e58f20704b6154829e1203ae9c89b9e3855511c81",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase15_reconciliation.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 25786,
+      "sha256": "7b1f9ae3a266538b3d1f29bf9326cf32dc1b4ac52ab72e9f07ec7bbca7a6be51",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase15_statements.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 27577,
+      "sha256": "12513ab424fcfce0f25752a5f774e54d1b29a176393b89185adc4d234bc71397",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase15_webadmin_financial.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 17394,
+      "sha256": "128b92e761f62c2f97e87d860ff0355f70b7cd065dd30a9ccf4d4cb0e3e329a9",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase16_admin_cancel_order.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 19807,
+      "sha256": "1b1d8cece72acd920890e3e9649205bd1f34be3e27e680646acec46a2e2f3f35",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase16_admin_fail_order.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 17089,
+      "sha256": "db4e287682e4954d0a4c9e2a21ddebbb423340fe9d115ad13c360b5b2f57a51c",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase16_email_products.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 23975,
+      "sha256": "afb0cf1bed63d11fb23f70605ea654416b5224dc7079c7c4011a1bc51e61f511",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase16_final.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 22968,
+      "sha256": "91a0d61ab813103b1cc25bc2d2861dfdc828742a0f4d4f6fe3e77a6a89fd3a89",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase16_fulfillment_wiring.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 27578,
+      "sha256": "fbb28b3613712359557d898585e1b176d2baf2424c88d72ba09c9518fb48cef6",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase16_manual_delivery.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 17763,
+      "sha256": "1b66d9fbaac96947d0eb715e9bb0ec0c968b2e82725a80bff1380c5e06574822",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase16_refund_quarantine.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 11729,
+      "sha256": "920633f43608e6d21db59469e8ca56bc43d987d2d70799c759732a7b3850a3db",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase16_security_audit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 21933,
+      "sha256": "62b54f19a35e164a909cc98e89a5866dc2e40bb51dc1ec454452411d712ababe",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase16_status_truthfulness.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 20922,
+      "sha256": "71e2ff08a996ba9abb463cc9721076587408ce81ecb74d2f1694908d43dcf553",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase16_supplier_fulfillment.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 24084,
+      "sha256": "53e2b55a32959cb17f78a0ab3ef098432f6c524913244ad22ee32555b34b31d0",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase17_client_kit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 22861,
+      "sha256": "ff14225fcfc9115fd34a99c32843fbf63e865ea283f7cae7c0b319a63904d904",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase17_final.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 11147,
+      "sha256": "4d5cdbbdb57ef0a318d034e16294b3ebeb844e07e85203c08ce7b0b7a9134f84",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase17_load_static.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 18869,
+      "sha256": "b7944de71f163a0a638357fb65e0f0cd03f68a8ece151c450dfff40f0785f894",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase17_notifications.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 21615,
+      "sha256": "01af1419d305e635514d9ec4028f71c7f5cb2496b2aad5557d434760b6681078",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase17_reseller_deposits.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 22262,
+      "sha256": "3905c2cd32f9ebf717ae482506e1a2bfd3f27f8be7e5dd14507aa2158a46487c",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase17_secret_scan.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3837,
+      "sha256": "0758b9dd2de13c7880395368220f6a2cb76e954e14d80e045b2c825544a5e0fd",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase17_security_delta.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 20266,
+      "sha256": "4a656d31e960156b2ac10c7cca5d9bac9f00a8b905011722f940b05f4be54f0e",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase17_telegram_catalog.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 18747,
+      "sha256": "e43e06fd862b49e4707419aed19f185e91b3378f7506ea7c1542ae1a79b454be",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase17_telegram_stats_docs.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 22081,
+      "sha256": "fc5fccdabf6ed7bd23fd97c8825562f710c053f6190fc8d017820d6cc94ceeba",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase17_test_runner.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 8407,
+      "sha256": "58fd843d0c3976d85f880f0bfea321e15069a6424c163e0f9f4e5219a85a7899",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_phase17_topup_flow.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 16335,
+      "sha256": "8b41359dc07370aa674ff12ac842083608128d0facc659fc32a5cbf16a2b4c59",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_request_validation.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5702,
+      "sha256": "5fde05e38d672a9cc000dd848f9aa3a5b10bdb440b9d2a2bd7b96456fc436ebb",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_reseller_api_infrastructure.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5425,
+      "sha256": "4ac8d87898edb899c12d0ba4c394b227756139e0be951fb23793b8b32bdb9e8f",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_reseller_quotas.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5570,
+      "sha256": "804a0100901a12cbf7d4e332e7d6f913106209e2709bebce0d5988c3bc984a15",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_reseller_wallet_concurrency.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 7382,
+      "sha256": "10bf7d267144c4ebe5ab6cd598dc06408ce476882ae93c15103575cc93fa4de6",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_reseller_wallet_idempotency.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 7504,
+      "sha256": "f84b5d80254ecc7fe482ec3081fbcfd5d038c69ab9d3347b56f122981843f365",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_reseller_wallet_security_review.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 9042,
+      "sha256": "b953e6585bfe9b5c31c2a6ae7c1859e4fb0500a4a9018a80794fb066770ddb22",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_reseller_wallet_service.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5594,
+      "sha256": "e0fb0d4485d9b654c80ffe0dee8b35db518891d626ff5cec7688b4b1bfcc5dca",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_reseller_wallet_web_admin.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6342,
+      "sha256": "072c515a7f718b97b7ed043205e78d5548971957a8e20d53447f6d1aec5dc8d4",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_security_audit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 26745,
+      "sha256": "5daefc93b14d93f57bbfb49c31905f652ff49f790e313dc83fb94df1bc573851",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_unique_bep20_postgres.py",
+      "status": "deleted_feature_only",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification"
+    },
+    {
+      "path": "tests/test_unique_reseller_bep20.py",
+      "status": "deleted_feature_only",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification"
+    },
+    {
+      "path": "tests/test_webhook_delivery_worker.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 19287,
+      "sha256": "6049e9a9b9cd11bd2319f43c432da59de34c5af5be5f79b51896a99f9e346b12",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_webhook_idempotency.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 31314,
+      "sha256": "19da0dc97ce05baf470cee2d6f4f8499c43fe3181f0e6aeb470a32c4d3cc4cc7",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_webhook_management_api.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 37380,
+      "sha256": "2d4f0661d1dedfdce943d069d70557148ebc3db756107b625f0d87e5f49ba5c1",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_webhook_outbox.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 26604,
+      "sha256": "67f7611492e560df1f8768d83e8b2e1000fceb73a2b2e1a38088bb6fd4e67b9a",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_webhook_retry.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 25620,
+      "sha256": "44b0655958d4ab332a3661417ecc109ab1cc97e89881b48590ed58ef5bef8e04",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_webhook_signature.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 16900,
+      "sha256": "39ba1ab8d3d820144904c9a9479c5ea6c7aa5df0c4ea528e2a3c836d0ffb9e93",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_whole_project_browser.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6925,
+      "sha256": "bb30db5328f555839e541149b87fc111fe24f85bdb4be5d9edb45e348876c0c2",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_whole_project_financial_support.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 8760,
+      "sha256": "ce0c86d0f8ead35e9d7e80436181b1111889f0623980aacb76e84c6e132f0da6",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_whole_project_postgres_backup_analytics.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 9264,
+      "sha256": "1599a940de58bc40b8d2dd0ab98ec10df84806ec60ad11759c3be91a83a69005",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tests/test_whole_project_reseller_tabs.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 10283,
+      "sha256": "ce81290580a56ee01f016a249e23bea767c664996d92420eb4b99a298082b748",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/canva_login.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4334,
+      "sha256": "9670ed5deeeb2e93d97160403121c1088040db072fb3e7e290e1e0a4b0ed4c46",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/decrypt_backup.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1751,
+      "sha256": "6db89db1b0cf1b5889e5015b6ac2b0b765b4d293c0efe6cf8613e94b377d8a59",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/generate_client_kit.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 19079,
+      "sha256": "a7ac92fd460073c903ffb5e114750efa57e96cc67bf8efa7dfc173d3784c8062",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/generate_password_hash.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 533,
+      "sha256": "dbc05c71f7dd93ef1a85ea0442772ed35bcc8a5d2c4e2899d595d8cbf55a74aa",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/generate_secrets.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 268,
+      "sha256": "8371fe723a7c07df7a7dd67b22f3c13bb204ff217289cce727cf5f4e035d2e16",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/load_test.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 17886,
+      "sha256": "4bc85782d63105d83139e1ce3fa43a92057fe322fa3e69ec7c03dfc52bab9b78",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/m365_login.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1935,
+      "sha256": "beddd3851ca7306ff47a15426204785bc219846071c5900c38baecb753791677",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/make_backup.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1186,
+      "sha256": "41455c6072a1726c87d8b3bc780912b1d5b9c4141eec497f37c89a4201157362",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/migrate_sqlite_to_postgres.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5681,
+      "sha256": "341f0fc18a137b98d00b05731e72af8a497fad73d6dbad29032c068b37907f75",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/normalize_reseller_empty_delivery.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2817,
+      "sha256": "d51bb4f008fc912e96ca9e37b848793011a456bec00362645d9546b78ec5c0d1",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/reset_2fa.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3020,
+      "sha256": "9737988e856036e232b717bab40609fadd60a2f4f722baa750c832a7cc224d92",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/run_deposit_postgres.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3634,
+      "sha256": "94a0eb1dec4ac467da587f816ab57374541f8dc3b6302bb084085c8107e522b2",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/run_tests.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 11170,
+      "sha256": "007dd4ff6e0f32a95321bd14d4ef5e0642dc3231c4250de975f526b380085755",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/run_unique_bep20_postgres.py",
+      "status": "deleted_feature_only",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification"
+    },
+    {
+      "path": "tools/scan_git_history.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2945,
+      "sha256": "aeb502af855c84db7901125d4b4705a2740cb752e9447e4a703cc80803a33fa4",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/scan_secrets.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5080,
+      "sha256": "bfb0ea0d6835213ce60fb50c0a67bbc1626340951d8dd541d458bcaddbd092fa",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/seed_staging_load.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 10713,
+      "sha256": "677c2dcd51275ca0024ef27b6328c57797ef7f1184f739f3ebb64107bf1ab001",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/set_admin.bat",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 28,
+      "sha256": "2f4f82649b22e683f31202ba59205b768cf87216fb3fc28a2615907be8151897",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "tools/set_admin_password.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5521,
+      "sha256": "60a93b6bbbeeec56dc35178993947cc3b0a305031f243d673303afea5c7f199e",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/staging_load_common.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4926,
+      "sha256": "38ff96ef4a3ec94d4cdcdf07e1e15d558152a4430c8eeff95ee52ceb59a37e8c",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "tools/verify_staging_load.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6969,
+      "sha256": "eea9c0e2c696c6cd069311a90e1c10b979fcbe6fc31735feb7fab97169f1300b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/__init__.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/backup.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6433,
+      "sha256": "e29d755309d33e4ac80696e3aeeb98ee3bad59114b2792e397f293d0996e6665",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/button_styles.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4441,
+      "sha256": "0afc7067d2346b343a9b7335cee2b2711d414d8bf9e8847897fe0f385669b806",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/crypto.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1793,
+      "sha256": "ee35032477531539a9f4e91f381a386e40250e33b4aaaf7e5ba62fb1b825c28b",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/delivery_file.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 6492,
+      "sha256": "4902ed1cd492a48b6a959e6765e3361f9c1df8315b395e570ba5fa05116a0b0f",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/email_privacy.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1334,
+      "sha256": "78f31c13743360d04d1181174fd4838d10468645fc2641bf2bdf4d899adbbd7a",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/error_logger.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 3270,
+      "sha256": "502a1cab427485ea6c7cdeae4c7967a752fab11640d193119c0d6e44cd9fe48c",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/premium_emoji.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4449,
+      "sha256": "34989df8f4d0d97a37ae9aaa4ed867581f73d0fb4ceff84fb9b1ae06870e26f1",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/states.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 172,
+      "sha256": "ad4dbc6de1f7f298ecbc72450c383f227f1a8791df428030fe5385784ba58323",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/texts.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1661,
+      "sha256": "f00a32e3f1bed141ca5399388f683030f823416a0b71b11d21ef372f48d0e4a1",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/timezone.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 967,
+      "sha256": "27bef18d61a13d77780c7a20860932b511d64d64cfc197bb99baf27008f69e7a",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/totp.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 1280,
+      "sha256": "6c50ffc54d331a2a8706b4813bb5549d138fcdd1c580f7d48cddea59ba0f5095",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "utils/ui.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 2044,
+      "sha256": "f535341b41b46c6319e2d4b9bc3beb86c69babe9beb23da8d134912e60d635ff",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "verify_patch.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 5775,
+      "sha256": "8e2befb138df98ecd8b3065641a67ee54c37c07ea13c8adf17cf2fa3cf642d45",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "web_admin/INTEGRATION_GUIDE.md",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 14678,
+      "sha256": "abef62153649ba0b45a82cf9deaaef26c02a1c879014ce06a10cb54f07fc8b0f",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "web_admin/app.bat",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 13,
+      "sha256": "c933fbddcaf73b7f6028b45404b1e81b7ee91915588d41940eea1dd6d686469f",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "web_admin/app.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 239390,
+      "sha256": "a0be49676df7cc40dde4b8ea9a67c08aaddbb3a30a2e809e78e17784675f2ccc",
+      "syntax": "Python AST parsed"
+    },
+    {
+      "path": "web_admin/static/css/style.css",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 28848,
+      "sha256": "55bd0baea70f725d441f4357e1de3a80461ba66592b084b53a1aadf88c9ef4f0",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "web_admin/static/js/app.js",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 151749,
+      "sha256": "04d99f6bc8d5aa62c84c35ccf68f557649aa11f41b4a0bd16638a600af0bef2d",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "web_admin/static/uploads/logo.jpg",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 71162,
+      "sha256": "4112967608ad0b235474b3e7a133d03aa6a6c08b46b5274742b003385b409f4a",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "web_admin/templates/index.html",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4710,
+      "sha256": "6cdf6a61a2879814274e126b406d7b804373500b7863deafd35aece585101869",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "web_admin/templates/login.html",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 827,
+      "sha256": "d6523ed08434d610e8626d57926ca2c3d7c7d0ac9c15683c9215f48b2b32734c",
+      "syntax": "Not applicable to Python/JSON/YAML parse"
+    },
+    {
+      "path": "web_admin/wallet_admin_service.py",
+      "status": "present",
+      "review_scope": "mechanical inventory, classification and whole-suite coverage where available; not exhaustive manual verification",
+      "bytes": 4145,
+      "sha256": "ab2ab9119e96c7a7864ccda05bce54fccc072aa05ecf50e28312a75eeeb9ce0a",
+      "syntax": "Python AST parsed"
+    }
+  ],
+  "counts": {
+    "original_tracked": 325,
+    "present_reviewed": 334,
+    "deleted_feature_only": 7
+  },
+  "excluded_self_metadata": [
+    "AUDIT/PAYMENT_RECOVERY_FILE_REVIEW.json",
+    "AUDIT/PAYMENT_RECOVERY_MANIFEST.json"
+  ],
+  "note": "No claim every UI/manual/external integration was verified. Runtime/dependency trees omitted."
+}

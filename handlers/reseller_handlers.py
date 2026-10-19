@@ -159,9 +159,6 @@ def build_reseller_topup_methods():
     methods=rails()
     text="➕ <b>Top up reseller wallet</b>\n\nChoose a payment method. Pay only the server-generated invoice; never send payment proof in chat."
     if not methods:text += "\n\nNo payment method is currently configured. Please contact support."
-    from payments.unique_bep20 import requested
-    if requested():
-        text += '\n\nPermanent BEP20 receiving requires verified custody setup; an unavailable screen does not provide payment instructions.'
     return text, InlineKeyboardMarkup([
         [InlineKeyboardButton(label, callback_data="res_topup_method_"+method)] for method,label in methods
     ]+[[InlineKeyboardButton("◀️ Wallet",callback_data="res_wallet")]])
@@ -212,24 +209,6 @@ async def _handle_reseller_topup_callback(q,uid,data):
     from payments import reseller_deposits as deposits
     try:
         deposits.active(uid)  # every callback, including navigation and retry
-        from payments import unique_bep20 as permanent
-        if data == 'res_topup_unique_bep20' or (data == 'res_topup_method_bep20' and permanent.requested()):
-            try:
-                cfg, _adapter = permanent.runtime()
-                view = permanent.account_view(uid, cfg)
-                text, markup = build_reseller_permanent_bep20(view, cfg)
-                _topup_drafts.pop(uid, None); user_state.pop(uid, None)
-                await edit_or_send(q, text, markup)
-                if data == 'res_topup_method_bep20':
-                    try:
-                        await q.message.reply_photo(photo=reseller_topup_qr(view['assignment']),
-                            caption='Permanent BNB Smart Chain receiving address. Verify the token and network above.')
-                    except Exception:
-                        pass  # Text/copy instructions remain available; no payment mutation.
-            except permanent.DepositUnavailable:
-                await edit_or_send(q, 'Permanent BEP20 deposits are unavailable pending verified custody setup. No new receiving address has been enabled.',
-                    InlineKeyboardMarkup([[InlineKeyboardButton('◀️ Wallet', callback_data='res_wallet')]]))
-            return True
         if data=='res_topup':
             saved=deposits.session(uid)
             if saved:await _show_reseller_topup(q,uid,saved,qr=True)
@@ -1438,31 +1417,3 @@ async def handle_reseller_message(update, uid, text, state) -> bool:
     except Exception as exc:
         log_error("reseller message flow failed", exc, extra=f"state={state} uid={uid}")
         return True
-
-
-def build_reseller_permanent_bep20(view, cfg):
-    """Pure, bounded rendering; handler/service enforces current reseller identity."""
-    from payments.unique_bep20 import exact_text
-    from telegram import CopyTextButton
-    saved = view['assignment']
-    text = ('💼 <b>Permanent reseller BEP20 deposits</b>\n\n'
-        'Network: <b>BNB Smart Chain (56)</b>\nToken contract: <code>'+html.escape(cfg.token)+'</code>\n'
-        'Your permanent address: <code>'+html.escape(saved['address'])+'</code>\n'
-        'Copy the full address above or scan the QR. Send only the supported token on this network.\n'
-        'Minimum: <b>'+html.escape(exact_text(cfg.minimum_units))+' USDT</b>\n'
-        'Verification requires at least '+str(cfg.confirmations)+' confirmations and custody acceptance.\n'
-        'No exact-amount invoice or customer gas deposit is required.\n\n'
-        'Spendable wallet: <b>'+html.escape(rdb.from_cents(view['balance_cents']))+' USDT</b>\n'
-        'Retained fraction: <b>'+html.escape(exact_text(view['remainder_units']))+' USDT</b>\n'
-        'Fractions accumulate exactly until a whole cent can be credited.\n')
-    for event in view['events'][:5]:
-        state = ('Wallet credited' if event['credit_cents'] else 'Accounted; fraction retained') if event['state']=='accounted' else ('Under review' if event['state']=='review' else 'Awaiting custody acceptance')
-        tx=event['tx_hash']
-        text += ('\n'+html.escape(exact_text(event['raw_units']))+' USDT — '+state+
-                 '\nTX <code>'+html.escape(tx)+'</code> / log '+str(event['log_index'])+
-                 '\n<a href="https://bscscan.com/tx/'+html.escape(tx,quote=True)+'">View transaction</a>\n'+
-                 ('Accounted: '+html.escape(str(event['accounted_at']))+'\n' if event['accounted_at'] else ''))
-    return text, InlineKeyboardMarkup([
-        [InlineKeyboardButton('📋 Copy address', copy_text=CopyTextButton(saved['address']))],
-        [InlineKeyboardButton('🔄 Refresh',callback_data='res_topup_unique_bep20')],
-        [InlineKeyboardButton('◀️ Wallet',callback_data='res_wallet')]])

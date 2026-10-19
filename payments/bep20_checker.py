@@ -1,6 +1,7 @@
 from payments.deposit_settlement import settle_customer_safely as settle_customer, payment_id
 from payments import reseller_deposits as reseller_deps
 import html
+import re
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -59,6 +60,10 @@ def _config_ready() -> bool:
 
 
 def _drop_cached_web3(context):
+    # A failed log/balance request must try the NEXT configured endpoint.
+    index = context.bot_data.pop("web3_rpc_index", None)
+    if index is not None:
+        context.bot_data["web3_rpc_next"] = int(index) + 1
     context.bot_data.pop("web3_rpc", None)
     context.bot_data.pop("web3_rpc_url", None)
 
@@ -73,10 +78,13 @@ def _get_web3(context):
             pass
         _drop_cached_web3(context)
 
-    rpc_urls = [RPC_URL] + list(BACKUP_RPC_URLS or [])
+    rpc_urls = list(dict.fromkeys(url for url in [RPC_URL] + list(BACKUP_RPC_URLS or []) if url))
     last_error = None
+    start = int(context.bot_data.get("web3_rpc_next", 0)) % max(1,len(rpc_urls))
 
-    for url in rpc_urls:
+    for offset in range(len(rpc_urls)):
+        index = (start + offset) % len(rpc_urls)
+        url = rpc_urls[index]
         try:
             w3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 20}))
             # Force a real RPC call: is_connected() alone can miss 403 blocks.
@@ -85,6 +93,7 @@ def _get_web3(context):
                 raise ValueError("Wrong payment network.")
             context.bot_data["web3_rpc"] = w3
             context.bot_data["web3_rpc_url"] = url
+            context.bot_data["web3_rpc_index"] = index
             return w3
         except Exception as exc:
             last_error = "RPC unavailable or wrong network"
@@ -147,14 +156,18 @@ def _not_processed(tx_hash: str) -> bool:
     return cur.fetchone() is None
 
 
-def _amount_from_log(log) -> Decimal:
+def _raw_amount_from_log(log) -> int:
     data = log["data"]
     if hasattr(data, "hex"):
         raw_value = int(data.hex().replace("0x", ""), 16)
     else:
         raw_value = int(str(data).replace("0x", ""), 16)
 
-    return Decimal(raw_value) / (Decimal(10) ** Decimal(USDT_DECIMALS))
+    return raw_value
+
+
+def _amount_from_log(log) -> Decimal:
+    return Decimal(_raw_amount_from_log(log)) / (Decimal(10) ** Decimal(USDT_DECIMALS))
 
 
 def _tx_hash_from_log(log) -> str:
@@ -169,8 +182,8 @@ def _matches_amount(paid: Decimal, expected: float) -> bool:
     return diff <= Decimal(str(PAYMENT_AMOUNT_TOLERANCE))
 
 
-# ERC-20 balanceOf(address) selector, used as a fallback verification method
-# because free public BSC RPCs sometimes return empty eth_getLogs results.
+# ERC-20 balanceOf(address) selector, used ONLY for diagnostics/scan triggering.
+# A balance increase is not proof of an individual payment.
 BALANCE_OF_SELECTOR = "0x70a08231"
 
 
@@ -211,20 +224,59 @@ def _remember_scanned_block(context, block_number: int):
         pass
 
 
+def _proof_hex32(value):
+    if isinstance(value, bytes):value = '0x' + value.hex().removeprefix('0x')
+    value = str(value).lower()
+    if not re.fullmatch(r'0x[0-9a-f]{64}',value):
+        raise ValueError('Invalid chain evidence.')
+    return value
+
+
+def _receipt_proof(w3, entry, receipt_cache, block_cache):
+    """External RPC proof before either customer or reseller settlement.
+
+    A timeout/mismatch aborts this scan; checkpoint remains retryable. Cache only
+    within this bounded scan, never across confirmation/reorganization changes.
+    """
+    tx = _proof_hex32(_tx_hash_from_log(entry))
+    if tx not in receipt_cache:receipt_cache[tx] = w3.eth.get_transaction_receipt(tx)
+    receipt = receipt_cache[tx]
+    height = int(entry['blockNumber'])
+    if height not in block_cache:block_cache[height] = w3.eth.get_block(height)
+    if (int(receipt['status']) != 1 or _proof_hex32(receipt['transactionHash']) != tx or
+            int(receipt['blockNumber']) != height or
+            _proof_hex32(receipt['blockHash']) != _proof_hex32(entry['blockHash']) or
+            _proof_hex32(block_cache[height]['hash']) != _proof_hex32(entry['blockHash'])):
+        raise ValueError('Chain evidence not canonical or successful.')
+    matches = [log for log in receipt['logs'] if int(log['logIndex']) == int(entry['logIndex'])]
+    if len(matches) != 1:raise ValueError('Transfer missing from receipt.')
+    actual = matches[0]
+    hx = lambda v: ('0x'+v.hex().removeprefix('0x')) if isinstance(v,bytes) else str(v).lower()
+    if (actual.get('removed') or
+            str(actual['address']).lower() != str(entry['address']).lower() or
+            [hx(v) for v in actual['topics']] != [hx(v) for v in entry['topics']] or
+            _raw_amount_from_log(actual) != _raw_amount_from_log(entry) or
+            _proof_hex32(actual['transactionHash']) != tx or
+            int(actual['blockNumber']) != height or
+            _proof_hex32(actual['blockHash']) != _proof_hex32(entry['blockHash'])):
+        raise ValueError('Transfer differs from receipt.')
+
+
 def _get_recent_incoming_usdt_logs(context, w3: Web3):
     latest_block = w3.eth.block_number
     to_block = max(latest_block - PAYMENT_REQUIRED_CONFIRMATIONS, 0)
 
-    # Resume from the last scanned block so payments are never skipped, but
-    # never look further back than PAYMENT_SCAN_BLOCKS behind the chain tip.
+    # Bound initial discovery only. Clamping an existing checkpoint to the
+    # tip's lookback silently skipped unprocessed payments after an outage.
+    # Per-cycle chunk limits bound catch-up without throwing old work away.
     last_scanned = _load_last_scanned_block(context)
-    from_block = last_scanned + 1 if last_scanned else 0
-    from_block = max(from_block, to_block - PAYMENT_SCAN_BLOCKS, 0)
+    from_block = last_scanned + 1 if last_scanned else max(to_block - PAYMENT_SCAN_BLOCKS, 0)
 
     if from_block > to_block:
         return [], None
 
     logs = []
+    receipt_cache, block_cache = {}, {}
     start = from_block
     chunks = 0
     scanned_to = None
@@ -257,10 +309,12 @@ def _get_recent_incoming_usdt_logs(context, w3: Web3):
                 paid = _amount_from_log(entry)
                 if not paid.is_finite() or paid <= 0 or paid * (Decimal(10) ** USDT_DECIMALS) >= 2**256:
                     continue
-                logs.append(entry)
             except (ValueError, TypeError, KeyError, ArithmeticError):
                 log_error("BEP20 provider event ignored", extra="category=invalid_transfer_event")
                 continue
+            # Do not swallow verification outages and then advance past a payment.
+            _receipt_proof(w3, entry, receipt_cache, block_cache)
+            logs.append(entry)
         scanned_to = end
         start = end + 1
         chunks += 1
@@ -314,8 +368,8 @@ async def _alert_unattributed(context, delta, reason: str):
                 f"\U0001f4b5 <b>Amount:</b> <code>{delta:.6f} USDT</code>\n"
                 f"\u2753 <b>Reason:</b> {html.escape(str(reason), quote=False)}\n\n"
                 "These funds are NOT credited. The balance baseline is being "
-                "held so the payment is not lost \u2014 check BscScan and credit "
-                "manually via Admin \u2192 Add Balance."
+                "held for reconciliation. Verify the transaction and existing payment "
+                "claims before any approved recovery action."
             ),
             parse_mode="HTML",
         )
@@ -397,8 +451,7 @@ async def check_payments(context):
 
     # The event-log scan is best-effort only: free public BSC RPCs often
     # reject or stall on eth_getLogs. A failure here must NOT abort the
-    # cycle, because the wallet-balance check below still verifies payments
-    # reliably on every RPC.
+    # cycle's diagnostics, but balance-only movements must never credit wallets.
     # A cheap balanceOf probe now drives the expensive work. Free public BSC
     # RPCs rate-limit eth_getLogs ("limit exceeded"), and the old code called
     # it on every 30s cycle whether or not any money had arrived - which kept
@@ -449,7 +502,7 @@ async def check_payments(context):
             print(f"[payscan] log scan failed ({fails + 1} in a row)", flush=True)
             log_error("Payment checker RPC/log scan error", extra="category=provider_unavailable")
             if balance_rose:
-                print("[payscan] balance rose but log scan failed; balance check will handle it", flush=True)
+                print("[payscan] balance rose but transaction evidence is unavailable; payment held", flush=True)
 
     # Re-read pending invoices AFTER the RPC work. The list fetched at the top
     # of this cycle is now several seconds old: connecting to the RPC, probing
@@ -667,8 +720,8 @@ async def check_payments(context):
                     "⚠️ <b>Unmatched Payment Received</b>\n\n"
                     f"💵 Amount: <code>{paid_amount:.5f} USDT</code>\n"
                     f"🔗 TX: <code>{tx_hash}</code>\n\n"
-                    "No pending invoice matches this amount. If this is a real "
-                    "customer payment, credit it manually via Admin → Add Balance."
+                    "No pending invoice matches this amount. Verify the transaction, "
+                    "invoice and prior payment claims before any approved recovery action."
                 ),
                 parse_mode="HTML",
                 disable_web_page_preview=True,
@@ -676,164 +729,20 @@ async def check_payments(context):
         except Exception:
             pass
 
-    # Fallback verification: detect payments by wallet balance increase.
-    # This works even when the RPC returns empty event logs.
+    # balanceOf is a scan trigger/diagnostic, never proof of an individual
+    # transfer. Do not manufacture a pseudo transaction and credit a wallet.
+    # The old internal fallback remains only for backwards-compatible callers;
+    # no automatic checker calls it. Receipt/log evidence is required here.
     try:
-        if balance_now is None:
-            balance_now = _wallet_usdt_balance(w3)
-        prev = prev_balance
-        attributed = True
-
-        if prev is not None:
-            delta = balance_now - prev
-            if delta > 0:
-                # Direct-checkout invoices used to be excluded here via
-                # "not d[4]". Once the log scan was rate-limited off that left
-                # checkout payments with no working confirmation path at all,
-                # so they are now matched too.
-                # Money already credited from the event logs on this very
-                # cycle is part of this same delta. Subtract it before deciding
-                # whether anything is genuinely unaccounted for -- otherwise a
-                # payment that was just confirmed by TX hash also raised an
-                # "UNMATCHED WALLET DEPOSIT" alert for its own amount.
-                credited_total = sum(
-                    (Decimal(str(d[3])) for d in pending if d[0] in credited_ids),
-                    Decimal("0"),
-                )
-                residual = delta - credited_total
-                attributed = bool(credited_ids)
-                if residual <= Decimal(str(PAYMENT_AMOUNT_TOLERANCE)):
-                    # Every cent of this delta is already accounted for.
-                    matches = []
-                    residual = Decimal("0")
-                else:
-                    matches = [
-                        d for d in pending
-                        if d[0] not in credited_ids and _matches_amount(residual, d[3])
-                    ]
-                if len(matches) == 1:
-                    deposit_id, user_id, base_amount, unique_amount, _cpid, _cqty, _cdone = matches[0]
-                    # Deterministic: including a timestamp made every pseudo tx unique,
-                    # so INSERT OR IGNORE into processed_txs never deduped and a
-                    # deposit could be credited twice on repeated balance deltas.
-                    pseudo_tx = f"balance-delta-{deposit_id}"
-
-                    settled = settle_customer(deposit_id, 'bep20', pseudo_tx, residual, fallback=True)
-                    if not settled["posted"]:
-                        await _alert_unattributed(context, residual, "Shared receiving wallet requires transaction evidence; automatic balance-only attribution held.")
-                        raise ValueError("Unverified shared-wallet balance movement held for review.")
-                    credited_ids.add(deposit_id)
-                    attributed = True
-                    print(f"[payscan] credited deposit #{deposit_id} via balance check (+{delta} USDT)", flush=True)
-
-                    if _cpid and int(_cqty or 0) > 0 and not _cdone:
-                        # The balance-only path cannot safely reserve stock and
-                        # deliver codes, so the money lands in the wallet and
-                        # the admin is told to finish the order.
-                        try:
-                            await context.bot.send_message(
-                                chat_id=ADMIN_ID,
-                                text=(
-                                    "\U0001f6d2 <b>CHECKOUT PAID (balance check)</b>\n\n"
-                                    f"\U0001f464 User: <code>{user_id}</code>\n"
-                                    f"\U0001f9fe Invoice: <code>#{deposit_id}</code>\n"
-                                    f"\U0001f4e6 Product ID: <code>{int(_cpid)}</code>\n"
-                                    f"\U0001f522 Quantity: <code>{int(_cqty)}</code>\n"
-                                    f"\U0001f4b5 Paid: <code>{delta:.5f} USDT</code>\n\n"
-                                    "Credited to the user wallet balance. Deliver "
-                                    "the product manually if it was not sent."
-                                ),
-                                parse_mode="HTML",
-                            )
-                        except Exception:
-                            pass
-
-                    try:
-                        await context.bot.send_message(
-                            chat_id=user_id,
-                            text=render_message_template(
-                                "deposit_success",
-                                DEPOSIT_SUCCESS_DEFAULT,
-                                invoice_id=deposit_id,
-                                paid=f"{delta:.5f}",
-                                amount=f"{float(base_amount):.2f}",
-                                balance=f"{get_balance(user_id):.2f}",
-                                tx="verified by balance check",
-                            ),
-                            parse_mode="HTML",
-                        )
-                    except Exception as exc:
-                        log_error("Failed to notify user about deposit", exc, extra=f"user={user_id} deposit={deposit_id}")
-
-                    try:
-                        await context.bot.send_message(
-                            chat_id=ADMIN_ID,
-                            text=(
-                                "💰 <b>AUTO PAYMENT CONFIRMED</b> (balance check)\n\n"
-                                f"👤 <b>User:</b> <code>{user_id}</code>\n"
-                                f"🧾 <b>Invoice:</b> <code>#{deposit_id}</code>\n"
-                                f"💵 <b>Paid:</b> <code>{residual:.5f} USDT</code>\n"
-                                f"💰 <b>Credit:</b> <code>{float(base_amount):.2f} USDT</code>"
-                            ),
-                            parse_mode="HTML",
-                        )
-                    except Exception:
-                        pass
-                elif len(matches) > 1:
-                    await _alert_unattributed(
-                        context, residual,
-                        f"{len(matches)} pending invoices match this exact amount",
-                    )
-                elif residual > 0:
-                    # Nothing matches. If the event-log scan succeeded this
-                    # cycle then every incoming transfer was seen and already
-                    # reported with its TX hash, so this is simply money that
-                    # is not a customer payment -- typically the owner's own
-                    # funds, because this wallet is used personally too.
-                    #
-                    # Such money must NOT hold the baseline. Holding it would
-                    # leave the leftover amount inside every future delta, so
-                    # the next real customer payment would be measured as
-                    # (personal + customer) and would never match its invoice.
-                    # If a customer invoice really is involved, the log scan
-                    # keeps ~1h of history and re-credits it on a later cycle.
-                    if scan_ok:
-                        print(
-                            f"[payscan] non-customer wallet movement {residual} USDT "
-                            "(not a customer invoice); baseline advanced",
-                            flush=True,
-                        )
-                        attributed = True
-                    else:
-                        # Blind this cycle: the scan failed, so we cannot tell
-                        # "not a customer payment" from "not seen yet". Hold.
-                        await _alert_unattributed(
-                            context, residual,
-                            "no pending invoice matches this amount",
-                        )
-
-                if not attributed:
-                    # Never move the baseline past money we could not attribute.
-                    # Advancing it unconditionally is what made unmatched
-                    # payments permanently unrecoverable: the funds disappeared
-                    # from the delta on the very next cycle, so no later run
-                    # could ever match them. Carry the delta forward instead.
-                    since = context.bot_data.get("unattributed_since")
-                    if not since:
-                        context.bot_data["unattributed_since"] = time.time()
-                        print(f"[payscan] holding baseline: {delta} USDT unattributed", flush=True)
-                    elif time.time() - since > DEPOSIT_EXPIRE_HOURS * 3600:
-                        # Stop carrying a stale delta forever, otherwise it
-                        # poisons amount matching for every future payment.
-                        print(f"[payscan] dropping stale unattributed delta {delta} USDT", flush=True)
-                        attributed = True
-
-        if attributed:
-            context.bot_data["unattributed_since"] = None
-            context.bot_data["last_wallet_balance"] = balance_now
-            set_setting("last_wallet_balance", str(balance_now))
-    except Exception as exc:
-        log_error("Balance fallback check failed", exc)
+        if balance_now is not None:
+            if scan_ok and reseller_scan_ok:
+                context.bot_data["last_wallet_balance"] = balance_now
+                set_setting("last_wallet_balance", str(balance_now))
+            elif prev_balance is not None and balance_now > prev_balance:
+                await _alert_unattributed(context, balance_now-prev_balance,
+                    "Transaction evidence unavailable; payment is held for verified logs and reconciliation.")
+    except Exception:
+        log_error("Payment balance diagnostic unavailable", extra="category=diagnostic_unavailable")
 
     # Only advance the scan pointer after processing finished successfully.
     if scanned_to and reseller_scan_ok:

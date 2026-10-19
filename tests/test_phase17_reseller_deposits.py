@@ -200,16 +200,16 @@ class ResellerDepositTests(unittest.TestCase):
         self.assertEqual(result,[(self.tx(),Decimal('10.001234'))]);self.assertEqual(http.get.call_args.kwargs['params']['only_confirmed'],'true')
     def test_bep_provider_filter_contract_confirmation_destination(self):
         addr=service.destination('bep20');contract=bep.USDT_BEP20_CONTRACT
-        good={'address':contract,'topics':[bep.TRANSFER_TOPIC,'0x'+'0'*64,bep._topic_address(addr)],'data':hex(10*10**bep.USDT_DECIMALS),'blockNumber':95,'transactionHash':self.tx('bep20')}
+        good={'address':contract,'topics':[bep.TRANSFER_TOPIC,'0x'+'0'*64,bep._topic_address(addr)],'data':hex(10*10**bep.USDT_DECIMALS),'blockNumber':95,'blockHash':'0x'+f'{95:064x}','logIndex':0,'transactionHash':self.tx('bep20')}
         calls=[]
         def logs(query):calls.append(query);return [dict(good,address='0x'+'2'*40),dict(good,removed=True),dict(good,blockNumber=99),dict(good,topics=[bep.TRANSFER_TOPIC,'0x'+'0'*64,bep._topic_address('0x'+'3'*40)]),good]
-        w3=SimpleNamespace(eth=SimpleNamespace(block_number=100,get_logs=logs))
+        w3=SimpleNamespace(eth=SimpleNamespace(block_number=100,get_logs=logs,get_transaction_receipt=lambda tx:{'status':1,'transactionHash':good['transactionHash'],'blockNumber':95,'blockHash':good['blockHash'],'logs':[good]},get_block=lambda height:{'hash':'0x'+f'{height:064x}'}))
         with patch.object(bep,'USDT_BEP20_ADDRESS',addr),patch.object(bep,'_load_last_scanned_block',return_value=90):result,scanned=bep._get_recent_incoming_usdt_logs(self.context,w3)
         self.assertEqual(result,[good]);self.assertEqual(scanned,95);self.assertEqual(calls[0]['toBlock'],100-bep.PAYMENT_REQUIRED_CONFIRMATIONS)
     def test_bep_actual_checker_credits_reseller_from_verified_logs(self):
         d=self.deposit('bep20');addr=d['address'];contract=bep.USDT_BEP20_CONTRACT
-        good={'address':contract,'topics':[bep.TRANSFER_TOPIC,'0x'+'0'*64,bep._topic_address(addr)],'data':hex(int(Decimal(str(d['expected_amount']))*10**bep.USDT_DECIMALS)),'blockNumber':95,'transactionHash':self.tx('bep20')}
-        w3=SimpleNamespace(eth=SimpleNamespace(block_number=100,get_logs=lambda query:[good]))
+        good={'address':contract,'topics':[bep.TRANSFER_TOPIC,'0x'+'0'*64,bep._topic_address(addr)],'data':hex(int(Decimal(str(d['expected_amount']))*10**bep.USDT_DECIMALS)),'blockNumber':95,'blockHash':'0x'+f'{95:064x}','logIndex':0,'transactionHash':self.tx('bep20')}
+        w3=SimpleNamespace(eth=SimpleNamespace(block_number=100,get_logs=lambda query:[good],get_transaction_receipt=lambda tx:{'status':1,'transactionHash':good['transactionHash'],'blockNumber':95,'blockHash':good['blockHash'],'logs':[good]},get_block=lambda height:{'hash':'0x'+f'{height:064x}'}))
         self.context.bot_data['last_wallet_balance']=Decimal('0')
         with patch.object(bep,'_config_ready',return_value=True),patch.object(bep,'USDT_BEP20_ADDRESS',addr),patch.object(bep,'_get_web3',return_value=w3),patch.object(bep,'_wallet_usdt_balance',return_value=Decimal(str(d['expected_amount']))),patch.object(bep,'_load_last_scanned_block',return_value=90):
             asyncio.run(bep.check_payments(self.context));asyncio.run(bep.check_payments(self.context))

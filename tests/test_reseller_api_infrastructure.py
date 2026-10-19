@@ -44,8 +44,7 @@ class ResellerApiInfrastructureStaticTests(unittest.TestCase):
             "web: gunicorn --workers 1 --threads 8 --timeout 120 -b 0.0.0.0:$PORT web_admin.app:app\n"
             "worker: python bot.py\n"
             "webhook-worker: python -m reseller_api.workers.webhook_worker\n"
-            "fulfillment-worker: python -m reseller_api.workers.fulfillment_worker\n"
-            "reseller-deposit-worker: python -m reseller_api.workers.reseller_deposit_worker\n",
+            "fulfillment-worker: python -m reseller_api.workers.fulfillment_worker\n",
         )
 
 
